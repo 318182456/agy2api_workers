@@ -1,3 +1,4 @@
+import { analyticsScript } from './panel-analytics.js';
 import { panelStyle } from './panel-style.js';
 import { panelPages, panelFrame } from './panel-views.js';
 export { isPanelPath } from './panel-views.js';
@@ -230,21 +231,7 @@ async function showQuota(credential) {
     controls.append(reload, hide); cell.append(controls);
     if (!value.models.length) { const empty = document.createElement('p'); empty.textContent = 'Google 未返回模型信息，无法确定额度。'; cell.append(empty); }
     else {
-      const table = document.createElement('table');
-      const head = document.createElement('tr');
-      for (const text of ['模型', '剩余额度', '重置时间（北京时间）']) { const th = document.createElement('th'); th.textContent = text; head.append(th); }
-      const thead = document.createElement('thead'); thead.append(head); table.append(thead);
-      const tbody = document.createElement('tbody');
-      for (const model of value.models) {
-        const tr = document.createElement('tr');
-        const name = document.createElement('td'); name.textContent = model.id;
-        const balance = document.createElement('td');
-        if (model.remaining === null) balance.textContent = '未知（上游未提供）';
-        else { const progress = document.createElement('progress'); progress.max = 1; progress.value = model.remaining; balance.append(progress, document.createTextNode((model.remaining * 100).toFixed(1) + '%')); }
-        const reset = document.createElement('td'); reset.textContent = formatReset(model.resetTime);
-        tr.append(name, balance, reset); tbody.append(tr);
-      }
-      table.append(tbody); const scroll = document.createElement('div'); scroll.className = 'scroll'; scroll.append(table); cell.append(scroll);
+      renderSingleQuota(cell, value.models);
     }
     status('已更新 ' + credential.name + ' 的额度。');
   } catch (error) { cell.textContent = '查询失败：' + error.message; throw error; }
@@ -254,7 +241,7 @@ el('loginForm').onsubmit = event => { event.preventDefault(); run(async () => {
   await api('/auth/login', 'POST', { password }); el('password').value = '';
   await openWorkspace();
 }); };
-el('logout').onclick = () => run(async () => { await api('/auth/logout', 'POST'); el('workspace').hidden = true; el('loginCard').hidden = false; el('credentials').replaceChildren(); el('credential').value = ''; el('file').value = ''; selectedCredentials.clear(); credentialsSnapshot = []; loadedPages.clear(); credentialPage=0; duplicateSnapshot = []; settingsLoaded = false; quotaOverviewResults = []; el('quotaSummary').replaceChildren(); el('quotaOverviewBody').replaceChildren(); el('quotaOverviewState').textContent = ''; el('healthDetails').textContent = ''; el('statsSummary').replaceChildren(); for (const id of ['statsDays','statsModels','statsCredentials']) el(id).replaceChildren(); el('batchFiles').value = ''; el('batchResults').textContent = ''; el('duplicateResults').textContent = ''; el('callsBody').replaceChildren(); el('callbackUrl').value = ''; el('oauthLink').removeAttribute('href'); el('oauthLinkArea').hidden = true; status('已退出。'); });
+el('logout').onclick = () => run(async () => { await api('/auth/logout', 'POST'); el('workspace').hidden = true; el('loginCard').hidden = false; el('credentials').replaceChildren(); el('credential').value = ''; el('file').value = ''; selectedCredentials.clear(); credentialsSnapshot = []; loadedPages.clear(); credentialPage=0; duplicateSnapshot = []; settingsLoaded = false; quotaOverviewResults = []; el('quotaSummary').replaceChildren(); el('quotaOverviewBody').replaceChildren(); el('quotaOverviewState').textContent = ''; for (const id of ['quotaKpis','statsTrend','statsModelRank','statsAccountRank','statsCoverage']) el(id).replaceChildren(); statsSnapshot={ days:[],models:[],credentials:[] }; oauthClientModes={}; el('healthDetails').textContent = ''; el('statsSummary').replaceChildren(); for (const id of ['statsDays','statsModels','statsCredentials']) el(id).replaceChildren(); el('batchFiles').value = ''; el('batchResults').textContent = ''; el('duplicateResults').textContent = ''; el('callsBody').replaceChildren(); el('callbackUrl').value = ''; el('oauthLink').removeAttribute('href'); el('oauthLinkArea').hidden = true; status('已退出。'); });
 el('refresh').onclick = () => run(refresh);
 let nextCall = null;
 async function loadCalls(before = null) {
@@ -389,6 +376,7 @@ function panelFilters(prefix) {
 function tableRow(body, values) { const tr = document.createElement('tr'); for (const value of values) { const td = document.createElement('td'); td.textContent = String(value); tr.append(td); } el(body).append(tr); }
 const tokenText = value => value == null ? '未报告' : Number(value).toLocaleString('zh-CN');
 const successRate = row => row.requests ? (100*row.successes/row.requests).toFixed(1)+'%' : '—';
+${analyticsScript}
 function metricsRow(body, label, row) {
   tableRow(body, [label, [row.requests,row.successes || 0,row.failures || 0,row.cancellations || 0].join(' / '), successRate(row),
     [row.input_tokens,row.output_tokens,row.thought_tokens,row.total_tokens].map(tokenText).join(' / '), (row.avg_duration_ms ?? 0)+' ms']);
@@ -397,13 +385,10 @@ async function loadStats() {
   const params = panelFilters('stats'); if (!params.has('from')) params.set('from', String(Date.now()-7*86400000));
   const value = await api('/admin/stats?'+params); const s = value.summary;
   el('statsSummary').replaceChildren();
-  for (const [label,text] of [['请求数',s.requests],['成功率',successRate(s)],['失败 / 取消',(s.failures || 0)+' / '+(s.cancellations || 0)],['上游报告总 Token',tokenText(s.total_tokens)],['有用量报告的请求',(s.token_reports || 0)+' / '+s.requests],['平均耗时',(s.avg_duration_ms ?? 0)+' ms']]) {
-    const box = document.createElement('div'); box.className = 'metric'; const name = document.createElement('small'); name.textContent = label; const number = document.createElement('strong'); number.textContent = String(text); box.append(name,number); el('statsSummary').append(box);
+  for (const [label,text] of [['请求数',compact(s.requests)],['成功率',successRate(s)],['失败 / 取消',(s.failures || 0)+' / '+(s.cancellations || 0)],['上游报告总 Token',compact(s.total_tokens)],['有用量报告的请求',(s.token_reports || 0)+' / '+s.requests],['平均耗时',duration(s.avg_duration_ms)]]) {
+    const box = document.createElement('div'); box.className = 'metric'; const name = document.createElement('small'); name.textContent = label; const number = document.createElement('strong'); number.textContent = String(text); number.title = label === '上游报告总 Token' ? tokenText(s.total_tokens) : String(text); box.append(name,number); el('statsSummary').append(box);
   }
-  for (const body of ['statsDays','statsModels','statsCredentials']) el(body).replaceChildren();
-  for (const row of value.days) metricsRow('statsDays', row.day,row);
-  for (const row of value.models) metricsRow('statsModels', row.model+' · '+row.mode,row);
-  for (const row of value.credentials) metricsRow('statsCredentials', row.display_name,row);
+  renderStatsCharts(value);
   status('统计已刷新。'+(value.groups_truncated ? '模型或账号分组超过 200 项，请缩小筛选范围。' : ''));
 }
 el('statsRefresh').onclick = ()=>run(loadStats);
@@ -412,25 +397,10 @@ el('callsClear').onclick = () => { if (confirm('确认删除当前筛选匹配�
 for (const suffix of ['Email','Model','Mode','Status','Stage','Request','From','To']) el('calls'+suffix).onchange = () => { nextCall = null; el('callsNext').hidden = true; el('callsBody').replaceChildren(); };
 let quotaOverviewResults = [];
 let stopQuotaOverview = false;
-function renderQuotaOverview() {
-  el('quotaOverviewBody').replaceChildren(); el('quotaSummary').replaceChildren(); const groups = new Map();
-  for (const entry of quotaOverviewResults) {
-    const label = entry.credential.user_email || entry.credential.name;
-    if (entry.error) { tableRow('quotaOverviewBody',[label,'—','未知','—',entry.error]); continue; }
-    if (!entry.value.models.length) tableRow('quotaOverviewBody',[label,'上游未返回模型','未知','—',formatReset(entry.value.queriedAt)]);
-    for (const model of entry.value.models) {
-      tableRow('quotaOverviewBody',[label,model.id,model.remaining == null ? '未知' : (model.remaining*100).toFixed(1)+'%',formatReset(model.resetTime),formatReset(entry.value.queriedAt)]);
-      if (!groups.has(model.id)) groups.set(model.id,{ values:[],unknown:0 }); const group = groups.get(model.id);
-      if (model.remaining == null) group.unknown++; else group.values.push(model.remaining);
-    }
-  }
-  for (const [id,g] of [...groups.entries()].sort(([a],[b]) => a.localeCompare(b))) tableRow('quotaSummary',[id,g.values.length+' / '+g.unknown,
-    g.values.length ? (100*g.values.reduce((a,b)=>a+b,0)/g.values.length).toFixed(1)+'%' : '未知',g.values.length ? (100*Math.min(...g.values)).toFixed(1)+'%' : '未知']);
-}
 el('quotaOverviewStop').onclick = () => { stopQuotaOverview = true; status('将停止后续额度查询，当前账号查询完成后停止。'); };
 el('quotaOverviewRefresh').onclick = () => run(async () => {
   await refresh(); const rows = credentialsSnapshot.filter(c => c.mode === 'antigravity' && (!c.disabled || el('quotaIncludeDisabled').checked));
-  quotaOverviewResults = []; stopQuotaOverview = false; renderQuotaOverview(); el('quotaOverviewStop').hidden = false; el('quotaOverviewStop').disabled = false;
+  quotaOverviewResults = []; quotaModelPage=0; quotaAccountPage=0; stopQuotaOverview = false; renderQuotaOverview(); el('quotaOverviewStop').hidden = false; el('quotaOverviewStop').disabled = false;
   try {
     for (const credential of rows) {
       if (stopQuotaOverview) break; el('quotaOverviewState').textContent = '查询中 '+(quotaOverviewResults.length+1)+' / '+rows.length+' · '+(credential.user_email || credential.name);

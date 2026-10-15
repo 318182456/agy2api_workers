@@ -308,7 +308,7 @@ test('management page embeds valid JavaScript with quota controls and fixed time
   assert.doesNotThrow(() => new Function(script));
   assert.match(script, /查看额度/);
   assert.match(script, /Asia\/Shanghai/);
-  assert.match(script, /model.remaining === null/);
+  assert.match(script, /model.remaining == null/);
 });
 
 test('known OAuth client prevents import into the wrong channel', async () => {

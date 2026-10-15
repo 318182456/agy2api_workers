@@ -81,6 +81,7 @@ test('management script: quota failures continue, stop works, stats/health and s
   const fetcher=async(path,options)=>{
     const body=options.body ? JSON.parse(options.body):undefined;requests.push({path,method:options.method,body});
     if(path==='/auth/session') return Response.json({ authenticated:false });
+    if(path==='/auth/logout') return Response.json({ success:true });
     if(path==='/admin/credentials') return Response.json({ credentials:rows });
     if(path==='/admin/credentials/a/quota') { if(stopOnFirst) el('quotaOverviewStop').onclick(); return Response.json({ queriedAt:'2026-10-15T00:00:00Z',models:[{id:'m',remaining:0.4,resetTime:null},{id:'unknown',remaining:null,resetTime:null}] }); }
     if(path==='/admin/credentials/b/quota') return Response.json({ error:{message:'test quota failure'} },{status:502});
@@ -95,17 +96,23 @@ test('management script: quota failures continue, stop works, stats/health and s
   await new Promise(resolve=>setImmediate(resolve));
   await el('quotaOverviewRefresh').onclick();
   assert.equal(requests.filter(r=>r.path.endsWith('/quota')).length,2);
-  assert.equal(el('quotaOverviewBody').children.length,3);
+  assert.equal(el('quotaOverviewBody').children.length,2);
   assert.match(el('quotaOverviewState').textContent,/失败 1/);
-  const summary=el('quotaSummary').children.find(tr=>tr.children[0].textContent==='m');
-  assert.equal(summary.children[1].textContent,'1 / 0'); assert.equal(summary.children[2].textContent,'40.0%');
-  assert.equal(el('quotaSummary').children.find(tr=>tr.children[0].textContent==='unknown').children[2].textContent,'未知');
+  const summary=el('quotaSummary').children.find(card=>card.children[0].children[0].textContent==='m');
+  assert.equal(summary.children[1].children[0].textContent,'40.0%');
+  assert.equal(summary.children[3].children[1].textContent,'1 个已知 · 0 个未知');
+  assert.equal(el('quotaSummary').children.find(card=>card.children[0].children[0].textContent==='unknown').children[1].children[0].textContent,'未知');
+  assert.equal(el('quotaKpis').children[0].children[1].textContent,'2');
+  assert.equal(el('quotaOverviewBody').children[0].children[0].children[1].textContent,'查询失败');
   stopOnFirst=true; const before=requests.length; await el('quotaOverviewRefresh').onclick();
   assert.equal(requests.slice(before).filter(r=>r.path.endsWith('/quota')).length,1); assert.match(el('quotaOverviewState').textContent,/已停止/);
   const actions=el('credentials').children[0].children.at(-1); await actions.children.find(button=>button.textContent==='健康详情').onclick();
   assert.match(el('healthDetails').textContent,/a@example.test/); assert.match(el('healthDetails').textContent,/HTTP_429/);
   el('statsEmail').value='a@example.test'; await el('statsRefresh').onclick();
   assert.equal(el('statsSummary').children[1].children[1].textContent,'50.0%'); assert.equal(el('statsModels').children.length,1);
+  assert.equal(el('statsTrend').children.length,1);
+  assert.equal(el('statsModelRank').children.length,1);
+  assert.equal(el('statsAccountRank').children.length,1);
   assert.match(requests.find(r=>r.path.startsWith('/admin/stats?')).path,/email=a%40example.test/);
   await el('settingsLoad').onclick(); assert.equal(el('settingsStrategy').value,'priority');
   el('settingsStrategy').value='weighted'; el('settingsForm').onsubmit({preventDefault(){}}); await new Promise(resolve=>setImmediate(resolve));
@@ -115,6 +122,36 @@ test('management script: quota failures continue, stop works, stats/health and s
   await el('callsClear').onclick();const deletion=requests.find(r=>r.method==='DELETE');
   assert.match(deletion.path,/status=429/); assert.match(deletion.path,/email=alpha/);assert.equal(deletion.body.confirm,'delete-matching-logs');
   assert.equal(JSON.parse(await downloads[0].text()).records.length,0);
+
+  // Dozens of accounts/models stay bounded; null values never dilute averages.
+  context.largeQuota=Array.from({length:35},(_,i)=>({credential:{id:String(i),name:'account-'+i,user_email:'user'+i+'@example.test'},value:{queriedAt:'2026-10-15T00:00:00Z',models:Array.from({length:21},(_,j)=>({id:'model-'+String(j).padStart(2,'0'),remaining:j===20?null:i===0?0:i===1?null:.4,resetTime:null}))}}));
+  vm.runInContext('quotaOverviewResults=largeQuota; renderQuotaOverview();',context);
+  assert.equal(el('quotaSummary').children.length,8);
+  assert.equal(el('quotaOverviewBody').children.length,6);
+  assert.match(el('quotaModelsPage').textContent,/1 \/ 3/);
+  const firstModel=el('quotaSummary').children[0];
+  assert.equal(firstModel.children[1].children[0].textContent,'38.8%');
+  assert.equal(firstModel.children[3].children[0].textContent,'最低 0.0%');
+  assert.equal(firstModel.children[3].children[1].textContent,'34 个已知 · 1 个未知');
+  el('quotaModelsNext').onclick();assert.match(el('quotaModelsPage').textContent,/2 \/ 3/);
+  el('quotaSearch').value='model-20';el('quotaSearch').oninput();
+  assert.equal(el('quotaSummary').children.length,1);
+  assert.equal(el('quotaSummary').children[0].children[1].children[0].textContent,'未知');
+  assert.equal(el('quotaModelsNext').disabled,true);
+  el('quotaSearch').value='';el('quotaStateFilter').value='empty';el('quotaStateFilter').onchange();
+  assert.match(el('quotaModelsPage').textContent,/共 20 项/);
+  el('quotaStateFilter').value='low';el('quotaStateFilter').onchange();assert.equal(el('quotaModelsNext').disabled,true);
+  el('quotaStateFilter').value='all';el('quotaStateFilter').onchange();
+  el('quotaAccountsNext').onclick();assert.match(el('quotaAccountsPage').textContent,/2 \/ 6/);
+  context.largeStats={summary:aggregate,days:[],models:Array.from({length:27},(_,i)=>({...aggregate,model:'model-'+i,mode:'antigravity',total_tokens:i*10})),credentials:Array.from({length:31},(_,i)=>({...aggregate,display_name:'user'+i,total_tokens:i?i*100:null}))};
+  vm.runInContext('renderStatsCharts(largeStats)',context);
+  assert.equal(el('statsModels').children.length,10);assert.equal(el('statsModelRank').children.length,6);
+  assert.equal(el('statsAccountRank').children[0].children[0].children[1].textContent,'user30');
+  el('statsModelsNext').onclick();el('statsModelsNext').onclick();
+  assert.equal(el('statsModels').children.length,7);assert.equal(el('statsModelsNext').disabled,true);
+  el('statsModelsPrev').onclick();assert.equal(el('statsModels').children.length,10);
+  await el('logout').onclick();
+  assert.equal(el('statsModelRank').children.length,0);assert.equal(el('quotaKpis').children.length,0);
 });
 
 
