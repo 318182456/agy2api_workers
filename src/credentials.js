@@ -1,3 +1,4 @@
+import { dbCache } from './db-cache.js';
 import { HttpError, modeValue, googleFetch, operation } from './common.js';
 
 export function oauthClients(env = {}) {
@@ -87,10 +88,10 @@ export async function importCredential(db, body, env = {}) {
 }
 
 export async function listCredentials(db, env = {}) {
-  const result = await db.prepare(`SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`).all();
-  return result.results.map(({ data, ...row }) => {
+  const result = await db.prepare(`SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`).all();
+  return result.results.map(({ data, observed_success, ...row }) => {
     const credential = parseCredentialData(data);
-    return { ...row, detected_mode: detectedMode(credential, env), user_email: credential.user_email || null,
+    return { ...row, last_success: Math.max(row.last_success||0,observed_success||0)||null, detected_mode: detectedMode(credential, env), user_email: credential.user_email || null,
       project_id: credential.project_id || null, subscription_tier: credential.subscription_tier || null,
       credit_amount: credential.credit_amount ?? null, last_test: credential.last_test || null };
   });
@@ -101,13 +102,18 @@ export async function selectCredential(db, mode, model = '', excluded = [], stra
   const eligible = `FROM credentials c WHERE c.mode=? AND c.disabled=0
     AND NOT EXISTS (SELECT 1 FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.model=? AND q.until_ms>?)${exclusions}`;
   const values = [mode, model, Date.now(), ...excluded];
+  const scope=dbCache(db);scope.rotation ||= new Map();
+  for(const [id,seen] of scope.rotation) if(seen.used<Date.now()-600000)scope.rotation.delete(id);
   let row;
   if (strategy === 'weighted') {
     const candidates = (await db.prepare('SELECT c.id,c.weight ' + eligible).bind(...values).all()).results;
     const id = weightedChoice(candidates);
     if (id) row = await db.prepare('SELECT c.* ' + eligible + ' AND c.id=?').bind(...values,id).first();
   } else {
-    const order = strategy === 'priority' ? 'c.priority DESC,c.last_used,c.id' : 'c.last_used,c.id';
+    const entries=[...scope.rotation.entries()];
+    const recent=entries.length ? 'CASE c.id '+entries.map(()=> 'WHEN ? THEN ?').join(' ')+' ELSE c.last_used END' : 'c.last_used';
+    for(const [id,seen] of entries) values.push(id,seen.used);
+    const order=(strategy==='priority'?'c.priority DESC,':'')+recent+',c.id';
     row = await db.prepare('SELECT c.* ' + eligible + ' ORDER BY ' + order + ' LIMIT 1').bind(...values).first();
   }
   if (!row) {
@@ -121,7 +127,15 @@ export async function selectCredential(db, mode, model = '', excluded = [], stra
     const base = mode === 'antigravity' ? '/antigravity/v1' : '/v1';
     throw new HttpError(503, `${mode} 渠道没有已启用的凭证。请检查管理页的渠道与启用状态；本次调用的 Base URL 应为 ${base}。Antigravity 凭证请通过 /antigravity/v1 调用。`);
   }
-  await db.prepare('UPDATE credentials SET last_used=? WHERE id=?').bind(Date.now(), row.id).run();
+  const now=Date.now();
+  const recent=scope.rotation.get(row.id);
+  const shouldSave=Math.max(row.last_used||0,recent?.saved||0)<now-60000;
+  if(scope.rotation.size>=40)scope.rotation.delete(scope.rotation.keys().next().value);
+  scope.rotation.set(row.id,{used:Math.max(now,(recent?.used||0)+1),saved:shouldSave?now:Math.max(row.last_used||0,recent?.saved||0)});
+  if(shouldSave) {
+    try { await db.prepare('UPDATE credentials SET last_used=? WHERE id=? AND last_used<?').bind(now,row.id,now-60000).run(); }
+    catch { console.warn(JSON.stringify({event:'rotation_snapshot_save_failed'})); }
+  }
   return { ...row, data: parseCredentialData(row.data) };
 }
 

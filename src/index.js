@@ -3,6 +3,7 @@ import { oauthClients, importCredential, listCredentials, updateCredential } fro
 import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from './convert.js';
 import { collectGoogleStream } from './stream-collect.js';
 import { callUpstream } from './upstream.js';
+import { pruneTelemetry } from './maintenance.js';
 import { panel, isPanelPath } from './panel.js';
 import { startOAuth, completeOAuth } from './oauth.js';
 import { credentialById, fetchEmail, verifyProject, testCredential } from './account.js';
@@ -30,7 +31,7 @@ async function route(request, env, fetcher, context) {
       'content-security-policy': "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     } });
   }
-  if (url.pathname === '/health' && ['GET', 'HEAD'].includes(request.method)) return json({ status: 'ok', runtime: 'cloudflare-workers', version: '0.12.0' });
+  if (url.pathname === '/health' && ['GET', 'HEAD'].includes(request.method)) return json({ status: 'ok', runtime: 'cloudflare-workers', version: '0.14.0' });
   if (url.pathname === '/keepalive' && request.method === 'HEAD') return new Response(null, { status: 200 });
 
   if (url.pathname === '/auth/login' && request.method === 'POST') {
@@ -176,8 +177,7 @@ async function route(request, env, fetcher, context) {
   const completed = usage => persist((async () => {
     if (usageSaved) return;
     await finishUsage(200, 'success', usage);
-    if (attemptMeta.row) await recordAttempt(env.DB, { requestId, row: attemptMeta.row, mode, model: attemptMeta.model || model,
-      status: 200, stage: 'completed', started });
+
   })());
   try {
     const response = await callUpstream(env, mode, model, geminiRequest, stream || collect, abort.signal, fetcher, attemptMeta);
@@ -285,5 +285,6 @@ export async function handleRequest(request, env, fetcher = fetch, context) {
 
 // Cloudflare passes ExecutionContext as argument 3. Never pass it as the test fetcher.
 export default {
+  scheduled(controller, env, context) { if (env.DB) context.waitUntil(pruneTelemetry(env.DB)); },
   fetch(request, env, context) { return handleRequest(request, env, (url, options) => globalThis.fetch(url, options), context); },
 };

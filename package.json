@@ -5,7 +5,7 @@
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "npm run db:remote && wrangler deploy",
-    "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js",
+    "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js test/db-budget.test.js",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "check": "wrangler deploy --dry-run"

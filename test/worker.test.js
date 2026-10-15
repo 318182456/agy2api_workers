@@ -716,7 +716,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
   for (const page of ['overview','credentials','import','oauth','quota','logs','models','settings','api']) {
     const response=await handleRequest(request('/panel/'+page),{});
     assert.equal(response.status,200);assert.match(response.headers.get('content-type'),/text\/html/);
-    const html=await response.text();assert.ok(html.includes('id="page-'+page+'"'));assert.match(html,/v0\.12\.0/);
+    const html=await response.text();assert.ok(html.includes('id="page-'+page+'"'));assert.match(html,/v0\.14\.0/);
     assert.match(response.headers.get('content-security-policy'),/frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'),{})).status,200);

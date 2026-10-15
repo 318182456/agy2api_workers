@@ -6,6 +6,7 @@ import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflar
 import { webcrypto } from 'node:crypto';
 import { weightedChoice, selectCredential } from '../src/credentials.js';
 import { filters } from '../src/filters.js';
+import { pruneTelemetry } from '../src/maintenance.js';
 import { reportedUsage, recordUsage } from '../src/metrics.js';
 import { handleRequest } from '../src/index.js';
 import { validateSetting } from '../src/settings.js';
@@ -44,11 +45,12 @@ test('production Worker: final usage, account health, selection, scoped log expo
     for (const name of ['0001_credentials.sql','0002_oauth.sql','0003_reliability.sql','0004_settings.sql']) await db.exec((await readFile('migrations/'+name,'utf8')).replaceAll('\n',' '));
     for (const [id,email,token] of [[a,'alpha@example.test','token-a'],[b,'beta@example.test','token-b']]) await db.prepare('INSERT INTO credentials (id,mode,name,data,created_at) VALUES (?,?,?,?,?)').bind(id,'antigravity',id,JSON.stringify({ token,project_id:'p',user_email:email,expiry:'2099-01-01T00:00:00Z' }),Date.now()).run();
     await db.exec((await readFile('migrations/0005_operations.sql','utf8')).replaceAll('\n',' '));
+    await db.exec((await readFile('migrations/0006_d1_budget.sql','utf8')).replaceAll('\n',' '));
     assert.equal((await db.prepare('SELECT weight FROM credentials WHERE id=?').bind(a).first()).weight,1);
     const admin = (path,method='GET',body) => mf.dispatchFetch('https://test'+path,{ method,headers:{ authorization:'Bearer panel','content-type':'application/json' },body:body===undefined?undefined:JSON.stringify(body) });
     const settings = value => admin('/admin/settings','PATCH',value);
     const chat = (stream=false,model='claude-opus-4-6') => mf.dispatchFetch('https://test/antigravity/v1/chat/completions',{ method:'POST',headers:{ authorization:'Bearer api','content-type':'application/json' },body:JSON.stringify({ model,stream,messages:[{ role:'user',content:'prompt-never-in-metrics' }] }) });
-    const stats = async query => { const r = await admin('/admin/stats'+(query?'?'+query:'')); assert.equal(r.status,200,await r.clone().text()); return r.json(); };
+    const stats = async query => { const r = await admin('/admin/stats?fresh=1'+(query?'&'+query:'')); assert.equal(r.status,200,await r.clone().text()); return r.json(); };
     assert.equal((await admin('/admin/credentials/'+a,'PATCH',{ priority:10,weight:9 })).status,200);
     assert.equal((await admin('/admin/credentials/'+b,'PATCH',{ priority:1,weight:1 })).status,200);
     for (const patch of [{ priority:101 },{ priority:1.2 },{ weight:0 },{ weight:'3' }]) assert.equal((await admin('/admin/credentials/'+a,'PATCH',patch)).status,400);
@@ -61,9 +63,9 @@ test('production Worker: final usage, account health, selection, scoped log expo
     let health = await (await admin('/admin/credentials/'+a+'/health')).json(); assert.equal(health.health.last_status,429); assert.equal(health.health.last_success,null); assert.equal(health.cooldowns[0].model,'claude-opus-4-6-thinking');
     health = await (await admin('/admin/credentials/'+b+'/health')).json(); assert.ok(health.health.last_success); assert.equal(health.health.failure_streak,0);
     const requestId = response.headers.get('x-request-id');
-    value = await (await admin('/admin/calls?status=2xx&request_id='+requestId)).json(); assert.equal(value.records.length,2); assert.equal(value.records[0].stage,'completed');
+    value = await (await admin('/admin/calls?status=2xx&request_id='+requestId)).json(); assert.equal(value.records.length,1); assert.equal(value.records[0].stage,'completed');
     value = await (await admin('/admin/calls?status=429&email=ALPHA')).json(); assert.equal(value.records.length,1);
-    response = await admin('/admin/calls/export?credential_id='+b); assert.match(response.headers.get('content-disposition'),/attachment/); assert.equal((await response.json()).records.length,2);
+    response = await admin('/admin/calls/export?credential_id='+b); assert.match(response.headers.get('content-disposition'),/attachment/); assert.equal((await response.json()).records.length,1);
     for (const path of ['/admin/calls?status=600','/admin/stats?from=100&to=1','/admin/calls?before=-1']) assert.equal((await admin(path)).status,400);
     assert.equal((await mf.dispatchFetch('https://test/admin/stats')).status,401);
     assert.equal((await admin('/admin/calls?status=429','DELETE',{})).status,400);
@@ -122,8 +124,10 @@ test('production Worker: final usage, account health, selection, scoped log expo
     // Retention bounds storage and drops expired rows on the next write.
     await db.exec(`WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<10005) INSERT INTO request_usage (request_id,mode,model,status,outcome,duration_ms,created_at) SELECT 'seed-'||x,'antigravity','seed',200,'success',1,${now} FROM n`);
     await recordUsage(db,{ requestId:'prune',mode:'antigravity',model:'prune',status:200,outcome:'success',started:now });
+    await pruneTelemetry(db);
     assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM request_usage').first()).count,10000);
     await recordUsage(db,{ requestId:'expired',mode:'antigravity',model:'expired',status:200,outcome:'success',started:now-31*86400000 });
+    await pruneTelemetry(db);
     assert.equal((await db.prepare("SELECT COUNT(*) AS count FROM request_usage WHERE model='expired'").first()).count,0);
   } finally { await mf.dispose(); }
 });

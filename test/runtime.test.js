@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
+import { pruneTelemetry } from '../src/maintenance.js';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 
@@ -13,7 +14,7 @@ test('Workers runtime: incoming request signal, real D1, quota and OAuth failure
     d1Databases: { DB: 'runtime-test' }, log: new Log(LogLevel.NONE) });
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
+    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql', '0006_d1_budget.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
     const data = { project_id: 'test', token: 'fake-token', expiry: '2099-01-01T00:00:00Z' };
     await db.prepare('INSERT INTO credentials (id, mode, name, data, created_at) VALUES (?, ?, ?, ?, ?)')
@@ -70,7 +71,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
     } });
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
+    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql', '0006_d1_budget.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
     await db.prepare('INSERT INTO credentials (id, mode, name, data, created_at) VALUES (?, ?, ?, ?, ?)')
       .bind(id, 'antigravity', 'test', JSON.stringify({ project_id: 'p', refresh_token: 'r', client_id: 'c', client_secret: 's' }), 1).run();
@@ -168,7 +169,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
       calls.push({ token, model: body.model });
       let status = 200;
       if (scenario === 'fail-first' && token === 'Bearer token-a') status = 429;
-      if (scenario === 'transient' && token === 'Bearer token-a') status = 503;
+      if (scenario === 'transient' && calls.length === 1) status = 503;
       if (scenario === 'forbidden') status = 403;
       if (scenario === 'all-limited') status = 429;
       if (status !== 200) return new OutboundResponse(JSON.stringify({ error: { message: 'upstream failure' } }), { status, headers: { 'content-type': 'application/json', 'retry-after': '120' } });
@@ -178,7 +179,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
     } });
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
+    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql', '0006_d1_budget.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const a = '11111111-1111-4111-8111-111111111111';
     const b = '22222222-2222-4222-8222-222222222222';
     for (const [id, token] of [[a, 'token-a'], [b, 'token-b']]) await db.prepare('INSERT INTO credentials (id, mode, name, data, created_at) VALUES (?, ?, ?, ?, ?)').bind(id, 'antigravity', id, JSON.stringify({ project_id: 'p', token, expiry: '2099-01-01T00:00:00Z' }), 1).run();
@@ -190,7 +191,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
     const requestId = response.headers.get('x-request-id');
     response = await admin('/admin/calls');
     const records = (await response.json()).records;
-    assert.deepEqual(records.map(row => row.status), [200, 200, 429]);
+    assert.deepEqual(records.map(row => row.status), [200, 429]);
     assert.equal(records[0].stage, 'completed');
     assert.ok(records.every(row => row.request_id === requestId));
     assert.doesNotMatch(JSON.stringify(records), /token-a|token-b|secret-prompt/);
@@ -242,16 +243,17 @@ test('production Worker: credential failover, model cooldown, trace records and 
     response = await admin('/admin/calls?credential_id=' + a);
     assert.ok((await response.json()).records.every(row => row.credential_id === a));
     // Exercise cursor pagination and bounded retention with a real SQLite/D1 index.
-    await db.exec("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO call_logs (request_id,mode,model,status,stage,duration_ms,created_at) SELECT 'seed','antigravity','seed',200,'response_headers',0,0 FROM n");
+    await db.exec("WITH RECURSIVE n(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2050) INSERT INTO call_logs (request_id,mode,model,status,stage,duration_ms,created_at) SELECT 'seed','antigravity','seed',200,'response_headers',0,"+String(Date.now()-1000)+" FROM n");
     scenario = 'ok';
     assert.equal((await chat()).status, 200);
+    await pruneTelemetry(db);
     assert.equal((await db.prepare('SELECT COUNT(*) AS count FROM call_logs').first()).count, 2000);
     response = await admin('/admin/calls');
     const page = await response.json();
     assert.equal(page.records.length, 50);
     assert.ok(page.next);
     response = await admin('/admin/calls?before=' + page.next);
-    assert.ok((await response.json()).records.every(row => row.id < page.next));
+    assert.ok((await response.json()).records.every(row => !page.records.some(previous=>previous.id===row.id && previous.event_source===row.event_source)));
     const target = page.records[0].credential_id;
     const patch = body => mf.dispatchFetch('https://test/admin/credentials/' + target, { method: 'PATCH', headers: { authorization: 'Bearer p', 'content-type': 'application/json' }, body: JSON.stringify(body) });
     const originalData = await db.prepare('SELECT data FROM credentials WHERE id=?').bind(target).first();
@@ -292,7 +294,7 @@ test('production Worker: web settings take effect, backups restore state, duplic
     } });
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
+    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql', '0006_d1_budget.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const admin = (path, method = 'GET', body) => mf.dispatchFetch('https://test' + path, { method, headers: { authorization: 'Bearer panel', 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
     let response = await admin('/admin/settings');
     assert.equal((await response.json()).effective.MAX_CREDENTIAL_ATTEMPTS, 3);
@@ -371,7 +373,7 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
     } });
   try {
     const db = await mf.getD1Database('DB');
-    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
+    for (const name of ['0001_credentials.sql', '0002_oauth.sql', '0003_reliability.sql', '0004_settings.sql', '0005_operations.sql', '0006_d1_budget.sql']) await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     for (const [id, mode, token] of [['11111111-1111-4111-8111-111111111111', 'antigravity', 'anti-token'], ['22222222-2222-4222-8222-222222222222', 'geminicli', 'cli-token']]) await db.prepare('INSERT INTO credentials (id, mode, name, data, created_at) VALUES (?, ?, ?, ?, ?)').bind(id, mode, mode, JSON.stringify({ project_id: 'p', token, expiry: '2099-01-01T00:00:00Z' }), 1).run();
     const base = { model: 'actual-model', max_tokens: 32, messages: [{ role: 'user', content: 'hello' }], tools: [{ name: 'f', input_schema: { type: 'object' } }] };
     const send = (path, body) => mf.dispatchFetch('https://test' + path, { method: 'POST', headers: { 'x-api-key': 'api', 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, body: JSON.stringify(body) });

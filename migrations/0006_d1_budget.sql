@@ -1,0 +1,1 @@
+ALTER TABLE request_usage ADD COLUMN log_visible INTEGER NOT NULL DEFAULT 1;
