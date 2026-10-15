@@ -16,7 +16,8 @@
   "vars": {
     "GEMINICLI_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
     "ANTIGRAVITY_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
-    "MAX_CREDENTIAL_ATTEMPTS": "3"
+    "MAX_CREDENTIAL_ATTEMPTS": "3",
+    "USAGE_STORAGE_MODE": "aggregate"
   },
   "compatibility_flags": [
     "enable_request_signal"
@@ -29,5 +30,27 @@
     "crons": [
       "0 * * * *"
     ]
-  }
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CACHE",
+      "id": "620f83e9434c4a2a815cbc3d871e3ce7"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "TELEMETRY",
+        "class_name": "TelemetryBuffer"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1-telemetry",
+      "new_sqlite_classes": [
+        "TelemetryBuffer"
+      ]
+    }
+  ]
 }

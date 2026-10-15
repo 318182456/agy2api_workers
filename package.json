@@ -4,11 +4,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm run db:remote && wrangler deploy",
-    "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js test/db-budget.test.js",
+    "deploy": "npm run resources:prepare && npm run db:remote && wrangler deploy",
+    "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js test/db-budget.test.js test/telemetry.test.js",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
-    "check": "wrangler deploy --dry-run"
+    "check": "wrangler deploy --dry-run",
+    "resources:prepare": "node scripts/prepare-kv.mjs",
+    "format": "node scripts/format-panel.mjs && prettier --write \"src/**/*.js\" \"scripts/*.mjs\" \"test/*.js\" package.json wrangler.jsonc .prettierrc.json",
+    "format:check": "node scripts/format-panel.mjs --check && prettier --check \"src/**/*.js\" \"scripts/*.mjs\" \"test/*.js\" package.json wrangler.jsonc .prettierrc.json"
   },
   "cloudflare": {
     "bindings": {
@@ -32,13 +35,20 @@
       },
       "ANTIGRAVITY_CLIENT_SECRET": {
         "description": "可选：与 ANTIGRAVITY_CLIENT_ID 配套的 OAuth 密钥。"
+      },
+      "CACHE": {
+        "description": "低频配置与模型列表缓存。使用 Wrangler 自动创建并绑定 KV，不存凭证令牌或逐请求日志。"
+      },
+      "TELEMETRY": {
+        "description": "SQLite Durable Object 用量持久缓冲，5 分钟聚合后落盘 D1；由 Wrangler 自动创建，关联 gcli2api Worker。"
       }
     }
   },
   "devDependencies": {
-    "wrangler": "^4.0.0",
+    "esbuild": "0.27.3",
     "miniflare": "4.20260426.0",
-    "esbuild": "0.27.3"
+    "prettier": "^3.9.10",
+    "wrangler": "^4.0.0"
   },
   "engines": {
     "node": ">=20"

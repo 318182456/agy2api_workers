@@ -1,6 +1,6 @@
 # GCLI2API Workers
 
-将 GeminiCLI / Antigravity 凭证接入 OpenAI、Anthropic 和 Gemini API，运行在 **Cloudflare Workers + D1** 上，自带中文管理控制台。
+将 GeminiCLI / Antigravity 凭证接入 OpenAI、Anthropic 和 Gemini API，运行在 **Cloudflare Workers + D1 + KV + SQLite Durable Object** 上，自带中文管理控制台。
 
 无需 Python、Docker 或独立服务器。API 转换、账号调度、凭证存储和管理页面由同一个 Worker 提供。
 
@@ -36,7 +36,7 @@
 4. 确认部署命令为 **`npm run deploy`**，构建命令可留空。本项目无需单独构建前端。
 5. 点击部署。完成后打开 Worker 的访问地址，使用 `PANEL_PASSWORD` 登录，进入“导入凭证”添加账号。
 
-Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写数据库 ID；`npm run deploy` 会先应用数据库迁移，再发布 Worker。按钮流程和资源创建方式见 [Cloudflare 官方部署按钮说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
+Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写数据库 ID；`npm run deploy` 会先准备 KV、应用 D1 数据库迁移，再发布 Worker 和 SQLite Durable Object。按钮流程和资源创建方式见 [Cloudflare 官方部署按钮说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
 
 **部署完成不代表已接入 Google 账号。** 还需要导入可用凭证，或配置对应渠道的 OAuth 客户端后使用网页授权。
 
@@ -139,10 +139,10 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 - **请求统计**按一次客户端生成请求的最终结果记录，内部重试不重复计数；额度查询、模型发现和管理页测试调用不计入该统计。
 - **Token**仅采用上游实际报告值，缺失显示“未报告”，不会用本地估算补齐。账号消耗排行仅比较已报告的总 Token。
-- **统计保留**最近 30 天且最多 10000 次请求；默认展示最近 7 天，日期按北京时间分组。模型和账号分组最多各 200 项。
+- **统计保留**：聚合模式保留最近 30 天完整汇总，明细模式保留最近 30 天且最多约 10000 次请求；默认展示最近 7 天，日期按北京时间分组。模型和账号分组最多各 200 项。
 - **额度**仅支持 Antigravity，手动逐账号查询，可停止后续查询；不会发起聊天，也不会后台定时轮询。
 - **平均与最低额度**仅计算成功返回数值的账号。失败、未查询、未返回该模型和未知比例不计入均值，未知不等于零；比例不能相加为余额或换算成调用次数。
-- **调用日志**最多保留最近 2000 条事件，事件数与最终请求数不同。清理日志不会删除用量统计和健康摘要。
+- **调用日志**保留 7 天，最多展示最近约 2000 次异常请求及旧版独立事件；聚合模式只保存失败、取消和重试明细，正常成功请求只计入汇总。清理日志不会删除用量统计和健康摘要。
 
 ## 配置说明
 
@@ -155,8 +155,9 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 | `MAX_CREDENTIAL_ATTEMPTS` | `3` | 一次生成请求最多尝试的凭证数，范围 1–5 |
 | `CREDENTIAL_SELECTION` | `round_robin` | `round_robin` 轮询、`priority` 优先级或 `weighted` 权重随机 |
 | `ANTIGRAVITY_STREAM2NOSTREAM` | `false` | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应 |
+| `USAGE_STORAGE_MODE` | `aggregate` | `aggregate` 持久聚合；`detailed` 逐请求写 D1；缺少 TELEMETRY 时回退明细模式 |
 
-上述五项可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
+上述配置可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
 
 Antigravity 模型列表优先实时查询 Google，失败时才使用备用列表；GeminiCLI 使用配置列表。模型被列出不代表账号一定有权限或剩余额度。
 
@@ -182,7 +183,7 @@ npm run deploy
 
 命令会交互式要求输入密码；首次写入 Secret 如提示创建 Worker，按提示确认。需要网页授权时，再用 `npx wrangler secret put <变量名>` 添加对应 OAuth Secrets。
 
-`npm run deploy` 自动执行 `npm run db:remote` 后发布。已有数据库只应用尚未执行的迁移，不需要清库或重新导入账号。
+`npm run deploy` 先准备名为 `gcli2api` 的 KV（已有 `CACHE.id` 时直接复用，不会改名），再自动执行 `npm run db:remote` 后发布。已有数据库只应用尚未执行的迁移，不需要清库或重新导入账号。
 
 ### 更新已有部署
 
@@ -194,32 +195,31 @@ npm run deploy
 
 更新前保留自己账号的 Worker 名称与 D1 配置。通过部署按钮生成的仓库是你自己的副本，不会自动接收本仓库的更新；同步代码时不要覆盖数据库 ID 或删除已有 Secrets。
 
-若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.14.0**。
+若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.15.0**。
 
-## v0.14.0：减少 D1 读写与日志保留期限
+## 存储与写入控制
 
-`npm run deploy` 会先自动应用 `0006_d1_budget.sql`，为用量表增加日志可见性标记，再部署 Worker 和每小时的清理任务。迁移不清空凭证或统计，不需要重新导入账号。
+默认使用聚合模式，升级会应用 `0007_packed_diagnostics.sql` 和 `0008_usage_aggregates.sql`，不清空凭证或历史统计。
 
-- 成功请求只保存一份最终用量记录，日志列表直接复用它，不再额外插入 200 响应头与 completed 事件。失败、重试、断流仍记录诊断事件。日志清理仅隐藏对应的用量日志展示，统计数据保留。
-- 健康摘要正常成功时最多每账号每分钟更新一次；失败后首次成功仍立即恢复。管理页通过最新成功用量记录计算准确的最后成功时间。
-- 同一 Worker 实例内维护最近选择时间，轮询的 D1 时间快照最多每账号每分钟更新一次。每次选择仍从 D1 检查启停状态和当前模型冷却，不缓存令牌或授权判断；多实例/冷启动下仍是尽力轮询，不提供全局严格顺序。
-- 网页配置读取缓存 30 秒，同实例保存后立即刷新；其他实例最多 30 秒生效。重复保存相同配置不会再次写入相同行。
-- 统计从四次聚合扫描改为一次聚合，再生成概览、日期、模型和账号汇总；自动加载可复用 30 秒缓存，点击“刷新统计”强制更新。缓存按数据库隔离并限制大小。
-- 清理从每次请求触发改为每新增 128 条记录批量执行，并增加每小时 Cron。保留区约 10000 条用量、约 2000 条诊断事件，批次之间最多短暂多出 127 条。删除过期数据本身仍计入 D1 写入，不通过采样或丢失实际用量来省额度。
+| 资源 | 控制台名称 / 绑定 | 保存内容与写入时机 |
+| --- | --- | --- |
+| D1 | `gcli2api` / `DB` | 凭证、配置、错误明细、每 5 分钟的用量汇总 |
+| KV | `gcli2api` / `CACHE` | 非敏感配置和模型 ID；设置保存、手动模型刷新、每小时配置预热才写入 |
+| SQLite Durable Object | Cloudflare 按 Worker 和类名生成命名空间 / `TELEMETRY` | 每次请求先持久累加，Alarm 约每 5 分钟批量写 D1 |
 
-**日志保留 7 天。** 查询和导出立即排除超过 7 天的日志，每小时定时任务物理删除过期的独立诊断/历史事件，空闲时也会清理。成功日志由用量记录动态生成，超过 7 天不再作为日志展示；用量记录仍用于最近 30 天统计，按原规则清理。两种保留期限分别生效。使用旧版本日志分页游标的客户端需要重新加载第一页。
+`npm run deploy` 的准备脚本会查找名为 `gcli2api` 的 KV，没有时创建，并将 ID 写回 `wrangler.jsonc` 的 `CACHE` 绑定。已配置 ID 的资源不会重建或改名。D1 和 KV 属于不同资源类型，可以同名；Durable Object 的命名空间由 Cloudflare 管理，内部对象名使用 `gcli2api`。
 
-Cron 表达式为 `0 * * * *`。如果用自己的部署配置，需要保留 triggers 配置以保证空闲期间也会清理。通过 Workers Builds 部署时，部署命令继续使用 `npm run deploy`。
+- **正常成功请求**不插入 `request_usage` 或 `call_logs`，按 5 分钟、账号、渠道、模型、状态与最终结果汇总；保存上游报告的 Token、请求数和总耗时。未报告的 Token 保持为空。
+- **失败、取消与重试**仍保留 D1 明细，单次请求的重试诊断合并保存为 JSON，不再每次重试单独写日志。日志清理不影响汇总。
+- **统计页面**合并 D1 和尚未落盘的持久缓冲，默认显示最近 7 天；时间条件按 5 分钟桶起点筛选。点击“刷新统计”绕过 30 秒统计缓存；“立即落盘汇总”可提前处理一批缓冲。
+- **故障处理**：缓冲在实例重启后仍保留。重复上报按请求 ID 去重；D1 使用版本号覆盖累计值，重复落盘不重复计数。D1 不可用时保留缓冲并重试；DO 不可用时回退 D1 明细。两种存储均不可写时只能记录 Worker 诊断，无法保证用量持久化。
+- **保留范围**：D1 汇总 30 天；明细最多约 10000 条；日志查询只显示 7 天内事件；每小时 Cron 物理删除已有汇总的过期诊断明细，并移除历史用量行内过期的重试 JSON，保留统计数值。DO 已落盘缓冲保留约 24 小时供短期去重。无明细数据的成功请求无法按请求 ID 查询或导出逐次记录。
+- **健康与轮询**：成功健康摘要和轮询时间快照按 5 分钟节流，同类失败摘要按分钟合并；界面最近成功时间同时参考用量记录与持久缓冲。凭证启停、冷却和令牌仍从 D1 校验，不缓存授权判断。
+- **KV**：普通 API 请求只读共享缓存，不逐请求写 KV。新实例可复用配置和模型 ID；缓存失败回退原查询路径。KV 最终一致，跨实例设置更新可能短暂延迟；同实例保存立即刷新本地设置。
 
-本地测试使用独立 Miniflare D1、模拟 Google 响应和已填满的保留区，测量 128 次连续成功请求的 D1 `rows_read`/`rows_written`，并在 `test/db-budget.test.js` 设置成本回归预算。该场景的测量结果如下（均为 128 次请求合计）：
+本地真实 Workers / D1 / SQLite DO 测试中，同一时间桶、账号和模型的 **128 次成功请求生成 1 条 D1 汇总，0 条请求明细和独立日志**；落盘 D1 写入行数设有少于 12 行的回归预算（包含索引及健康摘要）。这不包含账号选择等其他 SQL，也不代表线上所有场景有相同比例。
 
-| D1 指标 | 优化前 | 优化后 |
-| --- | ---: | ---: |
-| SQL 执行数 | 1280 | 388 |
-| 读取行数 | 3072 | 870 |
-| 写入行数 | 2432 | 752 |
-
-线上节省比例取决于账号数、失败重试与 Worker 实例复用；索引维护与删除产生的写入仍按 [D1 计费规则](https://developers.cloudflare.com/d1/platform/pricing/) 计量。
+SQLite Durable Object 可用于 Workers Free，但仍有独立的每日请求、读写与运行时额度；持久累加会消耗 DO 写入额度，并非取消存储成本。当前免费 DO 请求和写入行数均为每天 100000，KV 写入为每天 1000。详见 [DO 定价与免费额度](https://developers.cloudflare.com/durable-objects/platform/pricing/)、[KV 额度](https://developers.cloudflare.com/kv/platform/pricing/) 和 [D1 计量规则](https://developers.cloudflare.com/d1/platform/pricing/)。
 
 ## 本地开发
 
@@ -243,7 +243,7 @@ npm test
 npm run check
 ```
 
-测试包含实际 Workers 运行时、本地 D1 和管理页交互，Google 响应使用模拟数据；`npm run check` 只打包检查，不发布或迁移数据库。
+测试包含实际 Workers 运行时、本地 D1、SQLite Durable Object 持久化、并发落盘、故障重试和管理页交互，Google 响应使用模拟数据；`npm run check` 只打包检查，不发布或迁移数据库。
 
 ## 常见问题
 
@@ -282,3 +282,16 @@ npm run check
 本项目参考 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) 的 GeminiCLI / Antigravity 协议和凭证字段，使用原生 JavaScript 在 Workers 上重新实现。
 
 沿用 **Cooperative Non-Commercial License（CNC-1.0）**，仅允许非商业使用；具体条件见 [LICENSE](LICENSE)。Copyright (c) 2024 gcli2api contributors。
+
+## 代码结构与维护
+
+- `src/index.js`：Worker 入口、页面分发、公共错误和 CORS；版本统一在 `src/version.js`。
+- `src/routes/`：登录会话、管理接口、生成协议路由，避免所有接口堆在入口。
+- `src/telemetry/`：请求记录、持久缓冲、统计查询和账号健康；`src/metrics.js` 只导出统一接口。
+- `src/panel.js`：组装管理页；`panel-pages/` 放各页 HTML，`panel-scripts/` 放对应交互脚本，样式和图表独立管理。页面仍以同源单文件提供，无前端构建依赖。
+- `src/shared-cache.js` / `src/db-cache.js`：共享 KV 与实例内元数据缓存。
+- `scripts/prepare-kv.mjs`：部署时准备命名资源；`scripts/format-panel.mjs`：格式化嵌入式管理页脚本。
+- `migrations/`：已发布 SQL 保持不可变，新增结构用新的迁移文件。
+- `test/`：协议、真实运行时、页面、持久聚合及 D1 成本回归；fixture 不包含真实账号。
+
+修改代码后运行 `npm run format`、`npm test`、`npm run format:check` 和 `npm run check`。最后一项只打包，不创建资源、不迁移远程数据库、不发布。

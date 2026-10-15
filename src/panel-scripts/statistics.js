@@ -1,0 +1,134 @@
+import { analyticsScript } from '../panel-analytics.js';
+export const statisticsScript = String.raw`function panelFilters(prefix) {
+  const params = new URLSearchParams();
+  for (const [suffix, key] of [
+    ['Email', 'email'],
+    ['Model', 'model'],
+    ['Mode', 'mode'],
+    ...(prefix === 'calls'
+      ? [
+          ['Status', 'status'],
+          ['Stage', 'stage'],
+          ['Request', 'request_id'],
+        ]
+      : []),
+  ]) {
+    const value = el(prefix + suffix).value.trim();
+    if (value) params.set(key, value);
+  }
+  for (const [suffix, key] of [
+    ['From', 'from'],
+    ['To', 'to'],
+  ]) {
+    const value = el(prefix + suffix).value;
+    if (value) {
+      const time = new Date(value).getTime();
+      if (!Number.isFinite(time)) throw new Error('时间格式无效');
+      params.set(key, String(time));
+    }
+  }
+  if (prefix === 'calls' && el('callsCredential').value)
+    params.set('credential_id', el('callsCredential').value);
+  return params;
+}
+function tableRow(body, values) {
+  const tr = document.createElement('tr');
+  for (const value of values) {
+    const td = document.createElement('td');
+    td.textContent = String(value);
+    tr.append(td);
+  }
+  el(body).append(tr);
+}
+const tokenText = (value) => (value == null ? '未报告' : Number(value).toLocaleString('zh-CN'));
+const successRate = (row) =>
+  row.requests ? ((100 * row.successes) / row.requests).toFixed(1) + '%' : '—';
+${analyticsScript}
+function metricsRow(body, label, row) {
+  tableRow(body, [
+    label,
+    [row.requests, row.successes || 0, row.failures || 0, row.cancellations || 0].join(' / '),
+    successRate(row),
+    [row.input_tokens, row.output_tokens, row.thought_tokens, row.total_tokens]
+      .map(tokenText)
+      .join(' / '),
+    (row.avg_duration_ms ?? 0) + ' ms',
+  ]);
+}
+async function loadStats(fresh = false) {
+  const params = panelFilters('stats');
+  if (!params.has('from'))
+    params.set('from', String(Math.floor(Date.now() / 300000) * 300000 - 7 * 86400000));
+  if (fresh) params.set('fresh', '1');
+  const value = await api('/admin/stats?' + params);
+  const s = value.summary;
+  el('statsSummary').replaceChildren();
+  for (const [label, text] of [
+    ['请求数', compact(s.requests)],
+    ['成功率', successRate(s)],
+    ['失败 / 取消', (s.failures || 0) + ' / ' + (s.cancellations || 0)],
+    ['上游报告总 Token', compact(s.total_tokens)],
+    ['有用量报告的请求', (s.token_reports || 0) + ' / ' + s.requests],
+    ['平均耗时', duration(s.avg_duration_ms)],
+  ]) {
+    const box = document.createElement('div');
+    box.className = 'metric';
+    const name = document.createElement('small');
+    name.textContent = label;
+    const number = document.createElement('strong');
+    number.textContent = String(text);
+    number.title = label === '上游报告总 Token' ? tokenText(s.total_tokens) : String(text);
+    box.append(name, number);
+    el('statsSummary').append(box);
+  }
+  el('statsBuffer').textContent =
+    value.storage_mode === 'aggregate' || (!value.storage_mode && value.aggregation_seconds)
+      ? '聚合模式 · 5 分钟粒度 · 待落盘累计请求：' +
+        value.pending_requests +
+        '（已包含在统计中，含同时间桶已落盘部分）'
+      : '明细模式 · 逐请求保存';
+  renderStatsCharts(value);
+  status(
+    '统计已刷新；自动加载可复用 30 秒缓存，手动刷新直接查询。' +
+      (value.groups_truncated ? '模型或账号分组超过 200 项，请缩小筛选范围。' : ''),
+  );
+}
+el('statsRefresh').onclick = () => run(() => loadStats(true));
+el('statsFlush').onclick = () =>
+  run(async () => {
+    const value = await api('/admin/telemetry/flush', 'POST');
+    await loadStats(true);
+    status(
+      '已落盘 ' +
+        value.buckets_flushed +
+        ' 个汇总时间桶。' +
+        (value.pending ? '仍有待落盘汇总，将继续自动处理。' : ''),
+    );
+  });
+el('callsExport').onclick = () =>
+  run(async () => {
+    const value = await api('/admin/calls/export?' + panelFilters('calls'));
+    downloadJson(value, 'call-logs-' + Date.now() + '.json');
+    status('已导出 ' + value.records.length + ' 条日志。');
+  });
+el('callsClear').onclick = () => {
+  if (
+    confirm(
+      '确认删除当前筛选匹配的调用日志？没有筛选条件时将删除全部事件日志。用量统计与健康摘要会保留。',
+    )
+  )
+    return run(async () => {
+      const value = await api('/admin/calls?' + panelFilters('calls'), 'DELETE', {
+        confirm: 'delete-matching-logs',
+      });
+      await loadCalls();
+      status('已删除 ' + value.deleted + ' 条调用日志，用量统计和健康摘要已保留。');
+    });
+};
+for (const suffix of ['Email', 'Model', 'Mode', 'Status', 'Stage', 'Request', 'From', 'To'])
+  el('calls' + suffix).onchange = () => {
+    nextCall = null;
+    el('callsNext').hidden = true;
+    el('callsBody').replaceChildren();
+  };
+`;
