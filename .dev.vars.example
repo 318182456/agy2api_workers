@@ -1,0 +1,8 @@
+API_PASSWORD=replace-with-a-long-random-api-password
+PANEL_PASSWORD=replace-with-a-different-long-random-panel-password
+
+# OAuth clients for each channel (required for web authorization)
+GEMINICLI_CLIENT_ID=
+GEMINICLI_CLIENT_SECRET=
+ANTIGRAVITY_CLIENT_ID=
+ANTIGRAVITY_CLIENT_SECRET=

@@ -1,0 +1,28 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "gcli2api",
+  "main": "src/index.js",
+  "compatibility_date": "2025-09-01",
+  "workers_dev": true,
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "gcli2api",
+      "database_id": "026ab89e-8c6d-4bf0-944c-09074e16d2df",
+      "remote": true,
+      "migrations_dir": "migrations"
+    }
+  ],
+  "vars": {
+    "GEMINICLI_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
+    "ANTIGRAVITY_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
+    "MAX_CREDENTIAL_ATTEMPTS": "3"
+  },
+  "compatibility_flags": [
+    "enable_request_signal"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  }
+}

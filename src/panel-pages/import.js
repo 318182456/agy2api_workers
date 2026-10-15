@@ -1,0 +1,6 @@
+export const importPage = String.raw`<div class="page-grid"><section class="card"><h2>导入凭证</h2><p>选择原项目导出的单个 JSON 凭证，或直接粘贴。需要 project_id 和 refresh_token（推荐）；同渠道、同名称会覆盖已有内容。会根据已知客户端 ID 自动识别渠道，暂不支持 ZIP。</p>
+<form id="importForm"><label for="mode">渠道</label><select id="mode"><option value="geminicli">GeminiCLI</option><option value="antigravity">Antigravity</option></select>
+<label for="name">凭证名称</label><input id="name" placeholder="例如 account-1.json" maxlength="200">
+<label for="file">选择 JSON 文件</label><input id="file" type="file" accept=".json,application/json">
+<label for="credential">JSON 内容</label><textarea id="credential" rows="9" placeholder='{"project_id":"...","refresh_token":"..."}' required></textarea><button>导入</button></form></section><section class="card"><h2>批量导入 / 恢复备份</h2><p>选择多个 JSON 凭证文件或本项目导出的 JSON 备份。备份中的渠道、名称、邮箱、启停状态与调度设置会恢复，单个凭证文件使用下方选择的渠道作为默认值，并识别已知 client_id。</p><form id="batchImportForm"><label for="batchFiles">JSON 文件（可多选）</label><input id="batchFiles" type="file" multiple accept=".json,application/json" required><label for="batchMode">未知客户端的默认渠道</label><select id="batchMode"><option value="antigravity">Antigravity</option><option value="geminicli">GeminiCLI</option></select><button>导入选中文件</button></form>
+</section></div>`;

@@ -1,0 +1,21 @@
+{
+  "name": "gcli2api-workers",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js",
+    "db:local": "wrangler d1 migrations apply DB --local",
+    "db:remote": "wrangler d1 migrations apply DB --remote",
+    "check": "wrangler deploy --dry-run"
+  },
+  "devDependencies": {
+    "wrangler": "^4.0.0",
+    "miniflare": "4.20260426.0",
+    "esbuild": "0.27.3"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
