@@ -4,11 +4,36 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "wrangler deploy",
+    "deploy": "npm run db:remote && wrangler deploy",
     "test": "node --test test/worker.test.js test/runtime.test.js test/panel.test.js test/migration.test.js test/operations.test.js",
     "db:local": "wrangler d1 migrations apply DB --local",
     "db:remote": "wrangler d1 migrations apply DB --remote",
     "check": "wrangler deploy --dry-run"
+  },
+  "cloudflare": {
+    "bindings": {
+      "DB": {
+        "description": "保存凭证、设置、统计和日志的 D1 数据库。创建你自己的数据库，保留绑定名 DB。"
+      },
+      "API_PASSWORD": {
+        "description": "必填：设置长随机字符串，作为客户端的 API Key。请勿使用示例值。"
+      },
+      "PANEL_PASSWORD": {
+        "description": "必填：管理台登录密码。设置与 API_PASSWORD 不同的长随机字符串。"
+      },
+      "GEMINICLI_CLIENT_ID": {
+        "description": "可选：GeminiCLI OAuth 客户端 ID；使用网页授权或不完整凭证时配置。"
+      },
+      "GEMINICLI_CLIENT_SECRET": {
+        "description": "可选：与 GEMINICLI_CLIENT_ID 配套的 OAuth 密钥。"
+      },
+      "ANTIGRAVITY_CLIENT_ID": {
+        "description": "可选：Antigravity OAuth 客户端 ID；使用网页授权或不完整凭证时配置。"
+      },
+      "ANTIGRAVITY_CLIENT_SECRET": {
+        "description": "可选：与 ANTIGRAVITY_CLIENT_ID 配套的 OAuth 密钥。"
+      }
+    }
   },
   "devDependencies": {
     "wrangler": "^4.0.0",

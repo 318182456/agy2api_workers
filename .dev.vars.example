@@ -1,8 +1,10 @@
-API_PASSWORD=replace-with-a-long-random-api-password
-PANEL_PASSWORD=replace-with-a-different-long-random-panel-password
+# Required: set two different long random passwords. No default passwords.
+API_PASSWORD=
+PANEL_PASSWORD=
 
-# OAuth clients for each channel (required for web authorization)
-GEMINICLI_CLIENT_ID=
-GEMINICLI_CLIENT_SECRET=
-ANTIGRAVITY_CLIENT_ID=
-ANTIGRAVITY_CLIENT_SECRET=
+# Optional: uncomment the pair for each channel you use.
+# Required for web authorization; complete imported credentials can supply their own clients.
+# GEMINICLI_CLIENT_ID=
+# GEMINICLI_CLIENT_SECRET=
+# ANTIGRAVITY_CLIENT_ID=
+# ANTIGRAVITY_CLIENT_SECRET=
