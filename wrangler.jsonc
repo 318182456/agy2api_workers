@@ -17,19 +17,19 @@
     "GEMINICLI_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
     "ANTIGRAVITY_MODELS": "gemini-2.5-flash,gemini-2.5-pro",
     "MAX_CREDENTIAL_ATTEMPTS": "3",
-    "USAGE_STORAGE_MODE": "aggregate"
+    "USAGE_STORAGE_MODE": "aggregate",
+    "GEMINICLI_CLIENT_ID": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
+    "GEMINICLI_CLIENT_SECRET": "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",
+    "ANTIGRAVITY_CLIENT_ID": "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
+    "ANTIGRAVITY_CLIENT_SECRET": "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"
   },
-  "compatibility_flags": [
-    "enable_request_signal"
-  ],
+  "compatibility_flags": ["enable_request_signal"],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1
   },
   "triggers": {
-    "crons": [
-      "0 * * * *"
-    ]
+    "crons": ["0 * * * *"]
   },
   "kv_namespaces": [
     {
@@ -48,9 +48,7 @@
   "migrations": [
     {
       "tag": "v1-telemetry",
-      "new_sqlite_classes": [
-        "TelemetryBuffer"
-      ]
+      "new_sqlite_classes": ["TelemetryBuffer"]
     }
   ]
 }

@@ -2,8 +2,8 @@
 API_PASSWORD=
 PANEL_PASSWORD=
 
-# Optional: uncomment the pair for each channel you use.
-# Required for web authorization; complete imported credentials can supply their own clients.
+# Optional: override the default OAuth clients already configured in wrangler.jsonc vars.
+# Uncomment only to use a custom matching client ID / secret pair.
 # GEMINICLI_CLIENT_ID=
 # GEMINICLI_CLIENT_SECRET=
 # ANTIGRAVITY_CLIENT_ID=

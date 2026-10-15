@@ -38,24 +38,27 @@
 
 Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写数据库 ID；`npm run deploy` 会先准备 KV、应用 D1 数据库迁移，再发布 Worker 和 SQLite Durable Object。按钮流程和资源创建方式见 [Cloudflare 官方部署按钮说明](https://developers.cloudflare.com/workers/platform/deploy-buttons/)。
 
-**部署完成不代表已接入 Google 账号。** 还需要导入可用凭证，或配置对应渠道的 OAuth 客户端后使用网页授权。
+**部署完成不代表已接入 Google 账号。** 还需要导入可用凭证，或使用管理页 Google 授权获取账号凭证。两个渠道的 OAuth 客户端已沿用原项目预置在 vars 中。
 
-### 部署后补充 Secrets
+### 密码与 OAuth 客户端
 
-进入 **Cloudflare → Workers 和 Pages → 你的 Worker → 设置 → 变量和机密**，可以添加或修改 Secrets。密码和 OAuth 客户端信息均建议使用 **Secret（机密）** 类型。
+部署时只需设置两个不同的长随机密码，使用 **Secret（机密）** 类型：
 
-| Secret | 用途 | 何时需要 |
-| --- | --- | --- |
-| `API_PASSWORD` | 客户端 API Key | 必填 |
-| `PANEL_PASSWORD` | 管理台登录密码 | 必填，与 API 密码不同 |
-| `GEMINICLI_CLIENT_ID` | GeminiCLI OAuth 客户端 ID | 使用该渠道网页授权，或凭证缺少客户端信息时 |
-| `GEMINICLI_CLIENT_SECRET` | GeminiCLI OAuth 客户端密钥 | 与上项配套 |
-| `ANTIGRAVITY_CLIENT_ID` | Antigravity OAuth 客户端 ID | 使用该渠道网页授权，或凭证缺少客户端信息时 |
-| `ANTIGRAVITY_CLIENT_SECRET` | Antigravity OAuth 客户端密钥 | 与上项配套 |
+| Secret | 用途 |
+| --- | --- |
+| `API_PASSWORD` | 客户端 API Key |
+| `PANEL_PASSWORD` | 管理台登录密码，与 API 密码不同 |
 
-OAuth 客户端必须与渠道和刷新令牌匹配。源码不提供客户端 ID、客户端密钥或默认密码。只使用一个渠道时，只需配置对应的一对 OAuth 值。
+四项 OAuth 客户端配置已直接写入 `wrangler.jsonc` 的 `vars`，与原 Python 项目 `src/utils.py` 使用的值一致，无需部署时重复填写：
 
-导入的 JSON 如果已经包含 `client_id` 和 `client_secret`，会优先使用凭证自带的值；此时可不配置该渠道的 OAuth Secrets。部署页面默认提示填写两个访问密码，OAuth 配置可在部署后按需添加。
+| Worker 变量 | 原项目常量 |
+| --- | --- |
+| `GEMINICLI_CLIENT_ID` | `CLIENT_ID` |
+| `GEMINICLI_CLIENT_SECRET` | `CLIENT_SECRET` |
+| `ANTIGRAVITY_CLIENT_ID` | `ANTIGRAVITY_CLIENT_ID` |
+| `ANTIGRAVITY_CLIENT_SECRET` | `ANTIGRAVITY_CLIENT_SECRET` |
+
+使用自己的 OAuth 客户端时，按渠道成对替换 ID 和 Secret，必须与刷新令牌匹配。导入 JSON 自带的 `client_id` / `client_secret` 优先于部署变量。账号访问令牌、刷新令牌仍通过凭证导入或网页授权获得，不属于这些固定的客户端配置。
 
 ## 添加 Google 账号
 
@@ -72,7 +75,7 @@ OAuth 客户端必须与渠道和刷新令牌匹配。源码不提供客户端 I
 }
 ```
 
-- 如果已经配置该渠道的 OAuth Secrets，可省略 `client_id` 和 `client_secret`。
+- 使用 vars 中预置的渠道客户端时，可省略 `client_id` 和 `client_secret`；已有刷新令牌若来自其他客户端，须保留与其匹配的客户端信息。
 - 也接受 `token` / `access_token` 和 `expiry`。仅有访问令牌、没有 `refresh_token` 时，到期后需要重新导入。
 - 支持多文件导入和本项目导出的 JSON 备份；不支持直接上传 SQLite 数据库或 ZIP。
 - 同渠道、同名称的导入会更新凭证内容；未指定启停与调度参数时保留已有设置。
@@ -80,7 +83,7 @@ OAuth 客户端必须与渠道和刷新令牌匹配。源码不提供客户端 I
 
 ### 方式二：网页 Google 授权
 
-1. 先配置所用渠道的 OAuth 客户端 Secrets。
+1. 默认使用 vars 中预置的渠道客户端；使用自定义客户端时先修改对应的一对配置。
 2. 进入 **Google 授权**，选择渠道，生成并打开授权链接。
 3. 完成 Google 授权后，浏览器会跳转到 `http://localhost:11451/?code=…&state=…`。页面无法打开时，复制地址栏中的完整 URL 即可。
 4. 回到管理台粘贴该 URL，点击“交换令牌并保存凭证”。
@@ -146,7 +149,7 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 ## 配置说明
 
-普通变量在 `wrangler.jsonc` 的 `vars` 或 Cloudflare 控制台中配置；密码与 OAuth 信息使用上面的 Secrets。
+普通变量在 `wrangler.jsonc` 的 `vars` 或 Cloudflare 控制台中配置；API 与管理密码使用上面的 Secrets；OAuth 客户端已在 vars 中提供默认值。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
@@ -181,7 +184,7 @@ npx wrangler secret put PANEL_PASSWORD
 npm run deploy
 ```
 
-命令会交互式要求输入密码；首次写入 Secret 如提示创建 Worker，按提示确认。需要网页授权时，再用 `npx wrangler secret put <变量名>` 添加对应 OAuth Secrets。
+命令会交互式要求输入密码；首次写入 Secret 如提示创建 Worker，按提示确认。网页授权默认使用 vars 中预置的客户端，无需再添加 OAuth Secrets。
 
 `npm run deploy` 先准备名为 `gcli2api` 的 KV（已有 `CACHE.id` 时直接复用，不会改名），再自动执行 `npm run db:remote` 后发布。已有数据库只应用尚未执行的迁移，不需要清库或重新导入账号。
 
@@ -227,7 +230,7 @@ SQLite Durable Object 可用于 Workers Free，但仍有独立的每日请求、
 npm ci
 ```
 
-复制 `.dev.vars.example` 为 `.dev.vars`，填写两个不同的密码；需要 OAuth 时取消对应变量的注释并填写。`.dev.vars` 已被 Git 忽略，不会自动同步到 Cloudflare。
+复制 `.dev.vars.example` 为 `.dev.vars`，填写两个不同的密码；OAuth 默认读取 vars，使用自定义客户端时才取消对应变量的注释并填写。`.dev.vars` 已被 Git 忽略，不会自动同步到 Cloudflare。
 
 仓库配置的 D1 绑定含 `remote: true`。要使用独立的本地数据库进行开发，先在本地配置中移除这一项或改为 `false`，避免连接线上数据，再运行：
 

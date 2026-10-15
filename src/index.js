@@ -1,3 +1,4 @@
+import { iconResponse } from './project-icon.js';
 import { VERSION } from './version.js';
 import { json, publicFailure } from './common.js';
 import { panel, isPanelPath } from './panel.js';
@@ -12,6 +13,14 @@ export { TelemetryBuffer } from './telemetry/buffer.js';
 
 async function route(request, env, fetcher, context) {
   const url = new URL(request.url);
+  if (['GET', 'HEAD'].includes(request.method)) {
+    if (url.pathname === '/favicon.svg') return iconResponse(request);
+    if (url.pathname === '/favicon.ico')
+      return new Response(null, {
+        status: 302,
+        headers: { location: '/favicon.svg?v=1', 'cache-control': 'public, max-age=86400' },
+      });
+  }
   if (isPanelPath(url.pathname) && request.method === 'GET') {
     return new Response(panel, {
       headers: {
@@ -20,7 +29,7 @@ async function route(request, env, fetcher, context) {
         'x-content-type-options': 'nosniff',
         'referrer-policy': 'no-referrer',
         'content-security-policy':
-          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+          "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
       },
     });
   }
