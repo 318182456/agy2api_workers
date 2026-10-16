@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { cleanToolSchema } from '../src/schema.js';
 import { normalizeRequest } from '../src/normalize.js';
 import { openaiToGemini } from '../src/convert.js';
+import { anthropicToGemini } from '../src/anthropic.js';
 import { collectGoogleStream } from '../src/stream-collect.js';
 import { validateSetting } from '../src/settings.js';
 const message = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] };
@@ -32,6 +33,78 @@ test('schema expands local references, merges allOf, simplifies nullable unions 
   assert.deepEqual(result.required, ['type']);
   assert.equal(JSON.stringify(input), before);
 });
+test('schema preserves empty enum choices in descriptions instead of sending invalid Google enum members', () => {
+  const input = {
+    type: 'object',
+    properties: {
+      sort: { type: 'string', enum: ['', 'asc', 'desc'], default: '', description: 'Sort order' },
+      empty: { type: 'string', enum: [''] },
+      emptyConst: { const: '' },
+      union: { anyOf: [{ const: '' }, { const: 'name' }] },
+      emptyEnum: { type: 'string', enum: [] },
+      filteredEnum: { type: 'string', enum: [null, {}] },
+      ordinary: { enum: ['asc', 'desc', 'asc'] },
+      values: { enum: [0, false, ' '] },
+      nested: { type: 'array', items: { type: 'string', enum: ['', 'name'] } },
+    },
+    required: ['sort'],
+  };
+  const original = structuredClone(input);
+  const result = cleanToolSchema(input);
+  for (const name of ['sort', 'empty', 'emptyConst', 'union', 'emptyEnum', 'filteredEnum']) {
+    assert.equal(result.properties[name].type, 'string');
+    assert.equal(Object.hasOwn(result.properties[name], 'enum'), false, name);
+    assert.match(result.properties[name].description, /Original enum/);
+  }
+  assert.match(result.properties.sort.description, /Sort order/);
+  assert.match(result.properties.sort.description, /asc.*desc/);
+  assert.match(result.properties.sort.description, /Empty string is an allowed value/);
+  assert.match(result.properties.emptyConst.description, /Original constant/);
+  assert.equal(result.properties.nested.items.enum, undefined);
+  assert.deepEqual(result.properties.ordinary.enum, ['asc', 'desc']);
+  assert.deepEqual(result.properties.values.enum, ['0', 'false', ' ']);
+  assert.deepEqual(result.required, ['sort']);
+  assert.deepEqual(input, original);
+});
+
+test('sixth tool sort enum is compatible across OpenAI, Anthropic and native inputs on both channels', () => {
+  const schema = {
+    $defs: { sort: { type: 'string', enum: ['', 'asc', 'desc'] } },
+    type: 'object',
+    properties: { sort: { $ref: '#/$defs/sort' } },
+    required: ['sort'],
+  };
+  const tools = Array.from({ length: 6 }, (_, i) => ({ name: 'tool_' + i, parameters: schema }));
+  const requests = [
+    openaiToGemini({
+      model: 'model',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: tools.map((tool) => ({ type: 'function', function: tool })),
+    }),
+    anthropicToGemini({
+      model: 'model',
+      max_tokens: 32,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: tools.map((tool) => ({ name: tool.name, input_schema: schema })),
+    }),
+    { ...message, tools: [{ function_declarations: tools }] },
+  ];
+  for (const request of requests) {
+    const original = structuredClone(request);
+    for (const mode of ['geminicli', 'antigravity']) {
+      const result = normalizeRequest(request, 'model', mode).request;
+      assert.equal(result.tools[0].functionDeclarations.length, 6);
+      const tool = result.tools[0].functionDeclarations[5];
+      const parameters = tool[mode === 'antigravity' ? 'parameters' : 'parametersJsonSchema'];
+      assert.equal(parameters.properties.sort.type, 'string');
+      assert.equal(parameters.properties.sort.enum, undefined);
+      assert.match(parameters.properties.sort.description, /asc.*desc/);
+      assert.deepEqual(parameters.required, ['sort']);
+    }
+    assert.deepEqual(request, original);
+  }
+});
+
 test('schema bounds expansion, rejects remote/missing refs and preserves special property names', () => {
   const recursive = { type: 'object', properties: { next: { $ref: '#' } } };
   assert.match(JSON.stringify(cleanToolSchema(recursive)), /Recursive reference/);

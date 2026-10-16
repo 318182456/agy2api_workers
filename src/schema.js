@@ -165,6 +165,15 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
         ),
       ];
     if (!result.required?.length) delete result.required;
+    if (Array.isArray(result.enum)) {
+      // Google rejects empty enum members. Preserve the original choices in prose
+      // rather than narrowing away meaningful empty values such as default sorting.
+      if (!result.enum.length || result.enum.includes('')) {
+        hint(result, 'Original enum values: ' + summary(node.enum ?? result.enum));
+        if (result.enum.includes('')) hint(result, 'Empty string is an allowed value');
+        delete result.enum;
+      } else result.enum = [...new Set(result.enum)];
+    }
     for (const key of constraints)
       if (Object.hasOwn(node, key)) hint(result, key + ': ' + summary(node[key]));
     return result;
