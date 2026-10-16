@@ -170,7 +170,18 @@ test('management script: quota failures continue, stop works, stats/health and s
     getElementById: el,
     createElement: () => new Element(),
     createTextNode: (text) => text,
-    querySelectorAll: () => [],
+    querySelectorAll: (selector) =>
+      selector === 'button'
+        ? [
+            'statsRefresh',
+            'statsDaysPrev',
+            'statsDaysNext',
+            'statsModelsPrev',
+            'statsModelsNext',
+            'statsCredentialsPrev',
+            'statsCredentialsNext',
+          ].map(el)
+        : [],
     body: new Element(),
   };
   const downloads = [];
@@ -248,7 +259,24 @@ test('management script: quota failures continue, stop works, stats/health and s
         summary: aggregate,
         days: [{ ...aggregate, day: '2026-10-15' }],
         models: [{ ...aggregate, model: 'm', mode: 'antigravity' }],
-        credentials: [{ ...aggregate, display_name: 'a@example.test' }],
+        credentials: [
+          {
+            ...aggregate,
+            credential_id: 'a',
+            display_name: 'a@example.test',
+            requests: 1,
+            failures: 0,
+          },
+          {
+            ...aggregate,
+            credential_id: null,
+            display_name: '未选中凭证',
+            requests: 1,
+            successes: 0,
+            total_tokens: null,
+            token_reports: 0,
+          },
+        ],
       });
     if (path === '/admin/settings') return Response.json(settings);
     if (path.startsWith('/admin/calls'))
@@ -311,6 +339,18 @@ test('management script: quota failures continue, stop works, stats/health and s
   assert.equal(el('statsTrend').children.length, 1);
   assert.equal(el('statsModelRank').children.length, 1);
   assert.equal(el('statsAccountRank').children.length, 1);
+  assert.equal(
+    el('statsAccountRank').children[0].children[0].children[1].textContent,
+    'a@example.test',
+  );
+  assert.match(el('statsCoverage').textContent, /其中 1 次请求在选中凭证前结束/);
+  assert.equal(el('statsCredentials').children.length, 1);
+  assert.match(el('statsCredentialsPage').textContent, /1 \/ 1 页 · 1 项/);
+  for (const group of ['Days', 'Models', 'Credentials']) {
+    assert.equal(el('stats' + group + 'Prev').disabled, true);
+    assert.equal(el('stats' + group + 'Next').disabled, true);
+  }
+  assert.equal(el('statsRefresh').inert, false);
   assert.match(
     requests.find((r) => r.path.startsWith('/admin/stats?')).path,
     /email=a%40example.test/,
@@ -385,6 +425,7 @@ test('management script: quota failures continue, stop works, stats/health and s
     })),
     credentials: Array.from({ length: 31 }, (_, i) => ({
       ...aggregate,
+      credential_id: 'account-' + i,
       display_name: 'user' + i,
       total_tokens: i ? i * 100 : null,
     })),
@@ -392,6 +433,14 @@ test('management script: quota failures continue, stop works, stats/health and s
   vm.runInContext('renderStatsCharts(largeStats)', context);
   assert.equal(el('statsModels').children.length, 10);
   assert.equal(el('statsModelRank').children.length, 6);
+  assert.equal(el('statsCredentialsPrev').disabled, true);
+  assert.equal(el('statsCredentialsNext').disabled, false);
+  for (let i = 0; i < 3; i++) el('statsCredentialsNext').onclick();
+  assert.equal(el('statsCredentials').children.length, 1);
+  assert.equal(el('statsCredentialsPrev').disabled, false);
+  assert.equal(el('statsCredentialsNext').disabled, true);
+  await vm.runInContext('run(async () => {})', context);
+  assert.equal(el('statsCredentialsNext').disabled, true);
   assert.equal(el('statsAccountRank').children[0].children[0].children[1].textContent, 'user30');
   el('statsModelsNext').onclick();
   el('statsModelsNext').onclick();

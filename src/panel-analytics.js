@@ -50,7 +50,8 @@ function rankings(id, rows, label, field) {
   if (!sorted.length) emptyInto(id,'当前范围内暂无数据');
 }
 function renderStatsCharts(value) {
-  statsSnapshot = value;
+  const assignedAccounts = value.credentials.filter(row => row.credential_id);
+  statsSnapshot = { ...value, credentials: assignedAccounts };
   for (const key of Object.keys(statsPages)) statsPages[key]=0;
   renderStatsTables();
   el('statsTrend').replaceChildren();
@@ -69,8 +70,9 @@ function renderStatsCharts(value) {
   }
   if (!rows.length) emptyInto('statsTrend','当前范围内暂无请求，发起调用后可查看趋势');
   rankings('statsModelRank',value.models,row=>row.model+' · '+row.mode,'requests');
-  rankings('statsAccountRank',value.credentials,row=>row.display_name,'total_tokens');
-  el('statsCoverage').textContent = '用量报告覆盖 '+(value.summary.token_reports || 0)+' / '+value.summary.requests+' 次请求；账号排行仅比较上游已报告总 Token。';
+  const unassignedRequests = value.credentials.filter(row => !row.credential_id).reduce((total,row) => total + row.requests,0);
+  rankings('statsAccountRank',assignedAccounts,row=>row.display_name,'total_tokens');
+  el('statsCoverage').textContent = '用量报告覆盖 '+(value.summary.token_reports || 0)+' / '+value.summary.requests+' 次请求；账号排行仅比较已分配凭证的上游报告总 Token。'+(unassignedRequests ? '其中 '+unassignedRequests+' 次请求在选中凭证前结束，已计入总体请求数与失败统计，不列入账号排行和按账号明细。' : '');
 }
 let quotaModelPage = 0;
 let quotaAccountPage = 0;

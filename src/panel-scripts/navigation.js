@@ -151,9 +151,12 @@ async function api(path, method = 'GET', body) {
 async function run(action) {
   if (busy) return;
   busy = true;
-  const buttons = Array.from(document.querySelectorAll('button'));
-  buttons.forEach((button) => {
-    button.disabled = true;
+  // Loading is temporary; disabled belongs to each control's own business state.
+  const controls = Array.from(document.querySelectorAll('button'))
+    .filter((button) => !['batchStop', 'quotaOverviewStop'].includes(button.id))
+    .map((button) => ({ button, wasInert: !!button.inert }));
+  controls.forEach(({ button }) => {
+    button.inert = true;
   });
   try {
     await action();
@@ -161,8 +164,8 @@ async function run(action) {
     status(error.message);
   } finally {
     busy = false;
-    document.querySelectorAll('button').forEach((button) => {
-      button.disabled = false;
+    controls.forEach(({ button, wasInert }) => {
+      button.inert = wasInert;
     });
   }
 }
