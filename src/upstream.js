@@ -1,7 +1,7 @@
 import { retryableStatus, clientAborted, fetchGeneration, boundedSeconds } from './timeouts.js';
 import { HttpError, operation } from './common.js';
 import { accessToken, selectCredential } from './credentials.js';
-import { cooldownSeconds, putCooldown, recordAttempt } from './reliability.js';
+import { quotaCooldown, putCooldown, recordAttempt } from './reliability.js';
 import { loadModelNames, knownModelId, publicModelId } from './model-names.js';
 import { normalizeRequest } from './normalize.js';
 
@@ -84,7 +84,50 @@ export async function callUpstream(
     try {
       if (!row.data.project_id)
         throw new HttpError(400, '此凭证缺少 project_id，请在管理页校验项目或重新导入');
-      const payload = upstreamPayload(request, model, row.data.project_id, mode, true);
+      const prepared = structuredClone(request);
+      if (env.RETURN_THOUGHTS === false)
+        prepared.generationConfig = {
+          ...prepared.generationConfig,
+          thinkingConfig: { ...prepared.generationConfig?.thinkingConfig, includeThoughts: false },
+        };
+      if (mode === 'antigravity' && env.STABLE_SESSION !== false && !prepared.sessionId) {
+        const first = prepared.contents?.find((content) => content.role === 'user');
+        const text = (first?.parts || [])
+          .filter((part) => typeof part.text === 'string')
+          .map((part) => part.text)
+          .join('\n');
+        if (text) {
+          const digest = new Uint8Array(
+            await crypto.subtle.digest(
+              'SHA-256',
+              new TextEncoder().encode(
+                row.data.project_id + '\n' + (env.SESSION_SCOPE || '') + '\n' + text,
+              ),
+            ),
+          );
+          prepared.sessionId =
+            '-' +
+            (BigInt(
+              '0x' +
+                Array.from(digest.slice(0, 8), (byte) => byte.toString(16).padStart(2, '0')).join(
+                  '',
+                ),
+            ) &
+              0x7fffffffffffffffn);
+        }
+      }
+      const payload = upstreamPayload(prepared, model, row.data.project_id, mode, true);
+      if (mode === 'antigravity') {
+        payload.request.labels ||= {
+          model_enum: model,
+          trajectory_id: payload.request.sessionId,
+          last_step_index: '1',
+          used_claude: String(model.includes('claude')),
+          used_claude_conservative: String(model.includes('claude')),
+        };
+        if (env.ENABLE_AI_CREDITS === true && row.data.enable_credit === true)
+          payload.enabledCreditTypes = ['GOOGLE_ONE_AI'];
+      }
       let token = await operation('oauth_refresh', () =>
         accessToken(env.DB, row, fetcher, false, env, signal),
       );
@@ -133,7 +176,7 @@ export async function callUpstream(
       );
       logged = true;
       if (!retryableStatus(response.status)) return response;
-      const seconds = cooldownSeconds(response);
+      const seconds = await quotaCooldown(response, signal);
       await operation('credential_cooldown', () =>
         putCooldown(env.DB, row, model, response.status, seconds),
       );
@@ -174,7 +217,9 @@ export async function callUpstream(
       if (
         !signal?.aborted &&
         attempt + 1 < maxAttempts &&
-        ['UPSTREAM_TIMEOUT', 'UPSTREAM_CONNECTION_FAILED'].includes(error.errorCode)
+        ['UPSTREAM_TIMEOUT', 'UPSTREAM_CONNECTION_FAILED', 'OAUTH_REAUTH_REQUIRED'].includes(
+          error.errorCode,
+        )
       ) {
         let next;
         try {

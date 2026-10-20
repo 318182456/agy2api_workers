@@ -2,7 +2,16 @@ import { boundedSeconds } from './timeouts.js';
 import { readShared, publishShared } from './shared-cache.js';
 import { dbCache } from './db-cache.js';
 import { HttpError } from './common.js';
+const booleanKeys = [
+  'AUTO_DISABLE_INVALID_CREDENTIALS',
+  'STABLE_SESSION',
+  'RETURN_THOUGHTS',
+  'ENABLE_AI_CREDITS',
+  'FAKE_STREAMING',
+];
 const keys = [
+  ...booleanKeys,
+  'CONTINUATION_ATTEMPTS',
   'MAX_CREDENTIAL_ATTEMPTS',
   'UPSTREAM_TIMEOUT_SECONDS',
   'REQUEST_TIMEOUT_SECONDS',
@@ -13,6 +22,15 @@ const keys = [
 function defaults(env) {
   const attempts = Number(env.MAX_CREDENTIAL_ATTEMPTS ?? 3);
   return {
+    ...Object.fromEntries(
+      booleanKeys.map((key) => [
+        key,
+        env[key] == null
+          ? ['AUTO_DISABLE_INVALID_CREDENTIALS', 'STABLE_SESSION', 'RETURN_THOUGHTS'].includes(key)
+          : env[key] === true || env[key] === 'true',
+      ]),
+    ),
+    CONTINUATION_ATTEMPTS: boundedSeconds(env.CONTINUATION_ATTEMPTS, 0, 0, 2),
     UPSTREAM_TIMEOUT_SECONDS: boundedSeconds(env.UPSTREAM_TIMEOUT_SECONDS, 45, 5, 90),
     REQUEST_TIMEOUT_SECONDS: boundedSeconds(env.REQUEST_TIMEOUT_SECONDS, 100, 10, 110),
     USAGE_STORAGE_MODE: env.USAGE_STORAGE_MODE === 'detailed' ? 'detailed' : 'aggregate',
@@ -32,6 +50,15 @@ function defaults(env) {
 export function validateSetting(key, value) {
   if (!keys.includes(key)) throw new HttpError(400, '不支持的配置项');
   if (value === null) return null;
+  if (booleanKeys.includes(key)) {
+    if (typeof value !== 'boolean') throw new HttpError(400, '开关必须为布尔值');
+    return value;
+  }
+  if (key === 'CONTINUATION_ATTEMPTS') {
+    if (!Number.isInteger(value) || value < 0 || value > 2)
+      throw new HttpError(400, '续写次数须为 0–2');
+    return value;
+  }
   if (key === 'USAGE_STORAGE_MODE') {
     if (!['aggregate', 'detailed'].includes(value)) throw new HttpError(400, '用量存储模式无效');
     return value;

@@ -659,3 +659,103 @@ test('management pages: deep-link restore, lazy loading, history, retained input
     0.4,
   );
 });
+
+test('API key list renders unused keys, later used keys and pagination even when usage rows are absent', async () => {
+  const { keysScript } = await import('../src/panel-scripts/keys.js');
+  class Element {
+    constructor() {
+      this.children = [];
+      this.value = '';
+      this.textContent = '';
+      this.hidden = false;
+    }
+    append(...nodes) {
+      this.children.push(...nodes);
+    }
+    replaceChildren(...nodes) {
+      this.children = nodes;
+    }
+    insertBefore(node, before) {
+      this.children.splice(this.children.indexOf(before), 0, node);
+    }
+  }
+  const nodes = new Map(),
+    el = (id) => {
+      if (!nodes.has(id)) nodes.set(id, new Element());
+      return nodes.get(id);
+    };
+  let unavailable = false;
+  const calls = [];
+  const key = (id) => ({
+    id,
+    name: id,
+    masked_key: 'masked',
+    state: 'enabled',
+    enabled: true,
+    expires_at: null,
+  });
+  const context = vm.createContext({
+    document: { createElement: () => new Element() },
+    el,
+    run: (action) => action(),
+    URLSearchParams,
+    Date,
+    Map,
+    Array,
+    Object,
+    Number,
+    String,
+    formatReset: () => '',
+    tokenText: (value) => Number(value).toLocaleString('zh-CN'),
+    status: (text) => {
+      el('status').textContent = text;
+    },
+    api: async (path) => {
+      calls.push(path);
+      if (path.startsWith('/admin/api-keys?')) {
+        const page = new URLSearchParams(path.split('?')[1]).get('page');
+        return {
+          master_enabled: true,
+          keys:
+            page === '0'
+              ? ['used-before', 'unused', 'used-after'].map(key)
+              : ['unused-next-page'].map(key),
+          has_next: page === '0',
+        };
+      }
+      if (unavailable) throw new Error('fixture usage unavailable');
+      return {
+        api_keys: [
+          {
+            api_key_id: '00000000-0000-0000-0000-000000000000',
+            requests: 1,
+            total_tokens: 10,
+            token_reports: 1,
+          },
+          { api_key_id: 'used-before', requests: 2, total_tokens: 20, token_reports: 2 },
+          { api_key_id: 'used-after', requests: 2, total_tokens: 30, token_reports: 1 },
+        ],
+      };
+    },
+  });
+  vm.runInContext(keysScript, context);
+  await vm.runInContext('loadKeys()', context);
+  assert.deepEqual(
+    el('keysBody').children.map((row) => row.children[0].textContent),
+    ['总密钥（兼容）', 'used-before', 'unused', 'used-after'],
+  );
+  assert.equal(el('keysBody').children[2].children[1].children[0].textContent, '0 Token');
+  assert.equal(el('keysBody').children[3].children[1].children[0].textContent, '30 Token');
+  assert.equal(el('keysNext').disabled, false);
+  assert.equal(el('keysPrev').disabled, true);
+  assert.equal(calls.filter((path) => path.startsWith('/admin/stats?')).length, 1);
+  await el('keysNext').onclick();
+  assert.equal(el('keysBody').children[0].children[0].textContent, 'unused-next-page');
+  assert.equal(el('keysBody').children[0].children[1].children[0].textContent, '0 Token');
+  assert.equal(el('keysNext').disabled, true);
+  assert.equal(el('keysPrev').disabled, false);
+  unavailable = true;
+  await el('keysPrev').onclick();
+  assert.equal(el('keysBody').children.length, 4);
+  assert.equal(el('keysBody').children[2].children[1].children[0].textContent, '暂不可用');
+});

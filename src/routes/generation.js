@@ -1,3 +1,6 @@
+import { prepareClientTools, restoreToolNames } from '../tool-compat.js';
+import { fakeStream } from '../fake-stream.js';
+import { collectContinuations } from '../continuation.js';
 import { boundedSeconds, clientAborted } from '../timeouts.js';
 import { HttpError, json, readJson } from '../common.js';
 import { authenticateApi } from '../api-keys.js';
@@ -26,7 +29,7 @@ function validateModel(model) {
   }
 }
 
-export async function generationRoute(request, env, fetcher, context) {
+export async function generationRoute(request, env, fetcher, context, internal) {
   const url = new URL(request.url);
   const fixed = url.pathname.match(/^\/(antigravity|geminicli)\//)?.[1];
   let mode = fixed || 'geminicli';
@@ -44,8 +47,10 @@ export async function generationRoute(request, env, fetcher, context) {
       '接口不存在；支持 OpenAI Chat Completions、Anthropic Messages 和 Gemini generateContent',
     );
   if (request.method !== (isModelList ? 'GET' : 'POST')) throw new HttpError(405, '请求方法不支持');
-  const apiKey = await authenticateApi(request, env, !!nativeMatch || path === '/v1beta/models');
-  env = await effectiveEnv(env);
+  const apiKey =
+    internal?.apiKey ||
+    (await authenticateApi(request, env, !!nativeMatch || path === '/v1beta/models'));
+  env = internal?.env || { ...(await effectiveEnv(env)), SESSION_SCOPE: apiKey.id };
   if (isModelList) {
     const result = fixed
       ? await discoverModels(env, mode, fetcher)
@@ -68,17 +73,22 @@ export async function generationRoute(request, env, fetcher, context) {
       response.headers.set('x-model-list-warning', 'dynamic-discovery-failed');
     return response;
   }
-  const body = await readJson(request);
+  const body = internal?.body || (await readJson(request));
+  const nativeBody = { ...body };
   const model =
     isOpenai || isAnthropic || path === '/v1/messages/count_tokens' ? body.model : nativeMatch[1];
   validateModel(model);
   if ((isOpenai || isAnthropic) && body.stream != null && typeof body.stream !== 'boolean')
     throw new HttpError(400, 'stream 必须为布尔值');
+  const tools = isOpenai || isAnthropic ? prepareClientTools(body, isAnthropic) : null;
+  const clientBody = tools?.body || body;
   const geminiRequest = isOpenai
-    ? openaiToGemini(body)
+    ? openaiToGemini(clientBody)
     : isAnthropic || path === '/v1/messages/count_tokens'
-      ? anthropicToGemini(body, isCount)
-      : body;
+      ? anthropicToGemini(clientBody, isCount)
+      : nativeBody;
+  if (!isOpenai && !isAnthropic)
+    for (const key of ['stream', 'fake_stream', 'anti_truncation']) delete geminiRequest[key];
   if (!Array.isArray(geminiRequest.contents) || !geminiRequest.contents.length)
     throw new HttpError(400, 'contents 不能为空');
   if (isCount) {
@@ -92,6 +102,49 @@ export async function generationRoute(request, env, fetcher, context) {
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
   const stream =
     isOpenai || isAnthropic ? body.stream === true : nativeMatch[2] === 'streamGenerateContent';
+  for (const key of ['fake_stream', 'anti_truncation'])
+    if (body[key] != null && typeof body[key] !== 'boolean')
+      throw new HttpError(400, key + ' 必须为布尔值');
+  const continuationLimit = body.anti_truncation === false ? 0 : env.CONTINUATION_ATTEMPTS || 0;
+  if (body.anti_truncation === true && !continuationLimit)
+    throw new HttpError(400, '请先在管理页开启抗截断续写');
+  if (
+    stream &&
+    !env.INTERNAL_BUFFERED_STREAM &&
+    (body.fake_stream === true || env.FAKE_STREAMING || continuationLimit > 0)
+  ) {
+    const target = new URL(request.url);
+    if (nativeMatch)
+      target.pathname = target.pathname.replace(':streamGenerateContent', ':generateContent');
+    const bufferedRequestId = crypto.randomUUID();
+    const bufferedHeaders = new Headers(request.headers);
+    bufferedHeaders.delete('content-length');
+    bufferedHeaders.delete('content-encoding');
+    return fakeStream(
+      (signal) =>
+        generationRoute(
+          new Request(target, {
+            method: 'POST',
+            headers: bufferedHeaders,
+            signal: AbortSignal.any([request.signal, signal]),
+          }),
+          { ...env, INTERNAL_BUFFERED_STREAM: true, FAKE_STREAMING: false },
+          fetcher,
+          context,
+          {
+            apiKey,
+            env: { ...env, INTERNAL_BUFFERED_STREAM: true, FAKE_STREAMING: false },
+            body: { ...body, stream: false, fake_stream: false },
+            requestId: bufferedRequestId,
+          },
+        ),
+      isOpenai ? 'openai' : isAnthropic ? 'anthropic' : 'gemini',
+      model,
+      body.stream_options?.include_usage === true,
+      request.signal,
+      bufferedRequestId,
+    );
+  }
   let collect = mode === 'antigravity' && !stream && env.ANTIGRAVITY_STREAM2NOSTREAM;
   const abort = new AbortController();
   const cancel = () => abort.abort();
@@ -99,7 +152,7 @@ export async function generationRoute(request, env, fetcher, context) {
   if (incomingSignal?.aborted) cancel();
   incomingSignal?.addEventListener('abort', cancel, { once: true });
   let handedOff = false;
-  const requestId = crypto.randomUUID();
+  const requestId = internal?.requestId || crypto.randomUUID();
   const attemptMeta = { requestId, attempts: [] };
   const started = Date.now();
   const deadline = setTimeout(
@@ -132,31 +185,35 @@ export async function generationRoute(request, env, fetcher, context) {
   };
   const completed = (usage) => finishUsage(200, 'success', usage);
   try {
-    let response;
-    if (!fixed) {
-      const selected = await callUnifiedUpstream(
-        env,
-        model,
-        geminiRequest,
-        stream,
-        abort.signal,
-        fetcher,
-        attemptMeta,
-      );
-      response = selected.response;
-      mode = selected.mode;
-      collect = selected.collect;
-    } else
-      response = await callUpstream(
-        env,
-        mode,
-        model,
-        geminiRequest,
-        stream || collect,
-        abort.signal,
-        fetcher,
-        attemptMeta,
-      );
+    const send = async (payload) => {
+      let response;
+      if (!fixed) {
+        const selected = await callUnifiedUpstream(
+          env,
+          model,
+          payload,
+          stream,
+          abort.signal,
+          fetcher,
+          attemptMeta,
+        );
+        response = selected.response;
+        mode = selected.mode;
+        collect = selected.collect;
+      } else
+        response = await callUpstream(
+          env,
+          mode,
+          model,
+          payload,
+          stream || collect,
+          abort.signal,
+          fetcher,
+          attemptMeta,
+        );
+      return response;
+    };
+    let response = await send(geminiRequest);
     if (!response.ok) {
       await finishUsage(response.status, 'failed');
       if (isAnthropic) {
@@ -225,8 +282,16 @@ export async function generationRoute(request, env, fetcher, context) {
           })(),
         );
       const converted = isAnthropic
-        ? anthropicStream(response.body, model, cancel, finish, streamFailure, completed, (usage) =>
-            streamFailure(usage, true),
+        ? anthropicStream(
+            response.body,
+            model,
+            cancel,
+            finish,
+            streamFailure,
+            completed,
+            (usage) => streamFailure(usage, true),
+            tools?.names,
+            env.RETURN_THOUGHTS !== false,
           )
         : convertedStream(
             response.body,
@@ -238,6 +303,8 @@ export async function generationRoute(request, env, fetcher, context) {
             streamFailure,
             completed,
             (usage) => streamFailure(usage, true),
+            tools?.names,
+            env.RETURN_THOUGHTS !== false,
           );
       clearTimeout(deadline);
       handedOff = true;
@@ -250,16 +317,37 @@ export async function generationRoute(request, env, fetcher, context) {
         },
       });
     }
-    let value;
-    if (collect) {
-      value = await collectGoogleResponse(response);
-    } else {
+    const read = async (response) => {
+      if (collect)
+        return collectGoogleResponse(response, undefined, { allowUnconfirmedText: true });
       try {
-        value = await response.json();
+        return await response.json();
       } catch {
         throw new HttpError(502, '上游返回了无效 JSON');
       }
-    }
+    };
+    const continueSameCredential = async (payload) => {
+      attemptMeta.initialRow = attemptMeta.row;
+      return callUpstream(
+        { ...env, MAX_CREDENTIAL_ATTEMPTS: 1 },
+        mode,
+        model,
+        payload,
+        collect,
+        abort.signal,
+        fetcher,
+        attemptMeta,
+      );
+    };
+    let value = await collectContinuations(
+      response,
+      geminiRequest,
+      read,
+      continueSameCredential,
+      continuationLimit,
+      abort.signal,
+    );
+    value = restoreToolNames(value, tools?.names, env.RETURN_THOUGHTS !== false);
     const unwrapped = unwrap(value);
     latestUsage = unwrapped.usageMetadata;
     if (
@@ -267,13 +355,23 @@ export async function generationRoute(request, env, fetcher, context) {
       (!unwrapped.candidates?.length && !unwrapped.promptFeedback?.blockReason)
     )
       throw new HttpError(502, '上游未返回有效的生成结果');
-    const result = json(
-      isOpenai
-        ? geminiToOpenai(value, model)
-        : isAnthropic
-          ? geminiToAnthropic(value, model)
-          : unwrap(value),
-    );
+    const payload = isOpenai
+      ? geminiToOpenai(value, model)
+      : isAnthropic
+        ? geminiToAnthropic(value, model)
+        : unwrapped;
+    const unconfirmed = unwrapped.completion_status === 'unconfirmed';
+    if (unconfirmed) {
+      payload.completion_status = 'unconfirmed';
+      payload.warnings = unwrapped.warnings;
+      // No response text, credentials or additional D1 writes in this diagnostic.
+      console.warn(JSON.stringify({ event: 'upstream_finish_unconfirmed', requestId }));
+    }
+    const result = json(payload);
+    if (unconfirmed) {
+      result.headers.set('x-completion-status', 'unconfirmed');
+      result.headers.set('x-upstream-warning', 'UPSTREAM_FINISH_UNCONFIRMED');
+    }
     result.headers.set('x-request-id', requestId);
     result.headers.set('x-upstream-channel', attemptMeta.mode || mode);
     if (collect) result.headers.set('x-upstream-mode', 'stream-collected');

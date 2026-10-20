@@ -1,3 +1,4 @@
+import { effectiveEnv } from './settings.js';
 import { HttpError, googleFetch, operation } from './common.js';
 import { accessToken, parseCredentialData } from './credentials.js';
 import { modelCatalog } from './model-names.js';
@@ -64,6 +65,7 @@ export async function credentialQuota(env, id, fetcher = fetch) {
   if (!row) throw new HttpError(404, '凭证不存在');
   if (!['antigravity', 'geminicli'].includes(row.mode)) throw new HttpError(400, '未知凭证渠道');
   row.data = parseCredentialData(row.data);
+  env = await effectiveEnv(env);
   const origin = upstreamOrigin(env, row.mode);
   const cli = row.mode === 'geminicli';
   if (cli && (typeof row.data.project_id !== 'string' || !row.data.project_id.trim()))

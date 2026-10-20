@@ -297,6 +297,26 @@ test('Worker protocols accept managed keys and telemetry isolates per-key totals
     assert.equal((await stats(a.id)).summary.total_tokens, 10);
     assert.equal((await stats(b.id)).summary.requests, 1);
     assert.equal((await stats(MASTER_KEY_ID)).summary.requests, 1);
+    const assertBatchUsage = async () => {
+      const value = await usageStats(
+        env.DB,
+        new URLSearchParams({ api_key_ids: [a.id, MASTER_KEY_ID].join(','), fresh: '1' }),
+        env,
+      );
+      assert.equal(value.summary.requests, 3);
+      assert.equal(value.summary.total_tokens, 15);
+      assert.equal(value.api_keys.length, 2);
+      assert.equal(
+        value.api_keys.some((row) => row.api_key_id === b.id),
+        false,
+      );
+    };
+    await assertBatchUsage();
+    for (const ids of ['', a.id + ',invalid', Array(52).fill(a.id).join(',')]) {
+      await assert.rejects(usageStats(env.DB, new URLSearchParams({ api_key_ids: ids }), env), {
+        status: 400,
+      });
+    }
     const overview = () => usageStats(env.DB, new URLSearchParams('fresh=1'), env);
     const assertKeyOverview = (value) => {
       assert.equal(value.summary.requests, 4);
@@ -318,6 +338,7 @@ test('Worker protocols accept managed keys and telemetry isolates per-key totals
     assert.equal((await stub.fetch('https://test/flush', { method: 'POST' })).status, 200);
     assert.equal((await stats(a.id)).summary.requests, 2);
     assert.equal((await stats(b.id)).summary.total_tokens, 5);
+    await assertBatchUsage();
     assertKeyOverview(await overview());
     const failed = {
       requestId: randomUUID(),
@@ -572,6 +593,7 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
         response = await chat();
       assert.equal(response.status, 200);
       assert.equal(response.headers.get('x-upstream-mode'), 'stream-collected');
+      assert.equal(response.headers.get('x-completion-status'), null);
       const value = await response.json();
       assert.equal(value.object, 'chat.completion');
       assert.equal(value.choices[0].message.content, 'stream collected');
@@ -595,28 +617,58 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
     scenario = 'incomplete';
     const beforeIncomplete = calls;
     const incomplete = await chat();
-    assert.equal(incomplete.status, 502);
-    const missingFinish = (await incomplete.json()).error;
-    assert.equal(missingFinish.reason, 'UPSTREAM_STREAM_INCOMPLETE');
-    assert.match(missingFinish.message, /帧=1，候选=1，已结束=0/);
-    assert.match(missingFinish.message, /结束=EOF/);
-    assert.equal(calls, beforeIncomplete + 1); // Do not silently generate again after body consumption.
+    assert.equal(incomplete.status, 200);
+    assert.equal(incomplete.headers.get('x-completion-status'), 'unconfirmed');
+    assert.equal(incomplete.headers.get('x-upstream-warning'), 'UPSTREAM_FINISH_UNCONFIRMED');
+    const missingFinish = await incomplete.json();
+    assert.equal(missingFinish.choices[0].message.content, 'private incomplete output');
+    assert.equal(missingFinish.completion_status, 'unconfirmed');
+    assert.equal(missingFinish.warnings[0].code, 'UPSTREAM_FINISH_UNCONFIRMED');
+    assert.equal(calls, beforeIncomplete + 1); // Never generate again after body consumption.
     const incompleteLogs = (
-      await queryCallLogs(env.DB, new URLSearchParams({ request_id: missingFinish.request_id }))
+      await queryCallLogs(
+        env.DB,
+        new URLSearchParams({ request_id: incomplete.headers.get('x-request-id') }),
+      )
     ).records;
-    assert.ok(
-      incompleteLogs.some(
-        (row) =>
-          row.detail_code === 'UPSTREAM_STREAM_INCOMPLETE' &&
-          row.detail_message.includes('用量=已报告'),
-      ),
+    assert.equal(
+      incompleteLogs.some((row) => row.status >= 400),
+      false,
     );
     assert.equal(JSON.stringify(incompleteLogs).includes('private incomplete output'), false);
     const stats = await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
     assert.equal(stats.summary.requests, 5);
-    assert.equal(stats.summary.successes, 3);
-    assert.equal(stats.summary.failures, 2);
-    assert.equal(stats.summary.total_tokens, 28); // Three successes plus the failed stream's reported seven tokens.
+    assert.equal(stats.summary.successes, 4);
+    assert.equal(stats.summary.failures, 1);
+    assert.equal(stats.summary.total_tokens, 28); // Include reported tokens from the unconfirmed response exactly once.
+    for (const [path, body] of [
+      [
+        '/v1/messages',
+        {
+          model: 'gemini-3.1-flash-lite',
+          max_tokens: 32,
+          messages: [{ role: 'user', content: 'fixture' }],
+        },
+      ],
+      [
+        '/v1beta/models/gemini-3.1-flash-lite:generateContent',
+        { contents: [{ role: 'user', parts: [{ text: 'fixture' }] }] },
+      ],
+    ]) {
+      const beforeProtocol = calls;
+      const result = await mf.dispatchFetch('https://test/antigravity' + path, {
+        method: 'POST',
+        headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      assert.equal(result.status, 200);
+      assert.equal(result.headers.get('x-completion-status'), 'unconfirmed');
+      const value = await result.json();
+      assert.equal(value.completion_status, 'unconfirmed');
+      assert.equal(value.warnings[0].code, 'UPSTREAM_FINISH_UNCONFIRMED');
+      if (value.candidates) assert.equal(value.candidates[0].finishReason, undefined);
+      assert.equal(calls, beforeProtocol + 1);
+    }
   } finally {
     await mf.dispose();
   }

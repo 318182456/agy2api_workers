@@ -145,6 +145,8 @@ export async function importCredential(db, body, env = {}) {
     if (data[key] !== undefined && typeof data[key] !== 'string')
       throw new HttpError(400, `${key} 必须为字符串`);
   }
+  if (data.enable_credit !== undefined && typeof data.enable_credit !== 'boolean')
+    throw new HttpError(400, 'enable_credit 必须为布尔值');
   const known = detectedMode(data, env);
   if (known && known !== mode)
     throw new HttpError(400, `凭证客户端属于 ${known}，请将导入渠道改为 ${known}`);
@@ -162,6 +164,7 @@ export async function importCredential(db, body, env = {}) {
   ]) {
     if (data[key]) safe[key] = data[key];
   }
+  if (typeof data.enable_credit === 'boolean') safe.enable_credit = data.enable_credit;
   if (
     typeof data.user_email === 'string' &&
     data.user_email.includes('@') &&
@@ -223,6 +226,8 @@ export async function listCredentials(db, env = {}) {
       project_id: credential.project_id || null,
       subscription_tier: credential.subscription_tier || null,
       credit_amount: credential.credit_amount ?? null,
+      enable_credit: credential.enable_credit === true,
+      preview_channel: credential.preview_channel || null,
       last_test: credential.last_test || null,
     };
   });
@@ -356,7 +361,26 @@ export async function accessToken(db, row, fetcher = fetch, force = false, env =
     'oauth_refresh',
   );
   if (!response.ok) {
-    await response.body?.cancel();
+    let reason;
+    try {
+      reason = (await response.json())?.error;
+    } catch {}
+    if ([400, 401].includes(response.status) && reason === 'invalid_grant') {
+      if (env.AUTO_DISABLE_INVALID_CREDENTIALS === true)
+        await operation('credential_save', () =>
+          db
+            .prepare('UPDATE credentials SET disabled=1 WHERE id=? AND data=? AND disabled=0')
+            .bind(row.id, JSON.stringify(data))
+            .run(),
+        );
+      const error = new HttpError(
+        401,
+        'Google 刷新令牌已失效，请重新授权；启用自动停用时该凭证已停用',
+      );
+      error.operation = 'oauth_refresh';
+      error.errorCode = 'OAUTH_REAUTH_REQUIRED';
+      throw error;
+    }
     throw new HttpError(
       502,
       `Google OAuth 刷新失败 (HTTP ${response.status})，请检查凭证和账号状态`,

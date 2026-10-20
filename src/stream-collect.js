@@ -11,7 +11,7 @@ function failure(code, message, status = 502) {
       : message;
   return error;
 }
-function collection() {
+function collection(allowUnconfirmedText = false) {
   const result = {},
     candidates = new Map();
   let frames = 0,
@@ -136,7 +136,31 @@ function collection() {
     finish(ending = 'EOF') {
       if (!candidates.size && !result.promptFeedback?.blockReason)
         throw decorate(failure('UPSTREAM_STREAM_EMPTY', '上游流未返回候选结果'), ending);
-      if ([...candidates.values()].some((candidate) => !candidate.finishReason))
+      const only = [...candidates.values()][0];
+      const unconfirmedText =
+        allowUnconfirmedText &&
+        ending === 'EOF' &&
+        frames === 1 &&
+        candidates.size === 1 &&
+        !only.finishReason &&
+        !alternateFinish &&
+        textChars > 0 &&
+        only.content.parts.every(
+          (part) =>
+            typeof part.text === 'string' &&
+            Object.keys(part).every((key) => ['text', 'thought'].includes(key)),
+        );
+      if (unconfirmedText) {
+        result.completion_status = 'unconfirmed';
+        result.warnings = [
+          {
+            code: 'UPSTREAM_FINISH_UNCONFIRMED',
+            message:
+              '上游正常 EOF，但未返回 finishReason；已返回现有正文，结束未确认，内容可能不完整',
+          },
+        ];
+      }
+      if (!unconfirmedText && [...candidates.values()].some((candidate) => !candidate.finishReason))
         throw decorate(
           failure('UPSTREAM_STREAM_INCOMPLETE', '上游流提前结束，未返回 finishReason'),
           ending,
@@ -146,9 +170,9 @@ function collection() {
     },
   };
 }
-// Preserve part order, tool signatures and cumulative usage; never invent a completion.
-export async function collectGoogleStream(stream, limit = 8 * 1024 * 1024) {
-  const merged = collection();
+// Preserve parts, signatures and usage. Compatibility never fabricates a Google finishReason.
+export async function collectGoogleStream(stream, limit = 8 * 1024 * 1024, options = {}) {
+  const merged = collection(options.allowUnconfirmedText === true);
   let bytes = 0,
     ending = 'EOF';
   try {
@@ -173,10 +197,10 @@ export async function collectGoogleStream(stream, limit = 8 * 1024 * 1024) {
     throw merged.decorate(failure('UPSTREAM_STREAM_INTERRUPTED', '上游流式汇总中断'), '读流异常');
   }
 }
-export async function collectGoogleResponse(response, limit = 8 * 1024 * 1024) {
+export async function collectGoogleResponse(response, limit = 8 * 1024 * 1024, options = {}) {
   if (!response.body) throw failure('UPSTREAM_STREAM_EMPTY', '上游未返回响应正文');
   const type = (response.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
-  if (type === 'text/event-stream') return collectGoogleStream(response.body, limit);
+  if (type === 'text/event-stream') return collectGoogleStream(response.body, limit, options);
   if (type !== 'application/json' && !/^application\/[a-z0-9.+-]+\+json$/.test(type)) {
     await response.body.cancel();
     throw failure(
@@ -200,7 +224,7 @@ export async function collectGoogleResponse(response, limit = 8 * 1024 * 1024) {
     text += decoder.decode();
     // A proxy can also preserve SSE bytes while labeling the response application/json.
     if (/^(?::|data:|event:|id:|retry:)/.test(text.trimStart()))
-      return await collectGoogleStream(new Response(text).body, limit);
+      return await collectGoogleStream(new Response(text).body, limit, options);
     let raw;
     try {
       raw = JSON.parse(text);

@@ -62,6 +62,21 @@ async function loadKeys() {
           ...value.keys,
         ]
       : value.keys;
+  let usage = null;
+  if (rows.length) {
+    try {
+      const params = new URLSearchParams({
+        api_key_ids: rows.map((row) => row.id).join(','),
+        from: String(Math.floor(Date.now() / 300000) * 300000 - 30 * 86400000),
+      });
+      const totals = await api('/admin/stats?' + params);
+      usage = new Map(totals.api_keys.map((row) => [row.api_key_id, row]));
+      el('keysUsageNote').textContent =
+        '消耗统计：最近 30 天，上游报告总 Token，包含 DO 待落盘用量；缓存最多 30 秒。未报告部分不估算，非 Google 账号剩余额度。';
+    } catch {
+      el('keysUsageNote').textContent = '用量暂不可用，可刷新列表重试；密钥管理仍可使用。';
+    }
+  } else el('keysUsageNote').textContent = '';
   for (const row of rows) {
     const tr = document.createElement('tr');
     for (const text of [
@@ -74,9 +89,28 @@ async function loadKeys() {
       td.textContent = text;
       tr.append(td);
     }
+    const consumption = document.createElement('td');
+    const metric = usage?.get(row.id);
+    const amount = document.createElement('div');
+    amount.textContent = !usage
+      ? '暂不可用'
+      : !metric?.requests
+        ? '0 Token'
+        : metric.total_tokens == null
+          ? '未报告'
+          : tokenText(metric.total_tokens) + ' Token';
+    const coverage = document.createElement('small');
+    coverage.className = 'data-note';
+    coverage.textContent = usage
+      ? (metric?.requests || 0).toLocaleString('zh-CN') +
+        ' 次请求' +
+        (metric?.requests > (metric?.token_reports || 0) ? ' · 部分用量未报告' : '')
+      : '统计获取失败';
+    consumption.append(amount, coverage);
+    tr.insertBefore(consumption, tr.children[1]);
     const actions = document.createElement('td');
     actions.append(
-      keyAction('查看用量', async () => {
+      keyAction('用量明细', async () => {
         selectedApiKey = { id: row.id, name: row.name };
         await loadKeyUsage(true);
         el('keyUsageArea').scrollIntoView?.({ block: 'start', behavior: 'smooth' });

@@ -1,4 +1,6 @@
-import { HttpError, json, readJson } from '../common.js';
+import { importArchive, exportArchive } from '../credential-archive.js';
+import { configurePreview } from '../preview.js';
+import { HttpError, json, readJson, operation } from '../common.js';
 import {
   oauthClients,
   importCredential,
@@ -6,7 +8,7 @@ import {
   updateCredential,
 } from '../credentials.js';
 import { startOAuth, completeOAuth } from '../oauth.js';
-import { credentialById, fetchEmail, verifyProject, testCredential } from '../account.js';
+import { credentialById, fetchEmail, verifyProject, testCredential, saveData } from '../account.js';
 import { credentialQuota } from '../quota.js';
 import { discoverModels } from '../model-list.js';
 import { queryCallLogs, clearCallLogs } from '../reliability.js';
@@ -53,6 +55,10 @@ export async function adminRoute(request, env, fetcher) {
     response.headers.set('content-disposition', 'attachment; filename="call-logs.json"');
     return response;
   }
+  if (url.pathname === '/admin/credentials/import.zip' && request.method === 'POST')
+    return importArchive(request, env, url.searchParams.get('mode'));
+  if (url.pathname === '/admin/credentials/export.zip' && request.method === 'POST')
+    return exportArchive(env, (await readJson(request)).ids);
   const healthMatch = url.pathname.match(/^\/admin\/credentials\/([a-f0-9-]{36})\/health$/);
   if (healthMatch && request.method === 'GET') {
     await credentialById(env.DB, healthMatch[1]);
@@ -75,17 +81,29 @@ export async function adminRoute(request, env, fetcher) {
     );
   }
   const accountMatch = url.pathname.match(
-    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|test|download)$/,
+    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|test|download|preview|credits)$/,
   );
   if (accountMatch) {
     const action = accountMatch[2];
     if (request.method !== (action === 'download' ? 'GET' : 'POST'))
       throw new HttpError(405, '请求方法不支持');
     const row = await credentialById(env.DB, accountMatch[1]);
-    if (action === 'email') return json(await fetchEmail(env, row, fetcher));
+    const accountEnv = action === 'download' ? env : await effectiveEnv(env);
+    if (action === 'credits') {
+      const { enabled } = await readJson(request);
+      if (row.mode !== 'antigravity' || typeof enabled !== 'boolean')
+        throw new HttpError(400, 'Credits 仅支持 Antigravity，enabled 须为布尔值');
+      await saveData(env.DB, row, { enable_credit: enabled });
+      return json({ success: true, enabled });
+    }
+    if (action === 'preview')
+      return json(
+        await operation('preview_configure', () => configurePreview(accountEnv, row, fetcher)),
+      );
+    if (action === 'email') return json(await fetchEmail(accountEnv, row, fetcher));
     if (action === 'verify')
       return json(
-        await verifyProject(env, row, fetcher, request.body ? await readJson(request) : {}),
+        await verifyProject(accountEnv, row, fetcher, request.body ? await readJson(request) : {}),
       );
     if (action === 'test')
       return json(

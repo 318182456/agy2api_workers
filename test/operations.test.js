@@ -89,10 +89,23 @@ test('production Worker: final usage, account health, selection, scoped log expo
       const token = request.headers.get('authorization');
       seen.push({ token, model: payload.model });
       if (scenario === 'retry' && token === 'Bearer token-a')
-        return new OutboundResponse('{"error":{"message":"limit"}}', {
-          status: 429,
-          headers: { 'content-type': 'application/json', 'retry-after': '60' },
-        });
+        return new OutboundResponse(
+          JSON.stringify({
+            error: {
+              message: 'limit',
+              details: [
+                {
+                  '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+                  metadata: { quotaResetDelay: '6d' },
+                },
+              ],
+            },
+          }),
+          {
+            status: 429,
+            headers: { 'content-type': 'application/json', 'retry-after': '60' },
+          },
+        );
       const value = {
         response: {
           candidates: [
@@ -220,6 +233,7 @@ test('production Worker: final usage, account health, selection, scoped log expo
     assert.equal(health.health.last_status, 429);
     assert.equal(health.health.last_success, null);
     assert.equal(health.cooldowns[0].model, 'claude-opus-4-6-thinking');
+    assert.ok(health.cooldowns[0].until_ms > Date.now() + 5 * 86400000);
     health = await (await admin('/admin/credentials/' + b + '/health')).json();
     assert.ok(health.health.last_success);
     assert.equal(health.health.failure_streak, 0);

@@ -65,6 +65,18 @@ export async function usageStats(db, params, env = {}) {
   safe.delete('stage');
   safe.delete('before');
   safe.delete('fresh');
+  let apiKeyIds = null;
+  if (safe.has('api_key_ids')) {
+    apiKeyIds = safe.get('api_key_ids').split(',');
+    if (
+      !apiKeyIds.length ||
+      apiKeyIds.length > 51 ||
+      apiKeyIds.some((id) => !/^[a-f0-9-]{36}$/.test(id))
+    )
+      throw new HttpError(400, 'API 密钥列表无效，单次最多 51 个');
+    apiKeyIds = [...new Set(apiKeyIds)].sort();
+    safe.set('api_key_ids', apiKeyIds.join(','));
+  }
   const key =
     (env.TELEMETRY ? (env.USAGE_STORAGE_MODE || 'aggregate') + ':' : 'detailed:') +
     [...safe.entries()]
@@ -82,6 +94,10 @@ export async function usageStats(db, params, env = {}) {
     if (!/^[a-f0-9-]{36}$/.test(apiKeyId)) throw new HttpError(400, 'API 密钥 ID 无效');
     where += (where ? ' AND ' : ' WHERE ') + 'u.api_key_id=?';
     values.push(apiKeyId);
+  }
+  if (apiKeyIds) {
+    where += (where ? ' AND ' : ' WHERE ') + 'u.api_key_id IN(SELECT value FROM json_each(?))';
+    values.push(JSON.stringify(apiKeyIds));
   }
   values.push(Date.now() - 30 * 86400000);
   const snapshot = await pendingTelemetry(env);
@@ -123,6 +139,7 @@ export async function usageStats(db, params, env = {}) {
       const label = current?.email || current?.name || row.credential_name || '未选中凭证';
       if (safe.get('request_id')) continue;
       if (apiKeyId && row.api_key_id !== apiKeyId) continue;
+      if (apiKeyIds && !apiKeyIds.includes(row.api_key_id)) continue;
       if (safe.get('credential_id') && row.credential_id !== safe.get('credential_id')) continue;
       if (safe.get('mode') && row.mode !== safe.get('mode')) continue;
       if (safe.get('model') && row.model !== safe.get('model')) continue;

@@ -327,6 +327,34 @@ npm run check
 
 Antigravity 普通请求默认通过 `streamGenerateContent` 获取上游 SSE 并汇总为完整 JSON，与原 Python 项目的默认行为一致；客户端不需要改为流式解析。若管理页曾保存该开关为关闭，升级会尊重原设置，需要在“系统设置 → 运行参数”手动开启。上游流式汇总可以改善等待首包的路径，但汇总期间客户端仍需等待完整 JSON，不能保证消除所有网络超时。
 
-流式汇总接受 SSE、完整 Gemini JSON 对象或分块 JSON 数组，均保留工具调用、签名和上游用量。完成标记不会被后续空元数据覆盖；缺少完成标记的中断流仍报告失败。问题一览会区分响应类型不符、无效 JSON、空流、中断及未完成流，并显示安全的汇总错误说明，不保存响应正文或聊天内容。响应已经成功开始后不会为格式错误重新发起生成请求。
+流式汇总接受 SSE、完整 Gemini JSON 对象或分块 JSON 数组，均保留工具调用、签名和上游用量。完成标记不会被后续空元数据覆盖；单帧、单候选的纯文本响应在正常 EOF 且缺少完成标记时兼容原 Python 返回现有正文，并在响应头 `x-completion-status: unconfirmed`、`x-upstream-warning: UPSTREAM_FINISH_UNCONFIRMED` 和 JSON 的 `completion_status` / `warnings` 中标记“结束未确认”；内容可能不完整，不伪造 Google `finishReason`，不自动重试或续写。协议转换仍按原有结束原因默认值输出，不能将其当作 Google 确认完成；缓冲假流式会在数据事件中保留该标记。正常完成响应不加标记。工具调用、多帧缺结束标记、连接异常及其他非纯文本响应仍报告失败；此兼容仅用于 Antigravity 普通请求的流式汇总，不改变真正流式请求。Cloudflare 日志记录安全的未确认事件，不增加 D1 逐请求写入。问题一览会区分响应类型不符、无效 JSON、空流、中断及未完成流，并显示安全的汇总错误说明，不保存响应正文或聊天内容。响应已经成功开始后不会为格式错误重新发起生成请求。
 
 不完整流返回 `UPSTREAM_STREAM_INCOMPLETE` 时，问题一览会显示帧数、候选数、已结束候选数、正文/思考字符数量、工具调用数量、用量报告状态与结束方式（EOF / DONE / JSON）。这些诊断不包含正文、工具参数或签名；缺少结束标记仍按失败记录，不自动补 STOP，也不在消耗响应后重发生成。失败流已报告的 Token 仍计入用量。
+
+API 密钥列表在名称后直接展示最近 30 天的已报告总 Token 与请求数，包含 DO 待落盘数据；有请求但缺少 Token 报告时显示未知或部分未报告。当前页（最多 50 个独立密钥及总密钥）只批量查询一次，统计缓存 30 秒，不逐个查询；用量获取失败不影响停用、删除等密钥管理。历史模型/日期明细仍可通过“用量明细”展开。
+
+OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature`，Gemini 3 及以后模型的历史工具调用会仅在缺签名时补入 Google 官方兼容值 `skip_thought_signature_validator`，避免多轮工具调用因缺签名返回 400。真实签名始终原样保留；原生 Gemini 与其他模型家族保持原有处理；Anthropic Messages 接入 Gemini 3+ 时使用相同的缺签名兼容策略。兼容值不能恢复丢失的思考上下文，支持签名回传的客户端仍应完整保存扩展字段。参考 [Google thought signatures](https://ai.google.dev/gemini-api/docs/generate-content/thought-signatures)。
+
+### 原 Python 功能的 Workers 迁移
+
+原项目的主要兼容能力已按 Workers 的资源与计量方式接入；本地代理、进程保活、MongoDB/PostgreSQL 驱动与内置升级由可配置上游、Cron、D1/KV/DO 和 Git 部署替代。`Hi` 固定成功回复未引入，服务健康请用 `/health`，模型测试仍实际访问 Google。
+
+| 能力              | 入口与行为                                                                                                                                                                                                                                                                      |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 工具调用兼容      | 请求内为特殊/过长工具名建立可逆且防冲突的名称映射，普通与 SSE 输出恢复原名；修正未签名历史中明确可转换的数字/布尔/字符串参数；保留真实签名和工具 ID，不把无效参数静默替换为空对象                                                                                               |
+| 多轮/并行工具历史 | 合并相邻同角色消息，按 ID 匹配结果，拒绝孤立/重复 ID；Gemini 把同一 user 块的工具结果放在普通文本前并按调用顺序排列，Claude 保持明确 ID 的结果原顺序，不跨用户轮次移动有签名的调用                                                                                              |
+| 失效凭证自动停用  | 设置中的“明确 invalid_grant 时自动停用”，默认开启；只针对 OAuth 400/401 且错误精确为 invalid_grant。CAS 更新保护并发重新导入，固定渠道也可在剩余预算内改选账号；invalid_client、地区/权限及网络错误不自动停用                                                                   |
+| GeminiCLI Preview | 凭证行“更多操作 → 开通 Preview / 检查 Preview”；先查询已有实验设置和绑定，再幂等创建缺失项。仅点击此操作才访问 Cloud 配置 API，不混入普通项目校验；需要 cloud-platform 授权及项目设置管理权限                                                                                   |
+| ZIP 凭证备份      | 批量操作中导出 ZIP；批量导入页可选 JSON 或 ZIP。支持标准 stored/deflate ZIP，UTF-8 名称、CRC/大小校验；最多 100 条、单条 1 MiB、压缩与展开总量最多 4 MiB，不支持加密、分卷、ZIP64 或不安全路径                                                                                  |
+| 稳定会话与标签    | Antigravity 默认按项目、API 密钥和首条用户文本生成稳定会话 ID，保留显式 sessionId；补入原项目请求标签。不把原始对话存进 D1/KV                                                                                                                                                   |
+| 思考内容显示      | 设置“返回思考内容”，默认开启；关闭后请求 Google 不返回思考，并在输出转换时过滤思考文本，思考 Token 仍保留统计                                                                                                                                                                   |
+| 假流式 / 心跳     | 设置“假流式兼容”，默认关闭；也可在单次流式请求加 fake_stream:true。等待一次普通生成期间发送 SSE 心跳，再按 OpenAI / Anthropic / Gemini 协议输出；不额外生成，取消时终止内部请求，保留同一请求 ID 与一次用量记录                                                                 |
+| 抗截断 / 自动续写 | 设置“MAX_TOKENS 后最多续写次数”，默认 0，最多 2；仅续写有明确 MAX_TOKENS 的纯文本结果，保留同一账号、模型、渠道，不重放工具调用、图片或缺结束信号的响应。流式客户端使用心跳缓冲后输出，仍受普通请求总时限限制；总 Token 包含每次续写，可用 anti_truncation:false 在单次请求关闭 |
+| AI Credits        | 全局“允许使用 AI Credits”和凭证行“允许此账号 Credits”必须同时开启才发送 enabledCreditTypes；全局默认关闭，凭证 enable_credit 仅接受布尔值。可能消费付费额度，导入或项目校验不会自动开启全局消费                                                                                 |
+| 用量与限流        | OpenAI 返回缓存/思考 Token 明细；结构化 Google 额度重置最多冷却 7 天，错误 JSON 检查最多 64 KiB/1 秒，不消耗原响应正文，不增加逐请求冷却写入次数                                                                                                                                |
+
+新增设置可在管理页保存，也可使用同名 vars：`AUTO_DISABLE_INVALID_CREDENTIALS`、`STABLE_SESSION`、`RETURN_THOUGHTS`、`ENABLE_AI_CREDITS`、`FAKE_STREAMING`、`CONTINUATION_ATTEMPTS`。前 3 项默认开启；后 3 项默认关闭或 0。不需要数据库迁移，也没有新增 KV/DO 资源。
+
+自动续写可能重复少量文本或耗尽原有总时限；不承诺修复真正的流中断或 Google 的 524。缺少真实签名时的兼容占位值也无法恢复原思考上下文。Preview 是否可开通仍取决于真实账号资格与 IAM；本地回归使用隔离假凭证和模拟 Google 接口，不代替线上资格验证。
+
+参考：[Google Preview 配置](https://docs.cloud.google.com/gemini/docs/codeassist/configure-release-channels)、[Google 设置 API](https://docs.cloud.google.com/gemini/docs/api/reference/rest/v1/projects.locations.releaseChannelSettings/create)、[Cloudflare 原生解压支持](https://developers.cloudflare.com/workers/runtime-apis/web-standards/)。

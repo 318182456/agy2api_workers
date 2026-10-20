@@ -2,14 +2,95 @@ import { HttpError } from './common.js';
 import { maybePrune, LOG_RETENTION_DAYS } from './maintenance.js';
 import { filters, credentialJoin } from './filters.js';
 
-export function cooldownSeconds(response, now = Date.now()) {
+function quotaDuration(value) {
+  if (typeof value !== 'string' || value.length > 100) return null;
+  const input = value.trim();
+  if (!/^(?:\d+(?:\.\d+)?[dhms]\s*)+$/.test(input)) return null;
+  const units = { d: 86400, h: 3600, m: 60, s: 1 };
+  return [...input.matchAll(/(\d+(?:\.\d+)?)([dhms])/g)].reduce(
+    (sum, match) => sum + Number(match[1]) * units[match[2]],
+    0,
+  );
+}
+export function cooldownSeconds(response, now = Date.now(), body) {
   const value = response.headers.get('retry-after');
   let seconds;
   if (value && /^\d+(?:\.\d+)?$/.test(value.trim())) seconds = Number(value);
   else if (value && Number.isFinite(Date.parse(value)))
     seconds = Math.ceil((Date.parse(value) - now) / 1000);
-  if (!Number.isFinite(seconds) || seconds <= 0) seconds = response.status === 429 ? 60 : 10;
-  return Math.min(86400, Math.max(1, Math.ceil(seconds)));
+  const candidates = Number.isFinite(seconds) && seconds > 0 ? [seconds] : [];
+  const details = body?.error?.details;
+  if ([429, 503].includes(response.status) && Array.isArray(details)) {
+    for (const detail of details.slice(0, 50)) {
+      if (detail?.['@type'] === 'type.googleapis.com/google.rpc.ErrorInfo') {
+        const metadata = detail.metadata;
+        const reset =
+          typeof metadata?.quotaResetTimeStamp === 'string'
+            ? Date.parse(metadata.quotaResetTimeStamp)
+            : NaN;
+        if (Number.isFinite(reset) && reset > now) candidates.push((reset - now) / 1000);
+        const delay = quotaDuration(metadata?.quotaResetDelay);
+        if (delay > 0) candidates.push(delay);
+      } else if (detail?.['@type'] === 'type.googleapis.com/google.rpc.RetryInfo') {
+        const delay = quotaDuration(detail.retryDelay);
+        if (delay > 0) candidates.push(delay);
+      }
+    }
+  }
+  return Math.min(
+    7 * 86400,
+    Math.max(
+      1,
+      Math.ceil(candidates.length ? Math.max(...candidates) : response.status === 429 ? 60 : 10),
+    ),
+  );
+}
+// Error-body inspection is bounded and optional. Preserve the original response for the client.
+export async function quotaCooldown(response, signal, now = Date.now()) {
+  if (
+    ![429, 503].includes(response.status) ||
+    signal?.aborted ||
+    !/application\/(?:json|[a-z0-9.+-]+\+json)/i.test(response.headers.get('content-type') || '')
+  )
+    return cooldownSeconds(response, now);
+  let reader, timer, onAbort;
+  try {
+    reader = response.clone().body?.getReader();
+    if (!reader) return cooldownSeconds(response, now);
+    const stop = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), 1000);
+      onAbort = () => resolve(null);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (signal?.aborted) resolve(null);
+    });
+    const read = async () => {
+      const decoder = new TextDecoder();
+      let bytes = 0,
+        text = '';
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        bytes += value.byteLength;
+        if (bytes > 65536) return null;
+        text += decoder.decode(value, { stream: true });
+      }
+      text += decoder.decode();
+      try {
+        return JSON.parse(text);
+      } catch {
+        return null;
+      }
+    };
+    return cooldownSeconds(response, now, await Promise.race([read(), stop]));
+  } catch {
+    return cooldownSeconds(response, now);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+    // Do not await cancellation of a cloned branch: its sibling is returned to the client.
+    reader?.cancel().catch(() => {});
+    reader?.releaseLock();
+  }
 }
 export async function putCooldown(db, row, model, status, seconds) {
   await db

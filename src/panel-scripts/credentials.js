@@ -165,6 +165,46 @@ function renderCredentials() {
     verify.className = 'secondary';
     verify.textContent = '校验项目';
     verify.onclick = () => run(() => verifyCredentialProject(credential));
+    if (credential.mode === 'antigravity') {
+      const credits = document.createElement('button');
+      credits.className = 'secondary';
+      credits.textContent = credential.enable_credit ? '关闭此账号 Credits' : '允许此账号 Credits';
+      credits.onclick = () =>
+        run(async () => {
+          if (
+            !credential.enable_credit &&
+            !confirm(
+              '允许此账号使用 AI Credits，可能消费付费额度；仍需同时开启设置中的全局 Credits 开关。继续？',
+            )
+          )
+            return;
+          await api('/admin/credentials/' + credential.id + '/credits', 'POST', {
+            enabled: !credential.enable_credit,
+          });
+          await refresh();
+          status('账号 Credits 授权已更新，仍受全局开关控制。');
+        });
+      extraActions.append(credits);
+    }
+    if (credential.mode === 'geminicli') {
+      const preview = document.createElement('button');
+      preview.className = 'secondary';
+      preview.textContent =
+        credential.preview_channel === 'EXPERIMENTAL' ? '检查 Preview' : '开通 Preview';
+      preview.onclick = () =>
+        run(async () => {
+          if (
+            !confirm(
+              '将为此凭证对应的 Cloud 项目创建实验通道设置和绑定，需要项目设置管理权限。继续？',
+            )
+          )
+            return;
+          const value = await api('/admin/credentials/' + credential.id + '/preview', 'POST', {});
+          status('Preview 实验通道已配置：' + value.project_id);
+          await refresh();
+        });
+      extraActions.append(preview);
+    }
     const test = document.createElement('button');
     test.className = 'secondary';
     test.textContent = '测试调用';

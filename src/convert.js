@@ -1,3 +1,4 @@
+import { restoreToolNames } from './tool-compat.js';
 import { HttpError } from './common.js';
 
 function contentParts(content) {
@@ -91,6 +92,11 @@ export function openaiToGemini(body) {
         const part = { functionCall: { name: fn.name, args, ...(call.id ? { id: call.id } : {}) } };
         const signature = call.extra_content?.google?.thought_signature;
         if (signature) part.thoughtSignature = signature;
+        // Some OpenAI clients discard extra_content when saving tool history. For unsigned
+        // Gemini 3+ history only, use Google's documented interoperability placeholder.
+        // Preserve real signatures; native Gemini/Anthropic and other model families are untouched.
+        else if (Number(body.model.match(/^gemini-(\d+)(?:[.-]|$)/i)?.[1]) >= 3)
+          part.thoughtSignature = 'skip_thought_signature_validator';
         parts.push(part);
       }
     }
@@ -194,6 +200,12 @@ export function usage(value) {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: meta.totalTokenCount ?? prompt + completion,
+    ...(Number.isSafeInteger(meta.cachedContentTokenCount) && meta.cachedContentTokenCount > 0
+      ? { prompt_tokens_details: { cached_tokens: Math.min(prompt, meta.cachedContentTokenCount) } }
+      : {}),
+    ...(Number.isSafeInteger(meta.thoughtsTokenCount) && meta.thoughtsTokenCount > 0
+      ? { completion_tokens_details: { reasoning_tokens: meta.thoughtsTokenCount } }
+      : {}),
   };
 }
 
@@ -309,6 +321,8 @@ export function convertedStream(
   onError = async () => {},
   onComplete = async () => {},
   onCancel = async () => {},
+  toolNames,
+  showThoughts = true,
 ) {
   const id = `chatcmpl-${crypto.randomUUID()}`;
   const created = Math.floor(Date.now() / 1000);
@@ -334,7 +348,7 @@ export function convertedStream(
     try {
       for await (const event of events) {
         if (event === '[DONE]') break;
-        const value = unwrap(JSON.parse(event));
+        const value = unwrap(restoreToolNames(JSON.parse(event), toolNames, showThoughts));
         if (value.error) throw new Error(value.error.message || '上游流式错误');
         if (value.usageMetadata) rawUsage = { ...rawUsage, ...value.usageMetadata };
         for (const [index, candidate] of (value.candidates || []).entries())

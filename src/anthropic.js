@@ -1,3 +1,4 @@
+import { restoreToolNames } from './tool-compat.js';
 import { HttpError } from './common.js';
 import { sseEvents, unwrap } from './convert.js';
 
@@ -63,6 +64,8 @@ export function anthropicToGemini(body, countOnly = false) {
         const part = { functionCall: { id: block.id, name: block.name, args: block.input } };
         if (block.extra_content?.google?.thought_signature)
           part.thoughtSignature = block.extra_content.google.thought_signature;
+        else if (Number(body.model.match(/^gemini-(\d+)(?:[.-]|$)/i)?.[1]) >= 3)
+          part.thoughtSignature = 'skip_thought_signature_validator';
         parts.push(part);
       } else if (block.type === 'tool_result') {
         const name = calls.get(block.tool_use_id);
@@ -273,6 +276,8 @@ export function anthropicStream(
   onError = async () => {},
   onComplete = async () => {},
   onCancel = async () => {},
+  toolNames,
+  showThoughts = true,
 ) {
   const control = {};
   const events = sseEvents(upstream, control);
@@ -293,7 +298,7 @@ export function anthropicStream(
     try {
       for await (const event of events) {
         if (event === '[DONE]') break;
-        const value = unwrap(JSON.parse(event));
+        const value = unwrap(restoreToolNames(JSON.parse(event), toolNames, showThoughts));
         const candidate = value?.candidates?.[0];
         if (value?.error || blocked(value, candidate))
           throw new Error('Google 返回生成错误或内容限制');

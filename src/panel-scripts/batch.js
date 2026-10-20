@@ -49,6 +49,25 @@ el('batchRun').onclick = () => {
     return;
   }
   const action = el('batchAction').value;
+  if (action === 'exportZip')
+    return run(async () => {
+      if (rows.length > 100) throw new Error('ZIP 每次最多导出 100 个凭证');
+      const blob = await api(
+        '/admin/credentials/export.zip',
+        'POST',
+        { ids: rows.map((row) => row.id) },
+        'blob',
+      );
+      const url = URL.createObjectURL(blob),
+        link = document.createElement('a');
+      link.href = url;
+      link.download = 'gcli2api-credentials.zip';
+      document.body.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      status('ZIP 已导出。');
+    });
   if (action === 'export' && rows.length > 1000) {
     status('单份备份最多 1000 个凭证，请分批导出。');
     return;
@@ -128,6 +147,21 @@ el('batchImportForm').onsubmit = (event) => {
         let entries;
         try {
           if (file.size > 4 * 1024 * 1024) throw new Error('单个文件不能超过 4 MiB');
+          if (file.name.toLowerCase().endsWith('.zip')) {
+            const value = await api(
+              '/admin/credentials/import.zip?mode=' + encodeURIComponent(el('batchMode').value),
+              'POST',
+              file,
+            );
+            total += value.total;
+            success += value.imported;
+            for (const row of value.results)
+              batchLine(
+                row.name + '：' + (row.success ? '导入完成' : '导入失败 (HTTP ' + row.status + ')'),
+              );
+            continue;
+          }
+
           const value = JSON.parse(await file.text());
           entries =
             value.format === 'gcli2api-workers-credentials-v1' && Array.isArray(value.credentials)

@@ -2187,6 +2187,7 @@ test('split SSE usage agrees with telemetry and does not reset prompt tokens', a
   assert.deepEqual(events.at(-1).usage, {
     prompt_tokens: 11,
     completion_tokens: 10,
+    completion_tokens_details: { reasoning_tokens: 3 },
     total_tokens: 21,
   });
   assert.equal(recorded.promptTokenCount, 11);
@@ -2326,4 +2327,255 @@ test('incomplete streams report safe shape diagnostics and retain reported token
       return true;
     });
   }
+});
+
+test('OpenAI Gemini tool history preserves real signatures and supplies the documented fallback only when missing', async () => {
+  const history = {
+    model: 'gemini-3.1-flash-lite',
+    messages: [
+      { role: 'user', content: 'search for earlier observations' },
+      {
+        role: 'assistant',
+        tool_calls: [
+          {
+            id: 'call_unsigned',
+            type: 'function',
+            function: { name: 'search_observations', arguments: '{"query":"fixture"}' },
+          },
+          {
+            id: 'call_signed',
+            type: 'function',
+            function: { name: 'second_search', arguments: '{}' },
+            extra_content: { google: { thought_signature: 'original-real-signature' } },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_unsigned', content: '{"result":[]}' },
+      { role: 'tool', tool_call_id: 'call_signed', content: '{"result":[]}' },
+    ],
+  };
+  for (const model of [
+    'gemini-3.1-flash-lite',
+    'gemini-3-flash-preview',
+    'gemini-4-future',
+    'gemini-2.5-flash',
+    'claude-sonnet-4-6',
+    'custom-model',
+  ]) {
+    const converted = openaiToGemini({ ...history, model });
+    assert.equal(
+      converted.contents[1].parts[0].thoughtSignature,
+      /^gemini-[34]/.test(model) ? 'skip_thought_signature_validator' : undefined,
+    );
+    assert.equal(converted.contents[1].parts[1].thoughtSignature, 'original-real-signature');
+    assert.equal(converted.contents[1].parts[0].functionCall.id, 'call_unsigned');
+    assert.equal(converted.contents[2].parts[0].functionResponse.id, 'call_unsigned');
+    assert.deepEqual(converted.contents[1].parts[0].functionCall.args, { query: 'fixture' });
+  }
+  let calls = 0;
+  for (const mode of ['geminicli', 'antigravity'])
+    for (const streaming of [false, true]) {
+      const db = fakeDB();
+      const prepare = db.prepare;
+      db.prepare = (sql) => {
+        const stmt = prepare(sql),
+          first = stmt.first;
+        stmt.first = async () => ({ ...(await first()), mode });
+        return stmt;
+      };
+      const response = await handleRequest(
+        request('/' + mode + '/v1/chat/completions', { ...history, stream: streaming }),
+        { ...env, DB: db },
+        async (_url, options) => {
+          calls++;
+          const payload = JSON.parse(options.body);
+          assert.equal(
+            payload.request.contents[1].parts[0].thoughtSignature,
+            'skip_thought_signature_validator',
+          );
+          assert.equal(
+            payload.request.contents[1].parts[1].thoughtSignature,
+            'original-real-signature',
+          );
+          return streaming
+            ? new Response('data: ' + JSON.stringify(candidate('tool loop completed')) + '\n\n', {
+                headers: { 'content-type': 'text/event-stream' },
+              })
+            : Response.json(candidate('tool loop completed'));
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.ok((await response.text()).includes('tool loop completed'));
+    }
+  assert.equal(calls, 4);
+  const signed = geminiToOpenai(
+    {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { id: 'call_roundtrip', name: 'search_observations', args: {} },
+                thoughtSignature: 'server-signature',
+              },
+            ],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    },
+    history.model,
+  ).choices[0].message;
+  const roundtrip = openaiToGemini({
+    ...history,
+    messages: [
+      history.messages[0],
+      signed,
+      { role: 'tool', tool_call_id: 'call_roundtrip', content: '{}' },
+    ],
+  });
+  assert.equal(roundtrip.contents[1].parts[0].thoughtSignature, 'server-signature');
+});
+
+test('quota cooldown reads structured weekly resets without consuming the original error response', async () => {
+  const { cooldownSeconds, quotaCooldown } = await import('../src/reliability.js');
+  const now = Date.parse('2026-10-20T00:00:00Z');
+  const body = {
+    error: {
+      code: 429,
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          metadata: { quotaResetTimeStamp: '2026-10-26T00:00:00Z', quotaResetDelay: '5h30m0.2s' },
+        },
+        { '@type': 'type.googleapis.com/google.rpc.RetryInfo', retryDelay: '60.5s' },
+      ],
+    },
+  };
+  const response = Response.json(body, { status: 429, headers: { 'retry-after': '90' } });
+  assert.equal(await quotaCooldown(response, undefined, now), 6 * 86400);
+  assert.deepEqual(await response.json(), body);
+  const quota = (value) => ({
+    error: {
+      details: [
+        {
+          '@type': 'type.googleapis.com/google.rpc.ErrorInfo',
+          metadata: { quotaResetDelay: value },
+        },
+      ],
+    },
+  });
+  assert.equal(cooldownSeconds(new Response('', { status: 429 }), now, quota('5h30m0.2s')), 19801);
+  assert.equal(cooldownSeconds(new Response('', { status: 429 }), now, quota('999d')), 7 * 86400);
+  assert.equal(cooldownSeconds(new Response('', { status: 429 }), now, quota('garbage 10s')), 60);
+  assert.equal(
+    await quotaCooldown(
+      new Response('not-json', { status: 429, headers: { 'content-type': 'application/json' } }),
+    ),
+    60,
+  );
+  assert.equal(
+    await quotaCooldown(Response.json({ data: 'x'.repeat(70000) }, { status: 429 })),
+    60,
+  );
+});
+
+test('quota error inspection is bounded when a JSON response body stalls', async (t) => {
+  const { quotaCooldown } = await import('../src/reliability.js');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  let original;
+  const response = new Response(
+    new ReadableStream({
+      start(controller) {
+        original = controller;
+      },
+    }),
+    { status: 429, headers: { 'content-type': 'application/json' } },
+  );
+  const result = quotaCooldown(response);
+  t.mock.timers.tick(1000);
+  assert.equal(await result, 60);
+  original.close();
+  assert.equal(await response.text(), '');
+});
+
+test('OpenAI usage reports cached and reasoning token details without subtracting them twice', async () => {
+  const { usage } = await import('../src/convert.js');
+  assert.deepEqual(
+    usage({
+      usageMetadata: {
+        promptTokenCount: 100,
+        cachedContentTokenCount: 40,
+        candidatesTokenCount: 20,
+        thoughtsTokenCount: 10,
+        totalTokenCount: 130,
+      },
+    }),
+    {
+      prompt_tokens: 100,
+      completion_tokens: 30,
+      total_tokens: 130,
+      prompt_tokens_details: { cached_tokens: 40 },
+      completion_tokens_details: { reasoning_tokens: 10 },
+    },
+  );
+});
+
+test('single-frame text EOF compatibility is explicit and never accepts tools, broken streams or fabricated completion', async () => {
+  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const value = { response: { candidates: [{ content: { parts: [{ text: 'existing text' }] } }] } };
+  const event = (raw) => 'data: ' + JSON.stringify(raw) + '\n\n';
+  const response = (text) =>
+    new Response(text, { headers: { 'content-type': 'text/event-stream' } });
+  const read = (r) => collectGoogleResponse(r, undefined, { allowUnconfirmedText: true });
+  await assert.rejects(collectGoogleResponse(response(event(value))), {
+    errorCode: 'UPSTREAM_STREAM_INCOMPLETE',
+  });
+  const result = await read(response(event(value)));
+  assert.equal(result.candidates[0].content.parts[0].text, 'existing text');
+  assert.equal(result.candidates[0].finishReason, undefined);
+  assert.equal(result.usageMetadata, undefined);
+  assert.equal(result.completion_status, 'unconfirmed');
+  assert.equal(result.warnings[0].code, 'UPSTREAM_FINISH_UNCONFIRMED');
+  assert.match(result.warnings[0].message, /结束未确认/);
+  for (const mutate of [
+    (v) => v.response.candidates[0].content.parts.push({ functionCall: { name: 'f', args: {} } }),
+    (v) =>
+      v.response.candidates[0].content.parts.push({
+        inlineData: { mimeType: 'image/png', data: 'AA==' },
+      }),
+    (v) => v.response.candidates.push(structuredClone(v.response.candidates[0])),
+    (v) => {
+      v.response.candidates[0].content.parts = [{ text: 'thinking', thought: true }];
+    },
+    (v) => {
+      v.response.candidates[0].content.parts = [{ text: '' }];
+    },
+    (v) => {
+      v.response.finish_reason = 'stop';
+    },
+  ]) {
+    const altered = structuredClone(value);
+    mutate(altered);
+    await assert.rejects(read(response(event(altered))), {
+      errorCode: 'UPSTREAM_STREAM_INCOMPLETE',
+    });
+  }
+  for (const text of [
+    event(value) + event({ response: { usageMetadata: { totalTokenCount: 7 } } }),
+    event(value) + 'data: [DONE]\n\n',
+  ])
+    await assert.rejects(read(response(text)), { errorCode: 'UPSTREAM_STREAM_INCOMPLETE' });
+  await assert.rejects(read(Response.json(value)), { errorCode: 'UPSTREAM_STREAM_INCOMPLETE' });
+  let step = 0;
+  const broken = new ReadableStream({
+    pull(controller) {
+      if (step++ === 0) controller.enqueue(new TextEncoder().encode(event(value)));
+      else controller.error(new Error('connection lost'));
+    },
+  });
+  await assert.rejects(read(response(broken)), { errorCode: 'UPSTREAM_STREAM_INTERRUPTED' });
+  const completed = structuredClone(value);
+  completed.response.candidates[0].finishReason = 'STOP';
+  assert.equal((await read(response(event(completed)))).completion_status, undefined);
 });

@@ -1,3 +1,4 @@
+import { normalizeToolHistory } from './tool-compat.js';
 import { HttpError } from './common.js';
 import { cleanToolSchema } from './schema.js';
 import { antigravityModel, claudeToolIds } from './antigravity-models.js';
@@ -164,6 +165,7 @@ export function normalizeRequest(request, model, mode) {
         return { ...content, role: content.role || 'user', parts };
       })
       .filter((content) => content.parts.length);
+    result.contents = normalizeToolHistory(result.contents, /^gemini-/i.test(parsed.model));
     // Follow the original model-specific prefill handling; tool history and signatures remain intact.
     if (parsed.profile?.noPrefill || mode === 'antigravity')
       while (result.contents.at(-1)?.role === 'model') result.contents.pop();

@@ -289,15 +289,18 @@ for (const button of document.querySelectorAll('[data-copy]'))
       } else status('请复制接口地址：' + text);
     });
 
-async function api(path, method = 'GET', body) {
+async function api(path, method = 'GET', body, responseType) {
+  const raw = typeof Blob !== 'undefined' && body instanceof Blob;
   const headers = {};
-  if (body !== undefined) headers['content-type'] = 'application/json';
+  if (body !== undefined)
+    headers['content-type'] = raw ? body.type || 'application/zip' : 'application/json';
   const response = await fetch(path, {
     method,
     headers,
     credentials: 'same-origin',
-    body: body === undefined ? undefined : JSON.stringify(body),
+    body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
   });
+  if (response.ok && responseType === 'blob') return response.blob();
   const value = await response.json();
   if (response.status === 401) {
     resetKeys();

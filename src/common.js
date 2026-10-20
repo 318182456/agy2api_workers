@@ -105,7 +105,7 @@ export async function googleFetch(fetcher, url, options, stage) {
       (options.signal?.aborted && options.signal.reason?.name === 'TimeoutError');
     const failure = new HttpError(
       timedOut ? 504 : 502,
-      `${{ oauth_refresh: 'Google OAuth 刷新', oauth_exchange: 'Google 授权码交换', quota_fetch: 'Google 额度查询', email_fetch: 'Google 邮箱查询', project_verify: 'Google 项目校验', credential_test: 'Google 凭证测试', model_discovery: 'Google 模型列表查询' }[stage] || 'Google 聊天请求'}${timedOut ? '超时' : '连接失败'}，请检查 Cloudflare 到 Google 的网络连接；这不是数据库迁移错误`,
+      `${{ preview_configure: 'Google Preview 配置', oauth_refresh: 'Google OAuth 刷新', oauth_exchange: 'Google 授权码交换', quota_fetch: 'Google 额度查询', email_fetch: 'Google 邮箱查询', project_verify: 'Google 项目校验', credential_test: 'Google 凭证测试', model_discovery: 'Google 模型列表查询' }[stage] || 'Google 聊天请求'}${timedOut ? '超时' : '连接失败'}，请检查 Cloudflare 到 Google 的网络连接；这不是数据库迁移错误`,
     );
     failure.operation = stage;
     failure.errorCode = timedOut ? 'UPSTREAM_TIMEOUT' : 'UPSTREAM_CONNECTION_FAILED';
