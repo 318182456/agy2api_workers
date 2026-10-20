@@ -8,6 +8,8 @@ import { effectiveEnv, readSettings, saveSettings } from '../src/settings.js';
 import { recordUsage, usageStats } from '../src/metrics.js';
 import { queryCallLogs, clearCallLogs } from '../src/reliability.js';
 import { dbCache } from '../src/db-cache.js';
+import { listCredentials } from '../src/credentials.js';
+import { credentialHealth } from '../src/telemetry/health.js';
 globalThis.crypto ||= webcrypto;
 async function database(run) {
   const mf = new Miniflare({
@@ -271,4 +273,109 @@ test('7-day logs: hide expired entries immediately, hourly Cron deletes old even
     cleared = await clearCallLogs(db, new URLSearchParams(), { confirm: 'delete-matching-logs' });
     assert.equal(cleared.deleted, 120);
     assert.equal((await queryCallLogs(db, new URLSearchParams())).records.length, 0);
+  }));
+
+test('D1 reads: account health seeks latest success and per-key statistics avoid unrelated aggregate history', () =>
+  database(async (raw) => {
+    const now = Date.now(),
+      credential = '11111111-1111-4111-8111-111111111111',
+      wanted = '22222222-2222-4222-8222-222222222222',
+      other = '33333333-3333-4333-8333-333333333333';
+    await raw
+      .prepare('INSERT INTO credentials(id,mode,name,data,created_at)VALUES(?,?,?,?,?)')
+      .bind(
+        credential,
+        'antigravity',
+        'budget',
+        JSON.stringify({ user_email: 'fixture@example.test' }),
+        now,
+      )
+      .run();
+    await raw
+      .prepare(
+        `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<5000)
+      INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,payload,members,api_key_id)
+      SELECT 'read-budget-'||x,1,${now},'${credential}',json_object('requests',1,'successes',1,'total_tokens',1,'token_reports',1,'mode','antigravity','model','m','status',200,'outcome','success','last_success',${now}+x),'[]',CASE WHEN x<=10 THEN '${wanted}' ELSE '${other}' END FROM n`,
+      )
+      .run();
+    await raw
+      .prepare(
+        `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000)
+      INSERT INTO request_usage(request_id,credential_id,credential_name,mode,model,status,outcome,duration_ms,created_at,api_key_id)
+      SELECT 'detail-read-budget-'||x,'${credential}','budget','antigravity','m',400,'failed',1,${now},CASE WHEN x=1 THEN '${wanted}' ELSE '${other}' END FROM n`,
+      )
+      .run();
+    const DB = metered(raw);
+    const accounts = await listCredentials(DB);
+    assert.equal(accounts[0].last_success, now + 5000);
+    assert.ok(DB.totals.rows_read < 40, JSON.stringify(DB.totals));
+    for (const key of Object.keys(DB.totals)) DB.totals[key] = 0;
+    const health = await credentialHealth(DB, credential);
+    assert.equal(health.health.last_success, now + 5000);
+    assert.ok(DB.totals.rows_read < 40, JSON.stringify(DB.totals));
+    for (const key of Object.keys(DB.totals)) DB.totals[key] = 0;
+    const stats = await usageStats(
+      DB,
+      new URLSearchParams({ api_key_ids: wanted, from: String(now - 1000) }),
+    );
+    assert.equal(stats.summary.requests, 11);
+    assert.equal(stats.summary.total_tokens, 10);
+    assert.ok(DB.totals.rows_read < 300, JSON.stringify(DB.totals));
+  }));
+
+test('D1 reads: statistics share bounded snapshots across isolates, coalesce concurrent misses and honor fresh queries', () =>
+  database(async (raw) => {
+    const previous = globalThis.caches,
+      entries = new Map();
+    globalThis.caches = {
+      default: {
+        async match(request) {
+          return entries.get(request.url)?.clone();
+        },
+        async put(request, response) {
+          entries.set(request.url, response.clone());
+        },
+      },
+    };
+    try {
+      const params = new URLSearchParams(),
+        DB = metered(raw),
+        env = { PANEL_PASSWORD: 'local-fixture' };
+      const first = await usageStats(DB, params, env);
+      assert.equal(DB.totals.queries, 1);
+      const secondDB = metered(raw);
+      const shared = await usageStats(secondDB, params, env);
+      assert.equal(shared.cached_at, first.cached_at);
+      assert.equal(shared.cache_seconds, 60);
+      assert.equal(secondDB.totals.queries, 0);
+      const isolated = metered(raw);
+      await usageStats(isolated, params, { PANEL_PASSWORD: 'different-scope' });
+      assert.equal(isolated.totals.queries, 1);
+      await usageStats(secondDB, new URLSearchParams('fresh=1'), env);
+      assert.equal(secondDB.totals.queries, 1);
+      const third = metered(raw);
+      await Promise.all(
+        Array.from({ length: 12 }, () => usageStats(third, new URLSearchParams('fresh=1'), env)),
+      );
+      assert.equal(third.totals.queries, 1);
+      const expired = { ...first, cached_at: Date.now() - 61000 };
+      for (const key of entries.keys()) entries.set(key, Response.json(expired));
+      const afterExpiry = metered(raw);
+      await usageStats(afterExpiry, params, env);
+      assert.equal(afterExpiry.totals.queries, 1);
+      globalThis.caches = {
+        default: {
+          match: async () => {
+            throw new Error('unavailable');
+          },
+          put: async () => {
+            throw new Error('unavailable');
+          },
+        },
+      };
+      await usageStats(metered(raw), params, env);
+    } finally {
+      if (previous === undefined) delete globalThis.caches;
+      else globalThis.caches = previous;
+    }
   }));

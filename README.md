@@ -276,7 +276,7 @@ npm run check
 
 ### Google 返回 403、429 或连接失败
 
-403 可能与账号、项目权限或地区有关；429 表示上游限流。Cloudflare 不提供固定国家出口，本项目也不保证绕过 Google 地区限制。
+403 可能与账号、项目权限或地区有关；429 表示上游限流。Cloudflare 不提供固定国家出口，本项目也不保证绕过 Google 地区限制。 当前 `wrangler.jsonc` 使用 `placement.region: "aws:us-east-1"`，请求 Worker 尽量靠近美国东部执行；部署后生效。这是执行位置提示，不是固定国家或固定出口 IP，不能保证 Google 接受。若需改为靠近日本东京，可替换为 `aws:ap-northeast-1`。具体调度以 Cloudflare 为准，不能用客户端入口的 `CF-Ray` 位置直接判断 Google 看到的出口；配置说明见 [Cloudflare Placement 文档](https://developers.cloudflare.com/workers/configuration/placement/)。
 
 错误中的 `stage` 和 `request_id` 可帮助定位：`oauth_refresh` 是令牌刷新，`generation_fetch` 是聊天连接，`quota_fetch` 是额度查询。网络错误通常返回 502，超时返回 504；数据库迁移无法解决 Google 网络问题。
 
@@ -358,3 +358,8 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 自动续写可能重复少量文本或耗尽原有总时限；不承诺修复真正的流中断或 Google 的 524。缺少真实签名时的兼容占位值也无法恢复原思考上下文。Preview 是否可开通仍取决于真实账号资格与 IAM；本地回归使用隔离假凭证和模拟 Google 接口，不代替线上资格验证。
 
 参考：[Google Preview 配置](https://docs.cloud.google.com/gemini/docs/codeassist/configure-release-channels)、[Google 设置 API](https://docs.cloud.google.com/gemini/docs/api/reference/rest/v1/projects.locations.releaseChannelSettings/create)、[Cloudflare 原生解压支持](https://developers.cloudflare.com/workers/runtime-apis/web-standards/)。
+
+
+读取预算优化：统计查询会先按时间、API 密钥和账号缩小明细与聚合表范围，再做合并去重；`0010_read_budget.sql` 添加密钥/时间与最后成功查询索引。凭证列表和健康页通过索引定位最后成功记录，避免每次浏览扫描所有聚合历史。统计使用 60 秒实例缓存及同执行节点的 Cache API 快照，并合并同一实例中的并发查询；手动刷新仍可绕过缓存。Cache API 不可用时回退到 D1，快照不写入 KV，也不保存令牌或鉴权结果。API 密钥停用、删除、到期仍在每次请求中实时校验。新索引会在迁移时一次性构建，后续每个聚合桶落盘有少量索引维护写入，仍按 5 分钟批量落盘。
+
+控制台顶部显示最近一次管理请求的 `cf-placement` 执行位置；常见节点显示国家和城市，未知代码显示原始节点码，缺少该响应头则显示“未知”。这不是固定 Google 出口，也不通过 `CF-Ray` 猜测执行地区。

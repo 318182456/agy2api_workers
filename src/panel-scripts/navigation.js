@@ -289,6 +289,36 @@ for (const button of document.querySelectorAll('[data-copy]'))
       } else status('请复制接口地址：' + text);
     });
 
+function updateRuntimeRegion(response) {
+  const badge = el('runtimeRegion');
+  if (!badge) return;
+  const placement = response.headers?.get('cf-placement') || '';
+  const match = placement.match(/^(?:local|remote)-([A-Z]{3})$/i);
+  const code = match?.[1].toUpperCase();
+  const regions = {
+    IAD: '美国 · 阿什本',
+    EWR: '美国 · 纽瓦克',
+    SJC: '美国 · 圣何塞',
+    LAX: '美国 · 洛杉矶',
+    SEA: '美国 · 西雅图',
+    ORD: '美国 · 芝加哥',
+    NRT: '日本 · 东京',
+    HND: '日本 · 东京',
+    KIX: '日本 · 大阪',
+    SIN: '新加坡',
+    HKG: '中国香港',
+    LHR: '英国 · 伦敦',
+    FRA: '德国 · 法兰克福',
+  };
+  badge.textContent = code
+    ? '执行位置：' + (regions[code] ? regions[code] + ' (' + code + ')' : code)
+    : '执行位置：未知';
+  badge.title = code
+    ? 'Cloudflare cf-placement: ' +
+      placement +
+      '。这是本次请求执行位置，不代表固定 Google 出口 IP。'
+    : 'Cloudflare 未提供 cf-placement，无法确认本次请求执行位置。';
+}
 async function api(path, method = 'GET', body, responseType) {
   const raw = typeof Blob !== 'undefined' && body instanceof Blob;
   const headers = {};
@@ -300,6 +330,7 @@ async function api(path, method = 'GET', body, responseType) {
     credentials: 'same-origin',
     body: body === undefined ? undefined : raw ? body : JSON.stringify(body),
   });
+  updateRuntimeRegion(response);
   if (response.ok && responseType === 'blob') return response.blob();
   const value = await response.json();
   if (response.status === 401) {

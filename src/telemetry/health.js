@@ -26,7 +26,7 @@ export async function credentialHealth(db, id, env = {}) {
     .all();
   const aggregate = await db
     .prepare(
-      "SELECT MAX(json_extract(payload,'$.last_success')) AS last_success FROM usage_aggregates WHERE credential_id=?",
+      "SELECT json_extract(payload,'$.last_success') AS last_success FROM usage_aggregates WHERE credential_id=? AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1",
     )
     .bind(id)
     .first();

@@ -22,6 +22,7 @@ import { apiKeysRoute } from '../api-keys.js';
 export async function adminRoute(request, env, fetcher) {
   const url = new URL(request.url);
   await authenticatePanel(request, env.PANEL_PASSWORD);
+  env = { ...env, STATS_CACHE_ORIGIN: url.origin };
   if (url.pathname === '/admin/models' && request.method === 'GET')
     return json(
       await discoverModels(

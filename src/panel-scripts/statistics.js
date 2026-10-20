@@ -133,7 +133,7 @@ async function loadStats(fresh = false) {
       : '明细模式 · 逐请求保存';
   renderStatsCharts(value);
   status(
-    '统计已刷新；自动加载可复用 30 秒缓存，手动刷新直接查询。' +
+    '统计已刷新；自动加载可复用 60 秒缓存，手动刷新直接查询。' +
       (value.groups_truncated ? '模型、账号或密钥分组超过 200 项，请缩小筛选范围。' : ''),
   );
 }

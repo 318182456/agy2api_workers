@@ -2,6 +2,7 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "gcli2api",
   "main": "src/index.js",
+  "placement": { "region": "aws:ap-northeast-1" },
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
   "d1_databases": [

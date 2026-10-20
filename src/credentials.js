@@ -198,29 +198,27 @@ export async function importCredential(db, body, env = {}) {
 export async function listCredentials(db, env = {}) {
   const result = await db
     .prepare(
-      `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`,
+      `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT json_extract(payload,'$.last_success') FROM usage_aggregates WHERE credential_id=credentials.id AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1) AS aggregate_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`,
     )
     .all();
-  const aggregate = (
-    await db
-      .prepare(
-        "SELECT credential_id,MAX(json_extract(payload,'$.last_success')) AS last_success FROM usage_aggregates GROUP BY credential_id",
-      )
-      .all()
-  ).results;
-  const latest = new Map(aggregate.map((row) => [row.credential_id, row.last_success || 0]));
+  const latest = new Map();
   const snapshot = await pendingTelemetry(env);
   for (const bucket of snapshot.buckets)
     latest.set(
       bucket.value.credential_id,
       Math.max(latest.get(bucket.value.credential_id) || 0, bucket.value.last_success || 0),
     );
-  return result.results.map(({ data, observed_success, ...row }) => {
+  return result.results.map(({ data, observed_success, aggregate_success, ...row }) => {
     const credential = parseCredentialData(data);
     return {
       ...row,
       last_success:
-        Math.max(row.last_success || 0, observed_success || 0, latest.get(row.id) || 0) || null,
+        Math.max(
+          row.last_success || 0,
+          observed_success || 0,
+          aggregate_success || 0,
+          latest.get(row.id) || 0,
+        ) || null,
       detected_mode: detectedMode(credential, env),
       user_email: credential.user_email || null,
       project_id: credential.project_id || null,
