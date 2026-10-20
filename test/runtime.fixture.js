@@ -22,7 +22,12 @@ export default {
     };
     return handleRequest(
       request,
-      { ...env, API_PASSWORD: 'local-api', PANEL_PASSWORD: 'local-panel' },
+      {
+        ...env,
+        API_PASSWORD: 'local-api',
+        PANEL_PASSWORD: 'local-panel',
+        ANTIGRAVITY_STREAM2NOSTREAM: false,
+      },
       fetcher,
     );
   },

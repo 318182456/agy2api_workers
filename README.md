@@ -171,7 +171,9 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 | --- | --- | --- |
 | `MAX_CREDENTIAL_ATTEMPTS` | `3` | 一次生成请求最多尝试的凭证数，范围 1–5 |
 | `CREDENTIAL_SELECTION` | `round_robin` | `round_robin` 轮询、`priority` 优先级或 `weighted` 权重随机 |
-| `ANTIGRAVITY_STREAM2NOSTREAM` | `false` | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应 |
+| `UPSTREAM_TIMEOUT_SECONDS` | `45` | 单次生成请求等待上游响应头的秒数，5–90；超时可在重试预算内切换凭证 |
+| `REQUEST_TIMEOUT_SECONDS` | `100` | 普通请求包含重试与正文读取的总等待秒数，10–110；流式请求仅限制开始输出前的等待 |
+| `ANTIGRAVITY_STREAM2NOSTREAM` | `true` | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应 |
 | `USAGE_STORAGE_MODE` | `aggregate` | `aggregate` 持久聚合；`detailed` 逐请求写 D1；缺少 TELEMETRY 时回退明细模式 |
 
 上述配置可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
@@ -320,3 +322,7 @@ npm run check
 仅在获取账号模型列表时发现此前未见过的模型 ID，才查询一次 [Google 官方模型目录](https://ai.google.dev/gemini-api/docs/models?hl=en)，提取官方模型代码和已见模型 ID 存入 `CACHE` KV，保留一年；相同 ID 不重复查询，不再每日同步。查询失败也记录已见 ID，并沿用已有参考和上游名称，不影响生成请求。官网目录与[发布记录](https://ai.google.dev/gemini-api/docs/changelog?hl=en)作为参考，不能代替 GeminiCLI/Antigravity 的账号资格及渠道 ID，不能从版本说明推测内部 ID。官网页面格式变化时同步会告警，动态账号模型发现仍继续工作。
 
 模型清单的 KV 缓存为 15 分钟，通用名称到渠道 ID 的映射缓存为 24 小时，冷启动可复用；正常生成请求不抓官网、不写模型缓存。没有配置 KV 时仅使用当前实例内存，跨实例的名称映射需要重新发现模型。
+
+生成上游返回 524 或响应头等待超时，会按现有凭证尝试次数选择其他可用账号；普通请求另有总等待时限。已经接收成功响应后，不因正文中断重新生成。流式响应开始输出后清除总时限，允许正常长输出；服务端超时记录为 504/失败，不计为客户端取消。上游支持、账号资格或网络故障仍可能导致所有重试失败。
+
+Antigravity 普通请求默认通过 `streamGenerateContent` 获取上游 SSE 并汇总为完整 JSON，与原 Python 项目的默认行为一致；客户端不需要改为流式解析。若管理页曾保存该开关为关闭，升级会尊重原设置，需要在“系统设置 → 运行参数”手动开启。上游流式汇总可以改善等待首包的路径，但汇总期间客户端仍需等待完整 JSON，不能保证消除所有网络超时。

@@ -17,6 +17,10 @@ async function loadCalls(before = null) {
           : '') +
         '\n' +
         record.mode,
+      record.api_key_name ||
+        (record.api_key_id === '00000000-0000-0000-0000-000000000000'
+          ? '总密钥（兼容）'
+          : '未记录'),
       record.model,
       record.status +
         '\n' +

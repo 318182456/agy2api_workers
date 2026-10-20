@@ -1,6 +1,8 @@
 import { analyticsScript } from '../panel-analytics.js';
 export const statisticsScript = String.raw`function panelFilters(prefix) {
   const params = new URLSearchParams();
+  if (prefix === 'stats' && el('statsApiKey').value)
+    params.set('api_key_id', el('statsApiKey').value);
   if (prefix === 'calls' && el('callsScope').value !== 'all') params.set('issues', '1');
   for (const [suffix, key] of [
     ['Email', 'email'],
@@ -40,13 +42,14 @@ function tableRow(body, values) {
     tr.append(td);
   }
   el(body).append(tr);
+  return tr;
 }
 const tokenText = (value) => (value == null ? '未报告' : Number(value).toLocaleString('zh-CN'));
 const successRate = (row) =>
   row.requests ? ((100 * row.successes) / row.requests).toFixed(1) + '%' : '—';
 ${analyticsScript}
 function metricsRow(body, label, row) {
-  tableRow(body, [
+  return tableRow(body, [
     label,
     [row.requests, row.successes || 0, row.failures || 0, row.cancellations || 0].join(' / '),
     successRate(row),
@@ -62,6 +65,27 @@ async function loadStats(fresh = false) {
     params.set('from', String(Math.floor(Date.now() / 300000) * 300000 - 7 * 86400000));
   if (fresh) params.set('fresh', '1');
   const value = await api('/admin/stats?' + params);
+  for (const row of value.api_keys || [])
+    if (row.api_key_id) statsKeyNames.set(row.api_key_id, row.display_name);
+  const chosen = el('statsApiKey').value;
+  el('statsApiKey').replaceChildren();
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部密钥';
+  el('statsApiKey').append(all);
+  for (const [id, name] of statsKeyNames) {
+    const option = document.createElement('option');
+    option.value = id;
+    option.textContent = name;
+    el('statsApiKey').append(option);
+  }
+  if (chosen && !statsKeyNames.has(chosen)) {
+    const option = document.createElement('option');
+    option.value = chosen;
+    option.textContent = '所选密钥';
+    el('statsApiKey').append(option);
+  }
+  el('statsApiKey').value = chosen;
   const s = value.summary;
   el('statsSummary').replaceChildren();
   for (const [label, text] of [
@@ -110,9 +134,18 @@ async function loadStats(fresh = false) {
   renderStatsCharts(value);
   status(
     '统计已刷新；自动加载可复用 30 秒缓存，手动刷新直接查询。' +
-      (value.groups_truncated ? '模型或账号分组超过 200 项，请缩小筛选范围。' : ''),
+      (value.groups_truncated ? '模型、账号或密钥分组超过 200 项，请缩小筛选范围。' : ''),
   );
 }
+el('statsApiKey').onchange = () =>
+  run(async () => {
+    const params = new URLSearchParams(location.search || '');
+    if (el('statsApiKey').value) params.set('api_key_id', el('statsApiKey').value);
+    else params.delete('api_key_id');
+    if (typeof history !== 'undefined')
+      history.replaceState({}, '', location.pathname + (params.size ? '?' + params : ''));
+    await loadStats();
+  });
 el('statsRefresh').onclick = () => run(() => loadStats(true));
 el('statsFlush').onclick = () =>
   run(async () => {

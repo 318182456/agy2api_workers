@@ -33,14 +33,18 @@ el('logout').onclick = () =>
       'statsTrend',
       'statsModelRank',
       'statsAccountRank',
+      'statsKeyRank',
       'statsCoverage',
     ])
       el(id).replaceChildren();
-    statsSnapshot = { days: [], models: [], credentials: [] };
+    statsSnapshot = { days: [], models: [], credentials: [], api_keys: [] };
+    statsKeyNames.clear();
+    el('statsApiKey').value = '';
     oauthClientModes = {};
     el('healthDetails').textContent = '';
     el('statsSummary').replaceChildren();
-    for (const id of ['statsDays', 'statsModels', 'statsCredentials']) el(id).replaceChildren();
+    for (const id of ['statsDays', 'statsModels', 'statsCredentials', 'statsApiKeys'])
+      el(id).replaceChildren();
     el('batchFiles').value = '';
     el('batchResults').textContent = '';
     el('duplicateResults').textContent = '';

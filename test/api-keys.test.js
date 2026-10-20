@@ -10,7 +10,7 @@ import { queryCallLogs, clearCallLogs } from '../src/reliability.js';
 
 globalThis.crypto ||= webcrypto;
 let bundle;
-async function runtime(upstreamOverride) {
+async function runtime(upstreamOverride, bindings = {}) {
   bundle ||= (
     await build({
       entryPoints: ['src/index.js'],
@@ -29,6 +29,8 @@ async function runtime(upstreamOverride) {
     bindings: {
       API_PASSWORD: 'local-master-only',
       PANEL_PASSWORD: 'local-panel-only',
+      ANTIGRAVITY_STREAM2NOSTREAM: false,
+      ...bindings,
     },
     d1Databases: { DB: 'api-keys-test' },
     durableObjects: { TELEMETRY: { className: 'TelemetryBuffer', useSQLite: true } },
@@ -105,6 +107,48 @@ test('key imports preserve opaque values, understand New API expiry/status and r
     () => parseKeyImport([{ key: 'private-key-must-not-echo', name: 'bad\nname' }]),
     (error) => error.status === 400 && !error.message.includes('private-key'),
   );
+});
+
+test('New API tab-separated exports preserve names and exact keys, including mixed single-column lines', async () => {
+  const text =
+    '\uFEFF电影项目\tsk-local-export-first-key\r\n\r\nMy second app\tsk-local-export-second-key\nlocal-single-column-key';
+  for (const format of ['plain', 'newapi']) {
+    const rows = parseKeyImport(text, format);
+    assert.equal(rows[0].name, '电影项目');
+    assert.equal(rows[0].key, 'sk-local-export-first-key');
+    assert.equal(rows[1].name, 'My second app');
+    assert.equal(rows[1].key, 'sk-local-export-second-key');
+    assert.equal(
+      rows[2].key,
+      format === 'newapi' ? 'sk-local-single-column-key' : 'local-single-column-key',
+    );
+    assert.ok(rows.every((row) => row.enabled && row.expires_at === null));
+  }
+  assert.equal(
+    parseKeyImport('项目\traw-local-export-key', 'newapi')[0].key,
+    'sk-raw-local-export-key',
+  );
+  for (const value of ['\tsk-local-export-key', 'App\t', 'App\tsk-local-export-key\textra'])
+    assert.throws(() => parseKeyImport(value, 'newapi'), { status: 400 });
+  const { mf, env } = await runtime();
+  try {
+    assert.deepEqual(await admin(mf, '/import', 'POST', { format: 'newapi', data: text }), {
+      imported: 3,
+      duplicates: 0,
+    });
+    const account = await authenticateApi(request('sk-local-export-first-key'), env);
+    assert.equal(account.name, '电影项目');
+    assert.equal(
+      (await admin(mf, '/' + account.id + '/reveal', 'POST')).key,
+      'sk-local-export-first-key',
+    );
+    assert.deepEqual(await admin(mf, '/import', 'POST', { format: 'newapi', data: text }), {
+      imported: 0,
+      duplicates: 3,
+    });
+  } finally {
+    await mf.dispose();
+  }
 });
 
 test('managed keys: import/deduplicate, hashing, immediate revocation/expiry, rename, paging and management isolation', async () => {
@@ -253,10 +297,28 @@ test('Worker protocols accept managed keys and telemetry isolates per-key totals
     assert.equal((await stats(a.id)).summary.total_tokens, 10);
     assert.equal((await stats(b.id)).summary.requests, 1);
     assert.equal((await stats(MASTER_KEY_ID)).summary.requests, 1);
+    const overview = () => usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+    const assertKeyOverview = (value) => {
+      assert.equal(value.summary.requests, 4);
+      assert.equal(value.summary.total_tokens, 20);
+      assert.equal(value.api_keys.length, 3);
+      assert.equal(value.api_keys.find((row) => row.api_key_id === a.id).requests, 2);
+      assert.equal(value.api_keys.find((row) => row.api_key_id === a.id).total_tokens, 10);
+      assert.equal(value.api_keys.find((row) => row.api_key_id === b.id).display_name, 'project-B');
+      assert.equal(
+        value.api_keys.find((row) => row.api_key_id === MASTER_KEY_ID).display_name,
+        '总密钥（兼容）',
+      );
+      assert.equal(value.models[0].requests, 4);
+      assert.equal(value.credentials[0].requests, 4);
+      assert.equal(JSON.stringify(value.api_keys).includes(a.key), false);
+    };
+    assertKeyOverview(await overview());
     assert.equal(await env.DB.prepare('SELECT COUNT(*) AS n FROM request_usage').first('n'), 0);
     assert.equal((await stub.fetch('https://test/flush', { method: 'POST' })).status, 200);
     assert.equal((await stats(a.id)).summary.requests, 2);
     assert.equal((await stats(b.id)).summary.total_tokens, 5);
+    assertKeyOverview(await overview());
     const failed = {
       requestId: randomUUID(),
       row,
@@ -283,8 +345,31 @@ test('Worker protocols accept managed keys and telemetry isolates per-key totals
     };
     await recordUsage(env.DB, unknown);
     assert.equal((await stats(a.id)).summary.requests, 3);
+    const allKeys = await overview();
+    assert.equal(allKeys.summary.requests, 6);
+    assert.equal(
+      allKeys.api_keys.reduce((sum, row) => sum + row.requests, 0),
+      6,
+    );
+    assert.equal(allKeys.api_keys.find((row) => row.api_key_id === a.id).failures, 1);
+    assert.equal(
+      allKeys.api_keys.find((row) => row.api_key_id == null).display_name,
+      '未归属（历史记录）',
+    );
+    const errorsOnly = await usageStats(env.DB, new URLSearchParams('fresh=1&status=5xx'), env);
+    assert.equal(errorsOnly.api_keys.length, 1);
+    assert.equal(errorsOnly.api_keys[0].api_key_id, a.id);
+    await admin(mf, '/' + a.id, 'PATCH', { name: 'Renamed project A' });
+    assert.equal(
+      (await overview()).api_keys.find((row) => row.api_key_id === a.id).display_name,
+      'Renamed project A',
+    );
     await admin(mf, '/' + a.id, 'DELETE');
     assert.equal((await stats(a.id)).summary.requests, 3);
+    const deletedKey = (await overview()).api_keys.find((row) => row.api_key_id === a.id);
+    assert.equal(deletedKey.deleted, true);
+    assert.equal(deletedKey.requests, 3);
+    assert.equal(deletedKey.display_name, 'project-A');
     const persisted = await env.DB.prepare('SELECT payload FROM usage_aggregates').all();
     assert.ok(!JSON.stringify(persisted).includes(a.key));
     await assert.rejects(usageStats(env.DB, new URLSearchParams('api_key_id=bad&fresh=1'), env), {
@@ -347,6 +432,211 @@ test('problem view excludes ordinary successes, retains recovered retries and cl
       clean.requestId,
     );
     assert.equal((await usageStats(env.DB, new URLSearchParams('fresh=1'))).summary.requests, 3);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('problem events and exports identify managed/master keys, use renamed names and preserve deleted snapshots', async () => {
+  const { mf, env } = await runtime();
+  try {
+    const key = await admin(mf, '', 'POST', { name: 'Client fixture' }, 201);
+    const base = {
+      row: null,
+      mode: 'geminicli',
+      model: 'm',
+      status: 400,
+      outcome: 'failed',
+      started: Date.now() - 1,
+      attempts: [
+        {
+          credential_id: null,
+          credential_name: 'fixture',
+          mode: 'geminicli',
+          model: 'm',
+          status: 400,
+          stage: 'response_headers',
+          detail_code: 'HTTP_400',
+          duration_ms: 1,
+          created_at: Date.now(),
+        },
+      ],
+    };
+    const id = randomUUID();
+    await recordUsage(env.DB, {
+      ...base,
+      requestId: id,
+      apiKey: { id: key.id, name: 'Client fixture' },
+    });
+    const params = new URLSearchParams({ request_id: id });
+    let rows = (await queryCallLogs(env.DB, params)).records;
+    assert.equal(rows.length, 2);
+    assert.ok(
+      rows.every((row) => row.api_key_name === 'Client fixture' && row.api_key_id === key.id),
+    );
+    assert.equal(JSON.stringify(rows).includes(key.key), false);
+    await admin(mf, '/' + key.id, 'PATCH', { name: 'Renamed client' });
+    rows = (await queryCallLogs(env.DB, params, true)).records;
+    assert.ok(rows.every((row) => row.api_key_name === 'Renamed client'));
+    await admin(mf, '/' + key.id, 'DELETE');
+    rows = (await queryCallLogs(env.DB, params)).records;
+    assert.ok(rows.every((row) => row.api_key_name === 'Client fixture'));
+    const masterId = randomUUID();
+    await recordUsage(env.DB, {
+      ...base,
+      requestId: masterId,
+      apiKey: { id: MASTER_KEY_ID, name: '总密钥（兼容）' },
+    });
+    assert.ok(
+      (await queryCallLogs(env.DB, new URLSearchParams({ request_id: masterId }))).records.every(
+        (row) => row.api_key_name === '总密钥（兼容）',
+      ),
+    );
+    const oldId = randomUUID();
+    await recordUsage(env.DB, { ...base, requestId: oldId });
+    assert.ok(
+      (await queryCallLogs(env.DB, new URLSearchParams({ request_id: oldId }))).records.every(
+        (row) => row.api_key_name === null,
+      ),
+    );
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSON for MoviePilot-compatible requests', async () => {
+  const { readSettings } = await import('../src/settings.js');
+  const { defaults } = await readSettings({});
+  const { mf, env } = await runtime(
+    async (request) => {
+      assert.ok(request.url.includes(':streamGenerateContent?alt=sse'));
+      const value = {
+        response: {
+          candidates: [
+            { content: { parts: [{ text: 'stream collected' }] }, finishReason: 'STOP' },
+          ],
+          usageMetadata: { totalTokenCount: 7 },
+        },
+      };
+      return new OutboundResponse('data: ' + JSON.stringify(value) + '\n\n', {
+        headers: { 'content-type': 'text/event-stream' },
+      });
+    },
+    { ANTIGRAVITY_STREAM2NOSTREAM: defaults.ANTIGRAVITY_STREAM2NOSTREAM },
+  );
+  try {
+    await env.DB.prepare('INSERT INTO credentials(id,mode,name,data,created_at)VALUES(?,?,?,?,?)')
+      .bind(
+        '11111111-1111-4111-8111-111111111111',
+        'antigravity',
+        'local',
+        JSON.stringify({
+          token: 'local-test-token',
+          project_id: 'local-fixture',
+          expiry: '2099-01-01T00:00:00Z',
+        }),
+        Date.now(),
+      )
+      .run();
+    const response = await mf.dispatchFetch('https://test/v1/chat/completions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model: 'gemini-3.1-flash-lite',
+        stream: false,
+        messages: [{ role: 'user', content: 'fixture' }],
+      }),
+    });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get('x-upstream-mode'), 'stream-collected');
+    const value = await response.json();
+    assert.equal(value.object, 'chat.completion');
+    assert.equal(value.choices[0].message.content, 'stream collected');
+    assert.equal(value.usage.total_tokens, 7);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('524 responses fail over in unified and fixed channels within the configured attempt budget', async () => {
+  const seen = [];
+  const { mf, env } = await runtime(async (request) => {
+    const auth = request.headers.get('authorization');
+    seen.push(auth);
+    if (auth === 'Bearer local-timeout-token')
+      return new OutboundResponse('fixture timeout', { status: 524 });
+    return new OutboundResponse(
+      JSON.stringify({
+        response: {
+          candidates: [{ content: { parts: [{ text: 'fallback works' }] }, finishReason: 'STOP' }],
+          usageMetadata: { totalTokenCount: 5 },
+        },
+      }),
+      { headers: { 'content-type': 'application/json' } },
+    );
+  });
+  try {
+    for (const [id, token, priority] of [
+      ['11111111-1111-4111-8111-111111111111', 'local-timeout-token', 10],
+      ['22222222-2222-4222-8222-222222222222', 'local-healthy-token', 0],
+    ])
+      await env.DB.prepare(
+        'INSERT INTO credentials(id,mode,name,data,created_at,priority)VALUES(?,?,?,?,?,?)',
+      )
+        .bind(
+          id,
+          'antigravity',
+          token,
+          JSON.stringify({ token, project_id: 'local-fixture', expiry: '2099-01-01T00:00:00Z' }),
+          Date.now(),
+          priority,
+        )
+        .run();
+    const settings = async (attempts) => {
+      const response = await mf.dispatchFetch('https://test/admin/settings', {
+        method: 'PATCH',
+        headers: { authorization: 'Bearer local-panel-only', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          CREDENTIAL_SELECTION: 'priority',
+          MAX_CREDENTIAL_ATTEMPTS: attempts,
+        }),
+      });
+      assert.equal(response.status, 200);
+      await response.json();
+    };
+    const chat = (path) =>
+      mf.dispatchFetch('https://test' + path, {
+        method: 'POST',
+        headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gemini-3.1-flash-lite',
+          messages: [{ role: 'user', content: 'fixture' }],
+        }),
+      });
+    await settings(3);
+    for (const path of ['/v1/chat/completions', '/antigravity/v1/chat/completions']) {
+      await env.DB.exec('DELETE FROM credential_cooldowns');
+      seen.length = 0;
+      const response = await chat(path);
+      assert.equal(response.status, 200);
+      await response.json();
+      assert.deepEqual(seen, ['Bearer local-timeout-token', 'Bearer local-healthy-token']);
+    }
+    const stats = await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+    assert.equal(stats.summary.requests, 2);
+    assert.equal(stats.summary.successes, 2);
+    assert.ok(
+      (await queryCallLogs(env.DB, new URLSearchParams('issues=1'))).records.some(
+        (row) => row.status === 524 && row.stage === 'response_headers',
+      ),
+    );
+    await settings(1);
+    await env.DB.exec('DELETE FROM credential_cooldowns');
+    seen.length = 0;
+    const response = await chat('/v1/chat/completions');
+    assert.equal(response.status, 524);
+    assert.equal(await response.text(), 'fixture timeout');
+    assert.equal(seen.length, 1);
   } finally {
     await mf.dispose();
   }

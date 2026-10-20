@@ -107,6 +107,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
     bindings: {
       API_PASSWORD: 'local-api',
       PANEL_PASSWORD: 'local-panel',
+      ANTIGRAVITY_STREAM2NOSTREAM: false,
       ANTIGRAVITY_CLIENT_ID: 'test-antigravity-client',
       ANTIGRAVITY_CLIENT_SECRET: 'test-antigravity-secret',
     },
@@ -337,7 +338,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
     script: result.outputFiles[0].text,
     compatibilityDate: config.compatibility_date,
     compatibilityFlags: config.compatibility_flags,
-    bindings: { API_PASSWORD: 'a', PANEL_PASSWORD: 'p' },
+    bindings: { API_PASSWORD: 'a', PANEL_PASSWORD: 'p', ANTIGRAVITY_STREAM2NOSTREAM: false },
     d1Databases: { DB: 'failover-test' },
     log: new Log(LogLevel.NONE),
     outboundService: async (request) => {

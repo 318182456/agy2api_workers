@@ -1,3 +1,4 @@
+import { boundedSeconds, clientAborted } from '../timeouts.js';
 import { HttpError, json, readJson } from '../common.js';
 import { authenticateApi } from '../api-keys.js';
 import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../convert.js';
@@ -101,6 +102,10 @@ export async function generationRoute(request, env, fetcher, context) {
   const requestId = crypto.randomUUID();
   const attemptMeta = { requestId, attempts: [] };
   const started = Date.now();
+  const deadline = setTimeout(
+    () => abort.abort(new DOMException('Generation deadline exceeded', 'TimeoutError')),
+    boundedSeconds(env.REQUEST_TIMEOUT_SECONDS, 100, 10, 110) * 1000,
+  );
   let usageSaved = false;
   let latestUsage;
   const persist = (task) => {
@@ -200,7 +205,7 @@ export async function generationRoute(request, env, fetcher, context) {
         persist(
           (async () => {
             if (usageSaved) return;
-            const status = cancelled || abort.signal.aborted ? 499 : 502;
+            const status = cancelled || clientAborted(abort.signal) ? 499 : 502;
             if (attemptMeta.row)
               await recordAttempt(
                 env.DB,
@@ -234,6 +239,7 @@ export async function generationRoute(request, env, fetcher, context) {
             completed,
             (usage) => streamFailure(usage, true),
           );
+      clearTimeout(deadline);
       handedOff = true;
       return new Response(converted, {
         headers: {
@@ -278,6 +284,14 @@ export async function generationRoute(request, env, fetcher, context) {
     await completed(latestUsage);
     return result;
   } catch (error) {
+    if (abort.signal.aborted && abort.signal.reason?.name === 'TimeoutError') {
+      error = new HttpError(
+        504,
+        '模型请求超过总等待时限，请缩短输入或输出、使用流式请求，或稍后重试',
+      );
+      error.operation = 'generation_timeout';
+      error.errorCode = 'UPSTREAM_TIMEOUT';
+    }
     if (attemptMeta.row && attemptMeta.headersReceived && !handedOff) {
       error.operation ||= collect ? 'stream_collection' : 'response_processing';
       await recordAttempt(
@@ -289,20 +303,21 @@ export async function generationRoute(request, env, fetcher, context) {
           model: attemptMeta.model || model,
           status: error.status || 500,
           stage: error.operation,
-          code: 'UPSTREAM_RESPONSE_INVALID',
+          code: error.errorCode || 'UPSTREAM_RESPONSE_INVALID',
           started,
         },
         attemptMeta,
       );
     }
     await finishUsage(
-      abort.signal.aborted ? 499 : error.status || 500,
-      abort.signal.aborted ? 'cancelled' : 'failed',
+      clientAborted(abort.signal) ? 499 : error.status || 500,
+      clientAborted(abort.signal) ? 'cancelled' : 'failed',
       latestUsage,
     );
     error.requestId = requestId;
     throw error;
   } finally {
+    clearTimeout(deadline);
     if (!handedOff) incomingSignal?.removeEventListener('abort', cancel);
   }
 }

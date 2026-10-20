@@ -77,10 +77,20 @@ export function parseKeyImport(data, format = 'plain') {
         throw new HttpError(400, '导入 JSON 格式无效');
       }
     } else
-      data = text
+      data = data
+        .replace(/^\uFEFF/, '')
         .split(/\r?\n/)
-        .map((key) => key.trim())
-        .filter(Boolean);
+        .filter((line) => line.trim())
+        .map((line, index) => {
+          if (!line.includes('\t')) return line.trim();
+          const columns = line.split('\t');
+          if (columns.length !== 2 || !columns[0].trim() || !columns[1].trim())
+            throw new HttpError(
+              400,
+              '第 ' + (index + 1) + ' 项：请使用“名称 + Tab + 完整密钥”两列格式',
+            );
+          return { name: columns[0].trim(), key: columns[1].trim() };
+        });
   }
   if (!Array.isArray(data) && data && typeof data === 'object')
     data = data.data?.items || data.data || data.items || data;

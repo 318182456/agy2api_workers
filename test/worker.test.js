@@ -9,6 +9,7 @@ import { readJson } from '../src/common.js';
 globalThis.crypto ||= webcrypto;
 const env = {
   API_PASSWORD: 'api-secret',
+  ANTIGRAVITY_STREAM2NOSTREAM: false,
   PANEL_PASSWORD: 'panel-secret',
   ANTIGRAVITY_CLIENT_ID: 'test-antigravity-client',
   ANTIGRAVITY_CLIENT_SECRET: 'test-antigravity-secret',
@@ -1876,4 +1877,137 @@ test('project-required response has a structured reason for the inline setup for
   const error = (await response.json()).error;
   assert.equal(error.reason, 'PROJECT_REQUIRED');
   assert.equal(error.stage, 'project_verify');
+});
+
+test('generation header timeout aborts stalled fetches but never times out an already received body', async (t) => {
+  const { fetchGeneration, clientAborted } = await import('../src/timeouts.js');
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const hanging = fetchGeneration(
+    async (url, options) =>
+      new Promise((resolve, reject) =>
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+          once: true,
+        }),
+      ),
+    'https://example.test',
+    {},
+    45,
+  );
+  const rejected = assert.rejects(
+    hanging,
+    (error) => error.status === 504 && error.errorCode === 'UPSTREAM_TIMEOUT',
+  );
+  t.mock.timers.tick(45000);
+  await rejected;
+  let signal;
+  const response = await fetchGeneration(
+    async (url, options) => {
+      signal = options.signal;
+      return new Response('still valid');
+    },
+    'https://example.test',
+    {},
+    45,
+  );
+  t.mock.timers.tick(45000);
+  assert.equal(signal.aborted, false);
+  assert.equal(await response.text(), 'still valid');
+  const deadline = new AbortController();
+  deadline.abort(new DOMException('deadline', 'TimeoutError'));
+  assert.equal(clientAborted(deadline.signal), false);
+  const cancelled = new AbortController();
+  cancelled.abort();
+  assert.equal(clientAborted(cancelled.signal), true);
+});
+
+test('nonstream total timeout aborts a stalled response body and records 504 failure rather than cancellation', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const db = fakeDB();
+  db.batch = async () => [{ meta: { changes: 1 } }];
+  let ready;
+  const received = new Promise((resolve) => {
+    ready = resolve;
+  });
+  const result = handleRequest(
+    request('/antigravity/v1/chat/completions', {
+      model: 'gemini-3.1-flash-lite',
+      messages: [{ role: 'user', content: 'fixture' }],
+    }),
+    { ...env, DB: db },
+    async (url, options) => {
+      const body = new ReadableStream({
+        start(controller) {
+          options.signal.addEventListener('abort', () => controller.error(options.signal.reason), {
+            once: true,
+          });
+        },
+      });
+      ready();
+      return new Response(body, { headers: { 'content-type': 'application/json' } });
+    },
+  );
+  await received;
+  await new Promise(setImmediate);
+  t.mock.timers.tick(100000);
+  const response = await result;
+  assert.equal(response.status, 504);
+  const failure = (await response.json()).error;
+  assert.equal(failure.reason, 'UPSTREAM_TIMEOUT');
+  assert.equal(failure.stage, 'generation_timeout');
+  const saved = db.calls.find((call) => call.sql.includes('INSERT OR IGNORE INTO request_usage'));
+  assert.equal(saved.args[5], 504);
+  assert.equal(saved.args[6], 'failed');
+});
+
+test('generation timeout settings enforce bounded seconds and preserve defaults', async () => {
+  const { readSettings, validateSetting } = await import('../src/settings.js');
+  const { defaults } = await readSettings({});
+  assert.equal(defaults.UPSTREAM_TIMEOUT_SECONDS, 45);
+  assert.equal(defaults.REQUEST_TIMEOUT_SECONDS, 100);
+  assert.equal(defaults.ANTIGRAVITY_STREAM2NOSTREAM, true);
+  assert.equal(validateSetting('UPSTREAM_TIMEOUT_SECONDS', 30), 30);
+  assert.equal(validateSetting('REQUEST_TIMEOUT_SECONDS', 100), 100);
+  for (const [key, value] of [
+    ['UPSTREAM_TIMEOUT_SECONDS', 0],
+    ['UPSTREAM_TIMEOUT_SECONDS', 91],
+    ['REQUEST_TIMEOUT_SECONDS', 111],
+    ['REQUEST_TIMEOUT_SECONDS', 10.5],
+  ])
+    assert.throws(() => validateSetting(key, value), { status: 400 });
+});
+
+test('healthy streaming responses outlive the initial generation deadline without being aborted', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const db = fakeDB();
+  db.batch = async () => [{ meta: { changes: 1 } }];
+  let controller, signal;
+  const response = await handleRequest(
+    request('/antigravity/v1/chat/completions', {
+      model: 'gemini-3.1-flash-lite',
+      stream: true,
+      messages: [{ role: 'user', content: 'fixture' }],
+    }),
+    { ...env, DB: db },
+    async (url, options) => {
+      signal = options.signal;
+      return new Response(
+        new ReadableStream({
+          start(value) {
+            controller = value;
+          },
+        }),
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  );
+  assert.equal(response.status, 200);
+  t.mock.timers.tick(200000);
+  assert.equal(signal.aborted, false);
+  controller.enqueue(
+    new TextEncoder().encode('data: ' + JSON.stringify(candidate('long stream works')) + '\n\n'),
+  );
+  controller.close();
+  const text = await response.text();
+  assert.ok(text.includes('long stream works'));
+  assert.ok(text.includes('[DONE]'));
 });

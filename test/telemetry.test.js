@@ -43,7 +43,7 @@ async function runtime(persist) {
     compatibilityDate: '2025-09-01',
     d1Databases: { DB: 'telemetry-test' },
     compatibilityFlags: ['enable_request_signal'],
-    bindings: { API_PASSWORD: 'api', PANEL_PASSWORD: 'panel' },
+    bindings: { API_PASSWORD: 'api', PANEL_PASSWORD: 'panel', ANTIGRAVITY_STREAM2NOSTREAM: false },
     outboundService: async () =>
       new OutboundResponse(
         JSON.stringify({

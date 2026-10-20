@@ -33,6 +33,16 @@ function pageFromLocation() {
   return ids.find((id) => '/panel/' + id === path) || 'overview';
 }
 function applyTargetFilters(params) {
+  if (currentPage === 'overview' && params.has('api_key_id')) {
+    const id = params.get('api_key_id');
+    if (id && !Array.from(el('statsApiKey').children).some((option) => option.value === id)) {
+      const option = document.createElement('option');
+      option.value = id;
+      option.textContent = '所选密钥';
+      el('statsApiKey').append(option);
+    }
+    el('statsApiKey').value = id;
+  }
   if (currentPage === 'credentials') {
     for (const [key, id] of [
       ['state', 'credentialState'],
@@ -160,6 +170,7 @@ function bindMetricLink(node, id, params = {}, detail) {
       await loadPage(id);
       if (id === 'credentials') renderCredentials();
       if (id === 'logs' && cached) await loadCalls();
+      if (id === 'overview' && cached && query.has('api_key_id')) await loadStats();
       if (detail) {
         const target = el(detail);
         target.open = true;
@@ -205,6 +216,10 @@ if (typeof addEventListener !== 'undefined')
         await loadPage(id);
         if (currentPage === 'credentials') renderCredentials();
         else if (currentPage === 'logs' && location.search) await loadCalls();
+        else if (currentPage === 'overview') {
+          if (!new URLSearchParams(location.search).has('api_key_id')) el('statsApiKey').value = '';
+          await loadStats();
+        }
       });
   });
 for (const tabs of Object.values(tabDefinitions))
@@ -223,21 +238,21 @@ for (const tabs of Object.values(tabDefinitions))
     };
   }
 function selectStatsTab(id) {
-  for (const key of ['days', 'models', 'credentials']) {
+  for (const key of ['days', 'models', 'credentials', 'api_keys']) {
     el('stats-view-' + key).hidden = key !== id;
     el('stats-tab-' + key).setAttribute('aria-selected', String(key === id));
     el('stats-tab-' + key).tabIndex = key === id ? 0 : -1;
   }
 }
-for (const id of ['days', 'models', 'credentials']) {
+for (const id of ['days', 'models', 'credentials', 'api_keys']) {
   el('stats-tab-' + id).onclick = () => selectStatsTab(id);
   el('stats-tab-' + id).onkeydown = (event) => {
-    const keys = ['days', 'models', 'credentials'];
+    const keys = ['days', 'models', 'credentials', 'api_keys'];
     let index = keys.indexOf(id);
     if (event.key === 'ArrowRight') index = (index + 1) % keys.length;
-    else if (event.key === 'ArrowLeft') index = (index + 2) % keys.length;
+    else if (event.key === 'ArrowLeft') index = (index + keys.length - 1) % keys.length;
     else if (event.key === 'Home') index = 0;
-    else if (event.key === 'End') index = 2;
+    else if (event.key === 'End') index = keys.length - 1;
     else return;
     event.preventDefault();
     selectStatsTab(keys[index]);

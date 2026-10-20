@@ -20,19 +20,23 @@ function meter(value, label) {
   track.append(fill); return track;
 }
 function emptyInto(id, text) { el(id).append(ui('div','empty-state',text)); }
-let statsSnapshot = { days:[], models:[], credentials:[] };
-const statsPages = { days:0, models:0, credentials:0 };
+let statsSnapshot = { days:[], models:[], credentials:[], api_keys:[] };
+const statsKeyNames = new Map();
+const statsPages = { days:0, models:0, credentials:0, api_keys:0 };
 function renderStatsTables() {
-  for (const [key,body] of [['days','statsDays'],['models','statsModels'],['credentials','statsCredentials']]) {
+  for (const [key,body] of [['days','statsDays'],['models','statsModels'],['credentials','statsCredentials'],['api_keys','statsApiKeys']]) {
     const rows = statsSnapshot[key] || []; const page = statsPages[key];
     el(body).replaceChildren();
-    for (const row of rows.slice(page*10,page*10+10)) metricsRow(body, key === 'days' ? row.day : key === 'models' ? row.model+' · '+row.mode : row.display_name, row);
+    for (const row of rows.slice(page*10,page*10+10)) {
+      const tr = metricsRow(body, key === 'days' ? row.day : key === 'models' ? row.model+' · '+row.mode : row.display_name, row);
+      if (key === 'api_keys' && row.api_key_id) { const link = ui('a','',row.display_name); const params = panelFilters('stats'); params.set('api_key_id',row.api_key_id); bindMetricLink(link,'overview',Object.fromEntries(params),'statsDetails'); tr.children[0].replaceChildren(link); }
+    }
     el(body+'Page').textContent = rows.length ? (page+1)+' / '+Math.ceil(rows.length/10)+' 页 · '+rows.length+' 项' : '暂无请求记录';
     el(body+'Prev').disabled = page === 0;
     el(body+'Next').disabled = (page+1)*10 >= rows.length;
   }
 }
-for (const [key,body] of [['days','statsDays'],['models','statsModels'],['credentials','statsCredentials']]) {
+for (const [key,body] of [['days','statsDays'],['models','statsModels'],['credentials','statsCredentials'],['api_keys','statsApiKeys']]) {
   el(body+'Prev').onclick = () => { if (statsPages[key]>0) statsPages[key]--; renderStatsTables(); };
   el(body+'Next').onclick = () => { if ((statsPages[key]+1)*10<(statsSnapshot[key] || []).length) statsPages[key]++; renderStatsTables(); };
 }
@@ -41,7 +45,8 @@ function rankings(id, rows, label, field) {
   const sorted = [...rows].sort((a,b)=>(b[field] || 0)-(a[field] || 0)).slice(0,6);
   const max = Math.max(1,...sorted.map(r=>r[field] || 0));
   for (const [i,row] of sorted.entries()) {
-    const item = ui('div','ranking-row');
+    const item = ui(id === 'statsKeyRank' && row.api_key_id ? 'a' : 'div','ranking-row');
+    if (id === 'statsKeyRank' && row.api_key_id) { const params = panelFilters('stats'); params.set('api_key_id',row.api_key_id); bindMetricLink(item,'overview',Object.fromEntries(params),'statsDetails'); item.title = '查看 ' + label(row) + ' 的模型、日期和账号消耗'; }
     const name = ui('div','ranking-name'); name.append(ui('span','rank-number',String(i+1).padStart(2,'0')),ui('span','',label(row)));
     const number = ui('strong','',field === 'requests' ? compact(row.requests)+' 次' : compact(row.total_tokens));
     const bar = ui('div','rank-track'); const fill = ui('span'); fill.setAttribute('style','width:'+100*(row[field] || 0)/max+'%'); bar.append(fill);
@@ -72,6 +77,7 @@ function renderStatsCharts(value) {
   rankings('statsModelRank',value.models,row=>row.model+' · '+row.mode,'requests');
   const unassignedRequests = value.credentials.filter(row => !row.credential_id).reduce((total,row) => total + row.requests,0);
   rankings('statsAccountRank',assignedAccounts,row=>row.display_name,'total_tokens');
+  rankings('statsKeyRank',value.api_keys || [],row=>row.display_name,'total_tokens');
   el('statsCoverage').textContent = '用量报告覆盖 '+(value.summary.token_reports || 0)+' / '+value.summary.requests+' 次请求；账号排行仅比较已分配凭证的上游报告总 Token。'+(unassignedRequests ? '其中 '+unassignedRequests+' 次请求在选中凭证前结束，已计入总体请求数与失败统计，不列入账号排行和按账号明细。' : '');
 }
 let quotaModelPage = 0;

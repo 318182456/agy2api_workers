@@ -1,8 +1,11 @@
+import { boundedSeconds } from './timeouts.js';
 import { readShared, publishShared } from './shared-cache.js';
 import { dbCache } from './db-cache.js';
 import { HttpError } from './common.js';
 const keys = [
   'MAX_CREDENTIAL_ATTEMPTS',
+  'UPSTREAM_TIMEOUT_SECONDS',
+  'REQUEST_TIMEOUT_SECONDS',
   'ANTIGRAVITY_STREAM2NOSTREAM',
   'CREDENTIAL_SELECTION',
   'USAGE_STORAGE_MODE',
@@ -10,12 +13,17 @@ const keys = [
 function defaults(env) {
   const attempts = Number(env.MAX_CREDENTIAL_ATTEMPTS ?? 3);
   return {
+    UPSTREAM_TIMEOUT_SECONDS: boundedSeconds(env.UPSTREAM_TIMEOUT_SECONDS, 45, 5, 90),
+    REQUEST_TIMEOUT_SECONDS: boundedSeconds(env.REQUEST_TIMEOUT_SECONDS, 100, 10, 110),
     USAGE_STORAGE_MODE: env.USAGE_STORAGE_MODE === 'detailed' ? 'detailed' : 'aggregate',
     CREDENTIAL_SELECTION: ['round_robin', 'priority', 'weighted'].includes(env.CREDENTIAL_SELECTION)
       ? env.CREDENTIAL_SELECTION
       : 'round_robin',
     ANTIGRAVITY_STREAM2NOSTREAM:
-      env.ANTIGRAVITY_STREAM2NOSTREAM === true || env.ANTIGRAVITY_STREAM2NOSTREAM === 'true',
+      env.ANTIGRAVITY_STREAM2NOSTREAM == null ||
+      env.ANTIGRAVITY_STREAM2NOSTREAM === '' ||
+      env.ANTIGRAVITY_STREAM2NOSTREAM === true ||
+      env.ANTIGRAVITY_STREAM2NOSTREAM === 'true',
     MAX_CREDENTIAL_ATTEMPTS: Number.isFinite(attempts)
       ? Math.min(5, Math.max(1, Math.floor(attempts)))
       : 3,
@@ -35,6 +43,13 @@ export function validateSetting(key, value) {
   }
   if (key === 'ANTIGRAVITY_STREAM2NOSTREAM') {
     if (typeof value !== 'boolean') throw new HttpError(400, '流式汇总开关必须为布尔值');
+    return value;
+  }
+  if (key === 'UPSTREAM_TIMEOUT_SECONDS' || key === 'REQUEST_TIMEOUT_SECONDS') {
+    const min = key === 'UPSTREAM_TIMEOUT_SECONDS' ? 5 : 10;
+    const max = key === 'UPSTREAM_TIMEOUT_SECONDS' ? 90 : 110;
+    if (!Number.isInteger(value) || value < min || value > max)
+      throw new HttpError(400, '超时须为 ' + min + '–' + max + ' 秒的整数');
     return value;
   }
   if (key === 'MAX_CREDENTIAL_ATTEMPTS') {

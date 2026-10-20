@@ -19,12 +19,12 @@ const dimensions = ['credential_name', 'mode', 'model', 'status', 'outcome'];
 const source = `WITH usage_source AS (
  SELECT r.credential_id,r.credential_name,r.mode,r.model,r.status,r.outcome,r.created_at,r.request_id,
   1 AS requests,(r.outcome='success') AS successes,(r.outcome='failed') AS failures,(r.outcome='cancelled') AS cancellations,r.duration_ms AS total_duration_ms,
-  r.input_tokens,r.output_tokens,r.thought_tokens,r.total_tokens,(r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.thought_tokens IS NOT NULL OR r.total_tokens IS NOT NULL) AS token_reports,r.api_key_id
+  r.input_tokens,r.output_tokens,r.thought_tokens,r.total_tokens,(r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.thought_tokens IS NOT NULL OR r.total_tokens IS NOT NULL) AS token_reports,r.api_key_id,r.api_key_name
  FROM request_usage r WHERE (r.aggregate_key IS NULL OR NOT EXISTS(SELECT 1 FROM usage_aggregates a,json_each(a.members) m WHERE a.bucket_key=r.aggregate_key AND m.value=r.request_id))
  AND (r.aggregate_key IS NULL OR r.request_id NOT IN(SELECT value FROM json_each(?)))
  UNION ALL
  SELECT a.credential_id,${dimensions.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')},a.created_at,NULL,
- ${metricKeys.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')},a.api_key_id
+ ${metricKeys.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')},a.api_key_id,json_extract(a.payload,'$.api_key_name')
  FROM usage_aggregates a WHERE a.bucket_key NOT IN(SELECT value FROM json_each(?))
 )`;
 const aggregates = metricKeys.map((key) => 'SUM(u.' + key + ') AS ' + key).join(',');
@@ -89,13 +89,13 @@ export async function usageStats(db, params, env = {}) {
     pendingIds = snapshot.buckets.flatMap((bucket) => bucket.members);
   const sql =
     source +
-    ` SELECT u.credential_id,${displayName('u')} AS display_name,u.mode,u.model,
+    ` SELECT u.api_key_id,MAX(u.api_key_name) AS api_key_name,u.credential_id,${displayName('u')} AS display_name,u.mode,u.model,
  strftime('%Y-%m-%d',u.created_at/1000,'unixepoch','+8 hours') AS day,${aggregates}
  FROM usage_source u` +
     credentialJoin('u') +
     where +
     (where ? ' AND ' : ' WHERE ') +
-    'u.created_at>=? GROUP BY u.credential_id,u.mode,u.model,day';
+    'u.created_at>=? GROUP BY u.api_key_id,u.credential_id,u.mode,u.model,day';
   const rows = (
     await db
       .prepare(sql)
@@ -155,12 +155,47 @@ export async function usageStats(db, params, env = {}) {
       });
     }
   }
+  const keyIds = [
+    ...new Set(
+      rows
+        .map((row) => row.api_key_id)
+        .filter((id) => id && id !== '00000000-0000-0000-0000-000000000000'),
+    ),
+  ];
+  const keyNames = keyIds.length
+    ? (
+        await db
+          .prepare('SELECT id,name FROM api_keys WHERE id IN(SELECT value FROM json_each(?))')
+          .bind(JSON.stringify(keyIds))
+          .all()
+      ).results
+    : [];
+  const keyLookup = new Map(keyNames.map((row) => [row.id, row.name]));
   const summary = {};
   const models = new Map(),
     credentials = new Map(),
-    days = new Map();
+    days = new Map(),
+    apiKeys = new Map();
   for (const row of rows) {
+    row.api_key_id ||= null;
     combine(summary, row);
+    if (!apiKeys.has(row.api_key_id))
+      apiKeys.set(row.api_key_id, {
+        api_key_id: row.api_key_id,
+        display_name:
+          keyLookup.get(row.api_key_id) ||
+          row.api_key_name ||
+          (row.api_key_id === '00000000-0000-0000-0000-000000000000'
+            ? '总密钥（兼容）'
+            : row.api_key_id
+              ? '已删除密钥'
+              : '未归属（历史记录）'),
+        deleted:
+          !!row.api_key_id &&
+          row.api_key_id !== '00000000-0000-0000-0000-000000000000' &&
+          !keyLookup.has(row.api_key_id),
+      });
+    combine(apiKeys.get(row.api_key_id), row);
     const modelKey = JSON.stringify([row.mode, row.model]);
     if (!models.has(modelKey)) models.set(modelKey, { model: row.model, mode: row.mode });
     combine(models.get(modelKey), row);
@@ -182,8 +217,12 @@ export async function usageStats(db, params, env = {}) {
     summary: finish(summary),
     models: ranked(models),
     credentials: ranked(credentials),
+    api_keys: [...apiKeys.values()]
+      .sort((a, b) => (b.total_tokens || 0) - (a.total_tokens || 0) || b.requests - a.requests)
+      .slice(0, 200)
+      .map(finish),
     days: [...days.values()].sort((a, b) => a.day.localeCompare(b.day)).map(finish),
-    groups_truncated: models.size > 200 || credentials.size > 200,
+    groups_truncated: models.size > 200 || credentials.size > 200 || apiKeys.size > 200,
     retention: { days: 30, max_requests: env.TELEMETRY ? null : 10127, max_detail_requests: 10127 },
     timezone: 'Asia/Shanghai',
     cached_at: Date.now(),

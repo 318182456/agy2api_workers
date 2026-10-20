@@ -83,7 +83,7 @@ test('D1 budget: full retention window and 128 healthy requests avoid per-reques
       `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<2000) INSERT INTO call_logs(request_id,mode,model,status,stage,duration_ms,created_at)SELECT 'seed-'||x,'antigravity','seed',200,'completed',1,${now} FROM n`,
     );
     const DB = metered(raw),
-      env = { DB, API_PASSWORD: 'api' };
+      env = { DB, API_PASSWORD: 'api', ANTIGRAVITY_STREAM2NOSTREAM: false };
     const send = () =>
       handleRequest(
         new Request('https://test/antigravity/v1/chat/completions', {

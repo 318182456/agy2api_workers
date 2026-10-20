@@ -1,4 +1,5 @@
-import { HttpError, googleFetch, operation } from './common.js';
+import { retryableStatus, clientAborted, fetchGeneration, boundedSeconds } from './timeouts.js';
+import { HttpError, operation } from './common.js';
 import { accessToken, selectCredential } from './credentials.js';
 import { cooldownSeconds, putCooldown, recordAttempt } from './reliability.js';
 import { loadModelNames, knownModelId, publicModelId } from './model-names.js';
@@ -88,7 +89,7 @@ export async function callUpstream(
         accessToken(env.DB, row, fetcher, false, env),
       );
       const send = () =>
-        googleFetch(
+        fetchGeneration(
           fetcher,
           `${origin}/v1internal:${action}`,
           {
@@ -105,7 +106,7 @@ export async function callUpstream(
             },
             body: JSON.stringify(payload),
           },
-          'generation_fetch',
+          boundedSeconds(env.UPSTREAM_TIMEOUT_SECONDS, 45, 5, 90),
         );
       let response = await send();
       if (response.status === 401 && row.data.refresh_token) {
@@ -131,7 +132,7 @@ export async function callUpstream(
         meta,
       );
       logged = true;
-      if (![429, 500, 503].includes(response.status)) return response;
+      if (!retryableStatus(response.status)) return response;
       const seconds = cooldownSeconds(response);
       await operation('credential_cooldown', () =>
         putCooldown(env.DB, row, model, response.status, seconds),
@@ -162,7 +163,7 @@ export async function callUpstream(
             row,
             mode,
             model,
-            status: signal?.aborted ? 499 : error.status || 500,
+            status: clientAborted(signal) ? 499 : error.status || 500,
             stage: error.operation || 'generation_prepare',
             code: error.errorCode || 'REQUEST_FAILED',
             started,
@@ -170,6 +171,25 @@ export async function callUpstream(
           meta,
         );
       error.requestId = requestId;
+      if (
+        !signal?.aborted &&
+        attempt + 1 < maxAttempts &&
+        ['UPSTREAM_TIMEOUT', 'UPSTREAM_CONNECTION_FAILED'].includes(error.errorCode)
+      ) {
+        let next;
+        try {
+          next = await operation('credential_select', () =>
+            selectCredential(env.DB, mode, model, used, env.CREDENTIAL_SELECTION),
+          );
+        } catch (selectionError) {
+          if (!(selectionError instanceof HttpError) || ![429, 503].includes(selectionError.status))
+            throw selectionError;
+        }
+        if (next && next.id !== row.id) {
+          row = next;
+          continue;
+        }
+      }
       throw error;
     }
   }

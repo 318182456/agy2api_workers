@@ -1,3 +1,4 @@
+import { retryableStatus } from './timeouts.js';
 import { HttpError, operation } from './common.js';
 import { selectCredential } from './credentials.js';
 import { normalizeRequest } from './normalize.js';
@@ -64,8 +65,7 @@ export async function callUnifiedUpstream(env, model, request, stream, signal, f
       if (!retryable || signal?.aborted) throw error;
       failure = error;
     }
-    if (response && ![429, 500, 502, 503, 504].includes(response.status))
-      return { response, mode: row.mode, collect };
+    if (response && !retryableStatus(response.status)) return { response, mode: row.mode, collect };
     if (attempt + 1 >= limit || signal?.aborted) {
       if (failure) throw failure;
       return { response, mode: row.mode, collect };

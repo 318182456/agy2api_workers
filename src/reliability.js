@@ -117,10 +117,14 @@ export async function queryCallLogs(db, params, exporting = false) {
   const limit = exporting ? 2000 : 50;
   const sql =
     events +
-    ` SELECT l.*,c.name AS current_credential_name,CASE WHEN json_valid(c.data) THEN json_extract(c.data,'$.user_email') END AS credential_email FROM events l` +
+    `, page AS (SELECT l.*,c.name AS current_credential_name,CASE WHEN json_valid(c.data) THEN json_extract(c.data,'$.user_email') END AS credential_email FROM events l` +
     credentialJoin('l') +
     where +
-    ` ORDER BY l.created_at DESC,l.event_source DESC,l.id DESC LIMIT ${limit + 1}`;
+    ` ORDER BY l.created_at DESC,l.event_source DESC,l.id DESC LIMIT ${limit + 1})
+      SELECT p.*,u.api_key_id,COALESCE(k.name,u.api_key_name) AS api_key_name FROM page p
+      LEFT JOIN request_usage u ON u.request_id=p.request_id
+      LEFT JOIN api_keys k ON k.id=u.api_key_id
+      ORDER BY p.created_at DESC,p.event_source DESC,p.id DESC`;
   const result = await db
     .prepare(sql)
     .bind(...values)
