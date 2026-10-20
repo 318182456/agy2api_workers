@@ -525,6 +525,10 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
           usageMetadata: { totalTokenCount: 7 },
         },
       };
+      if (scenario === 'incomplete') {
+        delete value.response.candidates[0].finishReason;
+        value.response.candidates[0].content.parts[0].text = 'private incomplete output';
+      }
       if (scenario === 'json')
         return new OutboundResponse(JSON.stringify(value), {
           headers: { 'content-type': 'application/json' },
@@ -588,6 +592,31 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
     const detail = records.find((row) => row.detail_code === 'UPSTREAM_NOT_SSE');
     assert.ok(detail.detail_message.includes('text/html'));
     assert.equal(JSON.stringify(records).includes('fixture private body'), false);
+    scenario = 'incomplete';
+    const beforeIncomplete = calls;
+    const incomplete = await chat();
+    assert.equal(incomplete.status, 502);
+    const missingFinish = (await incomplete.json()).error;
+    assert.equal(missingFinish.reason, 'UPSTREAM_STREAM_INCOMPLETE');
+    assert.match(missingFinish.message, /帧=1，候选=1，已结束=0/);
+    assert.match(missingFinish.message, /结束=EOF/);
+    assert.equal(calls, beforeIncomplete + 1); // Do not silently generate again after body consumption.
+    const incompleteLogs = (
+      await queryCallLogs(env.DB, new URLSearchParams({ request_id: missingFinish.request_id }))
+    ).records;
+    assert.ok(
+      incompleteLogs.some(
+        (row) =>
+          row.detail_code === 'UPSTREAM_STREAM_INCOMPLETE' &&
+          row.detail_message.includes('用量=已报告'),
+      ),
+    );
+    assert.equal(JSON.stringify(incompleteLogs).includes('private incomplete output'), false);
+    const stats = await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+    assert.equal(stats.summary.requests, 5);
+    assert.equal(stats.summary.successes, 3);
+    assert.equal(stats.summary.failures, 2);
+    assert.equal(stats.summary.total_tokens, 28); // Three successes plus the failed stream's reported seven tokens.
   } finally {
     await mf.dispose();
   }

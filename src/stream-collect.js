@@ -14,7 +14,63 @@ function failure(code, message, status = 502) {
 function collection() {
   const result = {},
     candidates = new Map();
+  let frames = 0,
+    textChars = 0,
+    thoughtChars = 0,
+    toolCalls = 0;
+  let lastFrame = '无',
+    alternateFinish = false;
+  const decorate = (error, ending) => {
+    // Only fixed labels and counts leave the collector; never persist response text, arguments,
+    // thought signatures, arbitrary upstream keys or credentials in diagnostics.
+    const usage = result.usageMetadata;
+    if (usage && typeof usage === 'object') {
+      const reported = Object.fromEntries(
+        ['promptTokenCount', 'candidatesTokenCount', 'thoughtsTokenCount', 'totalTokenCount']
+          .filter((key) => Number.isSafeInteger(usage[key]) && usage[key] >= 0)
+          .map((key) => [key, usage[key]]),
+      );
+      if (Object.keys(reported).length) error.usageMetadata = reported;
+    }
+    if (
+      !error.collectionDiagnosed &&
+      [
+        'UPSTREAM_STREAM_INCOMPLETE',
+        'UPSTREAM_STREAM_EMPTY',
+        'UPSTREAM_STREAM_INTERRUPTED',
+      ].includes(error.errorCode)
+    ) {
+      const finished = [...candidates.values()].filter(
+        (candidate) => candidate.finishReason,
+      ).length;
+      const diagnostic =
+        '帧=' +
+        frames +
+        '，候选=' +
+        candidates.size +
+        '，已结束=' +
+        finished +
+        '，正文字符=' +
+        textChars +
+        '，思考字符=' +
+        thoughtChars +
+        '，工具调用=' +
+        toolCalls +
+        '，用量=' +
+        (error.usageMetadata ? '已报告' : '未报告') +
+        '，末帧=' +
+        lastFrame +
+        '，结束=' +
+        ending +
+        (alternateFinish ? '，检测到非标准结束字段' : '');
+      error.collectionDiagnosed = true;
+      error.diagnosticMessage = error.message + '（' + diagnostic + '）';
+      error.message = error.diagnosticMessage;
+    }
+    return error;
+  };
   return {
+    decorate,
     add(raw) {
       let value;
       try {
@@ -22,6 +78,9 @@ function collection() {
       } catch {
         throw failure('UPSTREAM_STREAM_FORMAT', '上游流式结果结构无效');
       }
+      frames++;
+      lastFrame = value.candidates?.length ? '候选' : value.usageMetadata ? '用量' : '元数据';
+      alternateFinish ||= !!value.finishReason || !!value.finish_reason;
       if (value.error) {
         const status =
           Number.isInteger(value.error.code) && value.error.code >= 400 && value.error.code <= 599
@@ -44,6 +103,7 @@ function collection() {
       for (const [position, candidate] of (incoming || []).entries()) {
         if (!candidate || typeof candidate !== 'object' || Array.isArray(candidate))
           throw failure('UPSTREAM_STREAM_FORMAT', '上游候选结果格式无效');
+        alternateFinish ||= !!candidate.finish_reason;
         const index = candidate.index ?? position;
         const old = candidates.get(index) || { index, content: { role: 'model', parts: [] } };
         const parts = candidate.content?.parts || [];
@@ -51,6 +111,11 @@ function collection() {
         for (const part of parts) {
           if (!part || typeof part !== 'object' || Array.isArray(part))
             throw failure('UPSTREAM_STREAM_FORMAT', '上游内容格式无效');
+          if (typeof part.text === 'string') {
+            if (part.thought) thoughtChars += part.text.length;
+            else textChars += part.text.length;
+          }
+          if (part.functionCall) toolCalls++;
           const previous = old.content.parts.at(-1);
           const plain = (p) =>
             p &&
@@ -68,11 +133,14 @@ function collection() {
         candidates.set(index, old);
       }
     },
-    finish() {
+    finish(ending = 'EOF') {
       if (!candidates.size && !result.promptFeedback?.blockReason)
-        throw failure('UPSTREAM_STREAM_EMPTY', '上游流未返回候选结果');
+        throw decorate(failure('UPSTREAM_STREAM_EMPTY', '上游流未返回候选结果'), ending);
       if ([...candidates.values()].some((candidate) => !candidate.finishReason))
-        throw failure('UPSTREAM_STREAM_INCOMPLETE', '上游流提前结束，未返回 finishReason');
+        throw decorate(
+          failure('UPSTREAM_STREAM_INCOMPLETE', '上游流提前结束，未返回 finishReason'),
+          ending,
+        );
       if (candidates.size) result.candidates = [...candidates.values()];
       return result;
     },
@@ -81,10 +149,14 @@ function collection() {
 // Preserve part order, tool signatures and cumulative usage; never invent a completion.
 export async function collectGoogleStream(stream, limit = 8 * 1024 * 1024) {
   const merged = collection();
-  let bytes = 0;
+  let bytes = 0,
+    ending = 'EOF';
   try {
     for await (const event of sseEvents(stream)) {
-      if (event === '[DONE]') break;
+      if (event === '[DONE]') {
+        ending = 'DONE';
+        break;
+      }
       bytes += new TextEncoder().encode(event).byteLength;
       if (bytes > limit) throw failure('UPSTREAM_STREAM_LIMIT', '上游流式汇总超过缓存上限');
       let raw;
@@ -95,10 +167,10 @@ export async function collectGoogleStream(stream, limit = 8 * 1024 * 1024) {
       }
       for (const item of Array.isArray(raw) ? raw : [raw]) merged.add(item);
     }
-    return merged.finish();
+    return merged.finish(ending);
   } catch (error) {
-    if (error instanceof HttpError) throw error;
-    throw failure('UPSTREAM_STREAM_INTERRUPTED', '上游流式汇总中断');
+    if (error instanceof HttpError) throw merged.decorate(error, ending);
+    throw merged.decorate(failure('UPSTREAM_STREAM_INTERRUPTED', '上游流式汇总中断'), '读流异常');
   }
 }
 export async function collectGoogleResponse(response, limit = 8 * 1024 * 1024) {
@@ -137,7 +209,7 @@ export async function collectGoogleResponse(response, limit = 8 * 1024 * 1024) {
     }
     const merged = collection();
     for (const item of Array.isArray(raw) ? raw : [raw]) merged.add(item);
-    return merged.finish();
+    return merged.finish('JSON');
   } catch (error) {
     if (error instanceof HttpError) throw error;
     throw failure('UPSTREAM_STREAM_INTERRUPTED', '上游流式汇总中断');

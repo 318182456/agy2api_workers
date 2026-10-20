@@ -2275,3 +2275,55 @@ test('shared quota families count once per account and keep unknown windows unkn
     2,
   );
 });
+
+test('incomplete streams report safe shape diagnostics and retain reported token counts', async () => {
+  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const privateText = 'PRIVATE_RESPONSE_TEXT';
+  const privateArgs = 'PRIVATE_TOOL_ARGUMENT';
+  const frames = [
+    {
+      response: {
+        candidates: [
+          {
+            content: {
+              parts: [
+                { text: privateText },
+                { text: 'private-thought', thought: true },
+                {
+                  functionCall: { name: 'private-function', args: { secret: privateArgs } },
+                  thoughtSignature: 'private-signature',
+                },
+              ],
+            },
+          },
+        ],
+        usageMetadata: { promptTokenCount: 12, candidatesTokenCount: 4, secret: privateArgs },
+      },
+    },
+    { response: { usageMetadata: { totalTokenCount: 16 } } },
+  ];
+  for (const ending of ['EOF', 'DONE', 'JSON']) {
+    const response = new Response(
+      ending === 'JSON'
+        ? JSON.stringify(frames)
+        : frames.map((value) => 'data: ' + JSON.stringify(value) + '\n\n').join('') +
+            (ending === 'DONE' ? 'data: [DONE]\n\n' : ''),
+      { headers: { 'content-type': ending === 'JSON' ? 'application/json' : 'text/event-stream' } },
+    );
+    await assert.rejects(collectGoogleResponse(response), (error) => {
+      assert.equal(error.errorCode, 'UPSTREAM_STREAM_INCOMPLETE');
+      assert.match(error.diagnosticMessage, /帧=2，候选=1，已结束=0/);
+      assert.match(error.diagnosticMessage, /工具调用=1，用量=已报告，末帧=用量/);
+      assert.ok(error.diagnosticMessage.includes('结束=' + ending));
+      assert.ok(!error.message.includes(privateText));
+      assert.ok(!error.message.includes(privateArgs));
+      assert.ok(!JSON.stringify(error).includes('private-signature'));
+      assert.deepEqual(error.usageMetadata, {
+        promptTokenCount: 12,
+        candidatesTokenCount: 4,
+        totalTokenCount: 16,
+      });
+      return true;
+    });
+  }
+});

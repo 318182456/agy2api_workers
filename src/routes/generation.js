@@ -280,6 +280,7 @@ export async function generationRoute(request, env, fetcher, context) {
     await completed(latestUsage);
     return result;
   } catch (error) {
+    latestUsage ||= error.usageMetadata;
     if (abort.signal.aborted && abort.signal.reason?.name === 'TimeoutError') {
       error = new HttpError(
         504,
