@@ -86,7 +86,7 @@ export async function callUpstream(
         throw new HttpError(400, '此凭证缺少 project_id，请在管理页校验项目或重新导入');
       const payload = upstreamPayload(request, model, row.data.project_id, mode, true);
       let token = await operation('oauth_refresh', () =>
-        accessToken(env.DB, row, fetcher, false, env),
+        accessToken(env.DB, row, fetcher, false, env, signal),
       );
       const send = () =>
         fetchGeneration(
@@ -112,7 +112,7 @@ export async function callUpstream(
       if (response.status === 401 && row.data.refresh_token) {
         await response.body?.cancel();
         token = await operation('oauth_refresh', () =>
-          accessToken(env.DB, row, fetcher, true, env),
+          accessToken(env.DB, row, fetcher, true, env, signal),
         );
         response = await send();
       }

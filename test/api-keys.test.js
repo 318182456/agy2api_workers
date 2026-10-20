@@ -507,9 +507,16 @@ test('problem events and exports identify managed/master keys, use renamed names
 test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSON for MoviePilot-compatible requests', async () => {
   const { readSettings } = await import('../src/settings.js');
   const { defaults } = await readSettings({});
+  let scenario = 'sse',
+    calls = 0;
   const { mf, env } = await runtime(
     async (request) => {
+      calls++;
       assert.ok(request.url.includes(':streamGenerateContent?alt=sse'));
+      if (scenario === 'html')
+        return new OutboundResponse('<html>fixture private body</html>', {
+          headers: { 'content-type': 'text/html' },
+        });
       const value = {
         response: {
           candidates: [
@@ -518,6 +525,14 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
           usageMetadata: { totalTokenCount: 7 },
         },
       };
+      if (scenario === 'json')
+        return new OutboundResponse(JSON.stringify(value), {
+          headers: { 'content-type': 'application/json' },
+        });
+      if (scenario === 'json-array')
+        return new OutboundResponse(JSON.stringify([value]), {
+          headers: { 'content-type': 'application/json' },
+        });
       return new OutboundResponse('data: ' + JSON.stringify(value) + '\n\n', {
         headers: { 'content-type': 'text/event-stream' },
       });
@@ -538,21 +553,41 @@ test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSO
         Date.now(),
       )
       .run();
-    const response = await mf.dispatchFetch('https://test/v1/chat/completions', {
-      method: 'POST',
-      headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: 'gemini-3.1-flash-lite',
-        stream: false,
-        messages: [{ role: 'user', content: 'fixture' }],
-      }),
-    });
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get('x-upstream-mode'), 'stream-collected');
-    const value = await response.json();
-    assert.equal(value.object, 'chat.completion');
-    assert.equal(value.choices[0].message.content, 'stream collected');
-    assert.equal(value.usage.total_tokens, 7);
+    const chat = () =>
+      mf.dispatchFetch('https://test/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: 'gemini-3.1-flash-lite',
+          stream: false,
+          messages: [{ role: 'user', content: 'fixture' }],
+        }),
+      });
+    for (scenario of ['sse', 'json', 'json-array']) {
+      const before = calls,
+        response = await chat();
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('x-upstream-mode'), 'stream-collected');
+      const value = await response.json();
+      assert.equal(value.object, 'chat.completion');
+      assert.equal(value.choices[0].message.content, 'stream collected');
+      assert.equal(value.usage.total_tokens, 7);
+      assert.equal(calls, before + 1);
+    }
+    scenario = 'html';
+    const before = calls;
+    const response = await chat();
+    assert.equal(response.status, 502);
+    const error = (await response.json()).error;
+    assert.equal(error.reason, 'UPSTREAM_NOT_SSE');
+    assert.equal(error.stage, 'stream_collection');
+    assert.equal(calls, before + 1);
+    const records = (
+      await queryCallLogs(env.DB, new URLSearchParams({ request_id: error.request_id }))
+    ).records;
+    const detail = records.find((row) => row.detail_code === 'UPSTREAM_NOT_SSE');
+    assert.ok(detail.detail_message.includes('text/html'));
+    assert.equal(JSON.stringify(records).includes('fixture private body'), false);
   } finally {
     await mf.dispose();
   }

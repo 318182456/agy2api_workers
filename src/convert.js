@@ -5,9 +5,13 @@ function contentParts(content) {
   if (content == null) return [];
   if (!Array.isArray(content)) throw new HttpError(400, '消息 content 必须为字符串或数组');
   return content.map((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part))
+      throw new HttpError(400, '消息内容项必须为对象');
     if (part.type === 'text') return { text: String(part.text || '') };
     if (part.type === 'image_url') {
-      const match = part.image_url?.url?.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/);
+      const match =
+        typeof part.image_url?.url === 'string' &&
+        part.image_url.url.match(/^data:(image\/[\w.+-]+);base64,([\s\S]+)$/);
       if (!match) throw new HttpError(400, 'Workers 版图片仅支持 base64 data URL');
       return { inlineData: { mimeType: match[1], data: match[2] } };
     }
@@ -31,12 +35,15 @@ export function openaiToGemini(body) {
       xhigh: 'max',
       max: 'max',
     };
-    if (!efforts[body.reasoning_effort]) throw new HttpError(400, '未知 reasoning_effort');
+    if (typeof body.reasoning_effort !== 'string' || !Object.hasOwn(efforts, body.reasoning_effort))
+      throw new HttpError(400, '未知 reasoning_effort');
     request._reasoningEffort = efforts[body.reasoning_effort];
   }
   const system = [];
   const callNames = new Map();
   for (const message of body.messages) {
+    if (!message || typeof message !== 'object' || Array.isArray(message))
+      throw new HttpError(400, 'messages 中的消息必须为对象');
     if (['system', 'developer'].includes(message.role)) {
       system.push(...contentParts(message.content));
       continue;
@@ -66,12 +73,17 @@ export function openaiToGemini(body) {
       if (!['user', 'assistant'].includes(message.role))
         throw new HttpError(400, `未知消息角色 ${message.role}`);
       parts = contentParts(message.content);
+      if (message.tool_calls != null && !Array.isArray(message.tool_calls))
+        throw new HttpError(400, 'tool_calls 必须为数组');
       for (const call of message.tool_calls || []) {
-        const fn = call.function;
-        if (!fn?.name) throw new HttpError(400, '工具调用缺少 function.name');
+        const fn = call?.function;
+        if (typeof fn?.name !== 'string' || !fn.name.trim())
+          throw new HttpError(400, '工具调用缺少 function.name');
         let args;
         try {
+          if (fn.arguments != null && typeof fn.arguments !== 'string') throw new Error();
           args = JSON.parse(fn.arguments || '{}');
+          if (!args || typeof args !== 'object' || Array.isArray(args)) throw new Error();
         } catch {
           throw new HttpError(400, '工具参数不是有效 JSON');
         }
@@ -110,11 +122,17 @@ export function openaiToGemini(body) {
   }
   if (body.thinking_config) generationConfig.thinkingConfig = body.thinking_config;
   if (Object.keys(generationConfig).length) request.generationConfig = generationConfig;
+  if (body.tools != null && !Array.isArray(body.tools))
+    throw new HttpError(400, 'tools 必须为数组');
   if (body.tools?.length) {
     request.tools = [
       {
         functionDeclarations: body.tools.map((tool) => {
-          if (tool.type !== 'function' || !tool.function?.name)
+          if (
+            tool?.type !== 'function' ||
+            typeof tool.function?.name !== 'string' ||
+            !tool.function.name.trim()
+          )
             throw new HttpError(400, '仅支持 function 类型工具');
           const { name, description, parameters } = tool.function;
           return {
@@ -126,11 +144,20 @@ export function openaiToGemini(body) {
       },
     ];
   }
-  if (body.tool_choice) {
+  if (body.tool_choice != null) {
     const choice = body.tool_choice;
     const modes = { auto: 'AUTO', none: 'NONE', required: 'ANY' };
-    if (typeof choice === 'string' && !modes[choice]) throw new HttpError(400, '未知 tool_choice');
-    if (typeof choice === 'object' && !choice.function?.name)
+    if (typeof choice === 'string' && !Object.hasOwn(modes, choice))
+      throw new HttpError(400, '未知 tool_choice');
+    if (
+      typeof choice !== 'string' &&
+      (!choice ||
+        typeof choice !== 'object' ||
+        Array.isArray(choice) ||
+        choice.type !== 'function' ||
+        typeof choice.function?.name !== 'string' ||
+        !choice.function.name.trim())
+    )
       throw new HttpError(400, 'tool_choice 缺少函数名');
     request.toolConfig = {
       functionCallingConfig:
@@ -324,7 +351,7 @@ export function convertedStream(
           yield chunk({ role: 'assistant', content: '' });
           sentRole = true;
         }
-        if (value.usageMetadata) latestUsage = usage(value);
+        if (value.usageMetadata) latestUsage = usage({ usageMetadata: rawUsage });
         const candidate = value.candidates?.[0];
         const delta = partsDelta(candidate?.content?.parts, toolCount);
         toolCount += delta.tool_calls?.length || 0;

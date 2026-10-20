@@ -2,7 +2,7 @@ import { boundedSeconds, clientAborted } from '../timeouts.js';
 import { HttpError, json, readJson } from '../common.js';
 import { authenticateApi } from '../api-keys.js';
 import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../convert.js';
-import { collectGoogleStream } from '../stream-collect.js';
+import { collectGoogleResponse } from '../stream-collect.js';
 import { callUpstream } from '../upstream.js';
 import { discoverModels } from '../model-list.js';
 import { callUnifiedUpstream, discoverUnifiedModels } from '../unified.js';
@@ -252,11 +252,7 @@ export async function generationRoute(request, env, fetcher, context) {
     }
     let value;
     if (collect) {
-      if (!response.body || !response.headers.get('content-type')?.includes('text/event-stream')) {
-        await response.body?.cancel();
-        throw new HttpError(502, '上游未返回 SSE 流');
-      }
-      value = await collectGoogleStream(response.body);
+      value = await collectGoogleResponse(response);
     } else {
       try {
         value = await response.json();
@@ -304,6 +300,7 @@ export async function generationRoute(request, env, fetcher, context) {
           status: error.status || 500,
           stage: error.operation,
           code: error.errorCode || 'UPSTREAM_RESPONSE_INVALID',
+          detailMessage: error.diagnosticMessage,
           started,
         },
         attemptMeta,

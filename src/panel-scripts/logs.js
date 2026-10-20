@@ -25,7 +25,8 @@ async function loadCalls(before = null) {
       record.status +
         '\n' +
         (record.status < 400 && record.retried ? '重试后成功' : record.stage) +
-        (record.detail_code ? '\n' + record.detail_code : ''),
+        (record.detail_code ? '\n' + record.detail_code : '') +
+        (record.detail_message ? '\n' + record.detail_message : ''),
       record.duration_ms + ' ms',
       record.request_id,
     ]) {

@@ -18,7 +18,10 @@ export function unifiedRouting(env, model) {
   const known = { geminicli: scope.cliModels?.value?.ids, antigravity: scope.models?.value?.ids };
   const matched = ['geminicli', 'antigravity'].filter(
     (mode) =>
-      !known[mode]?.length || known[mode].includes(model) || known[mode].includes(models[mode]),
+      (mode === 'geminicli' && /^gemini-/i.test(models[mode])) ||
+      !known[mode]?.length ||
+      known[mode].includes(model) ||
+      known[mode].includes(models[mode]),
   );
   const exclusive =
     /^(?:claude-|gpt-|tab_|chat_)/i.test(model) || /-agent$|-image(?:-|$)/i.test(model);

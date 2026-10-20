@@ -486,7 +486,7 @@ async function showQuota(credential) {
       empty.textContent = 'Google 未返回模型信息，无法确定额度。';
       cell.append(empty);
     } else {
-      renderSingleQuota(cell, value.models);
+      renderSingleQuota(cell, value.models, credential.mode);
     }
     status('已更新 ' + credential.name + ' 的额度。');
   } catch (error) {

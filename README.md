@@ -10,17 +10,17 @@
 
 ## 功能
 
-| 模块 | 支持内容 |
-| --- | --- |
-| API 兼容 | OpenAI Chat Completions、Anthropic Messages、Gemini 原生接口，普通响应与 SSE 流式输出 |
-| 双渠道 | GeminiCLI、Antigravity 分别管理凭证、模型与调用路径 |
-| 凭证管理 | JSON 导入、多文件导入、备份恢复、启停、重命名、邮箱查重、下载 |
-| Google 授权 | 授权链接、PKCE、一次性 state、手动回填回调 URL |
-| 账号调度 | 轮询、优先级、权重随机；按模型冷却，失败时有限切换凭证 |
-| 用量统计 | 请求数、成功率、Token、耗时、每日趋势、热门模型与账号消耗排行 |
-| 额度总览 | Antigravity 模型额度卡片、进度条、低额度筛选、账号详情、北京时间重置时间 |
-| 日志与健康 | 按账号、模型、状态和时间筛选，查看失败阶段、模型冷却，导出和清理日志 |
-| 网页设置 | 模型列表、调度策略、重试数量、Antigravity 流式汇总开关，保存后生效 |
+| 模块        | 支持内容                                                                              |
+| ----------- | ------------------------------------------------------------------------------------- |
+| API 兼容    | OpenAI Chat Completions、Anthropic Messages、Gemini 原生接口，普通响应与 SSE 流式输出 |
+| 双渠道      | GeminiCLI、Antigravity 分别管理凭证、模型与调用路径                                   |
+| 凭证管理    | JSON 导入、多文件导入、备份恢复、启停、重命名、邮箱查重、下载                         |
+| Google 授权 | 授权链接、PKCE、一次性 state、手动回填回调 URL                                        |
+| 账号调度    | 轮询、优先级、权重随机；按模型冷却，失败时有限切换凭证                                |
+| 用量统计    | 请求数、成功率、Token、耗时、每日趋势、热门模型与账号消耗排行                         |
+| 额度总览    | Gemini / Claude 额度分组、进度条、低额度筛选、账号详情、北京时间重置时间              |
+| 日志与健康  | 按账号、模型、状态和时间筛选，查看失败阶段、模型冷却，导出和清理日志                  |
+| 网页设置    | 模型列表、调度策略、重试数量、Antigravity 流式汇总开关，保存后生效                    |
 
 管理台支持桌面和手机。统计明细、模型额度和账号列表均有分页，无需一次浏览几十行。
 
@@ -44,18 +44,18 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 部署时只需设置两个不同的长随机密码，使用 **Secret（机密）** 类型：
 
-| Secret | 用途 |
-| --- | --- |
-| `API_PASSWORD` | 兼容总密钥，可逐步改用管理页的独立密钥 |
-| `PANEL_PASSWORD` | 管理台登录密码，与 API 密码不同 |
+| Secret           | 用途                                   |
+| ---------------- | -------------------------------------- |
+| `API_PASSWORD`   | 兼容总密钥，可逐步改用管理页的独立密钥 |
+| `PANEL_PASSWORD` | 管理台登录密码，与 API 密码不同        |
 
 四项 OAuth 客户端配置已直接写入 `wrangler.jsonc` 的 `vars`，与原 Python 项目 `src/utils.py` 使用的值一致，无需部署时重复填写：
 
-| Worker 变量 | 原项目常量 |
-| --- | --- |
-| `GEMINICLI_CLIENT_ID` | `CLIENT_ID` |
-| `GEMINICLI_CLIENT_SECRET` | `CLIENT_SECRET` |
-| `ANTIGRAVITY_CLIENT_ID` | `ANTIGRAVITY_CLIENT_ID` |
+| Worker 变量                 | 原项目常量                  |
+| --------------------------- | --------------------------- |
+| `GEMINICLI_CLIENT_ID`       | `CLIENT_ID`                 |
+| `GEMINICLI_CLIENT_SECRET`   | `CLIENT_SECRET`             |
+| `ANTIGRAVITY_CLIENT_ID`     | `ANTIGRAVITY_CLIENT_ID`     |
 | `ANTIGRAVITY_CLIENT_SECRET` | `ANTIGRAVITY_CLIENT_SECRET` |
 
 使用自己的 OAuth 客户端时，按渠道成对替换 ID 和 Secret，必须与刷新令牌匹配。导入 JSON 自带的 `client_id` / `client_secret` 优先于部署变量。账号访问令牌、刷新令牌仍通过凭证导入或网页授权获得，不属于这些固定的客户端配置。
@@ -96,16 +96,16 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 下面用 `https://your-worker.example.com` 代表你的 Worker 域名，**API Key 可填写管理页创建/导入的独立密钥，或兼容总密钥 `API_PASSWORD`**。
 
-| 接口 | GeminiCLI | Antigravity |
-| --- | --- | --- |
-| OpenAI Base URL | `https://your-worker.example.com/v1` | `https://your-worker.example.com/antigravity/v1` |
-| Chat Completions | `/v1/chat/completions` | `/antigravity/v1/chat/completions` |
-| Anthropic Messages | `/v1/messages` | `/antigravity/v1/messages` |
-| Anthropic Token 计数 | `/v1/messages/count_tokens` | `/antigravity/v1/messages/count_tokens` |
-| Gemini 生成 | `/v1beta/models/{model}:generateContent` | `/antigravity/v1beta/models/{model}:generateContent` |
-| Gemini 流式生成 | `/v1beta/models/{model}:streamGenerateContent?alt=sse` | `/antigravity/v1beta/models/{model}:streamGenerateContent?alt=sse` |
-| OpenAI 格式模型列表 | `/v1/models` | `/antigravity/v1/models` |
-| Gemini 格式模型列表 | `/v1beta/models` | `/antigravity/v1beta/models` |
+| 接口                 | GeminiCLI                                              | Antigravity                                                        |
+| -------------------- | ------------------------------------------------------ | ------------------------------------------------------------------ |
+| OpenAI Base URL      | `https://your-worker.example.com/v1`                   | `https://your-worker.example.com/antigravity/v1`                   |
+| Chat Completions     | `/v1/chat/completions`                                 | `/antigravity/v1/chat/completions`                                 |
+| Anthropic Messages   | `/v1/messages`                                         | `/antigravity/v1/messages`                                         |
+| Anthropic Token 计数 | `/v1/messages/count_tokens`                            | `/antigravity/v1/messages/count_tokens`                            |
+| Gemini 生成          | `/v1beta/models/{model}:generateContent`               | `/antigravity/v1beta/models/{model}:generateContent`               |
+| Gemini 流式生成      | `/v1beta/models/{model}:streamGenerateContent?alt=sse` | `/antigravity/v1beta/models/{model}:streamGenerateContent?alt=sse` |
+| OpenAI 格式模型列表  | `/v1/models`                                           | `/antigravity/v1/models`                                           |
+| Gemini 格式模型列表  | `/v1beta/models`                                       | `/antigravity/v1beta/models`                                       |
 
 若客户端会自动追加 `/v1`，请分别填根域名或 `/antigravity`，避免重复拼接路径。Anthropic 客户端按其要求填写根地址或 `/antigravity`，最终请求路径应与上表一致。
 
@@ -126,13 +126,13 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 ## 管理控制台
 
-| 页面 | 地址 | 主要内容 |
-| --- | --- | --- |
-| 概览 | `/panel/overview` | 请求与用量、趋势、排行；点击指标直达详情或筛选账号 |
-| 凭证管理 | `/panel/credentials` | 账号列表、额度总览、文件导入、Google 授权四个页签 |
-| API 密钥 | `/panel/keys` | 创建、导入、查看/复制、改名、启停、删除、可选到期时间与独立用量 |
-| 问题一览 | `/panel/logs` | 失败、取消、重试及恢复事件；筛选、导出和清理 |
-| 系统设置 | `/panel/settings` | 运行参数、模型列表、接口接入三个页签 |
+| 页面     | 地址                 | 主要内容                                                        |
+| -------- | -------------------- | --------------------------------------------------------------- |
+| 概览     | `/panel/overview`    | 请求与用量、趋势、排行；点击指标直达详情或筛选账号              |
+| 凭证管理 | `/panel/credentials` | 账号列表、额度总览、文件导入、Google 授权四个页签               |
+| API 密钥 | `/panel/keys`        | 创建、导入、查看/复制、改名、启停、删除、可选到期时间与独立用量 |
+| 问题一览 | `/panel/logs`        | 失败、取消、重试及恢复事件；筛选、导出和清理                    |
+| 系统设置 | `/panel/settings`    | 运行参数、模型列表、接口接入三个页签                            |
 
 侧栏只保留以上 5 个入口，使用紧凑卡片、表格和工具栏。原 `/panel/import`、`/panel/oauth`、`/panel/quota`、`/panel/models`、`/panel/api` 链接仍可直接打开对应页签。
 
@@ -145,7 +145,7 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 在 **API 密钥** 页为每个项目创建独立密钥，密钥默认永久有效，到期时间可留空；服务在 D1 保存完整密钥及用于鉴权的 SHA-256 摘要，管理员可在列表中重新查看、复制或隐藏密钥。支持导入完整密钥文本（每行一个）和 JSON，单次最多 200 个；重复项跳过，不覆盖名称、到期时间或停用状态。示例 JSON：
 
 ```json
-[{"name":"MoviePilot","key":"sk-your-existing-full-key"}]
+[{ "name": "MoviePilot", "key": "sk-your-existing-full-key" }]
 ```
 
 迁移 New API 时选择 **New API** 格式：支持令牌对象数组、`data` 数组、`data.items` 和单个令牌对象；读取 `key`、`name`、`status`、`expired_time`，没有 `sk-` 前缀时自动补全。列表 API 返回的脱敏密钥不能导入，需要获取完整令牌。`status=1` 启用，其他状态停用；`expired_time=-1` 永不过期，其余为 Unix 秒时间戳。字段依据 [New API 令牌模型](https://github.com/QuantumNous/new-api/blob/main/model/token.go)。
@@ -159,7 +159,7 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 - **请求统计**按一次客户端生成请求的最终结果记录，内部重试不重复计数；额度查询、模型发现和管理页测试调用不计入该统计。
 - **Token**仅采用上游实际报告值，缺失显示“未报告”，不会用本地估算补齐。账号消耗排行仅比较已报告的总 Token。
 - **统计保留**：聚合模式保留最近 30 天完整汇总，明细模式保留最近 30 天且最多约 10000 次请求；默认展示最近 7 天，日期按北京时间分组。模型和账号分组最多各 200 项。
-- **额度**支持 Antigravity 与 GeminiCLI，分别查询和展示；GeminiCLI 使用官方客户端的 `retrieveUserQuota` 请求，保留可用数量、配额类型及重置时间，不按会员档位估算缺失数据。手动逐账号查询，可停止后续查询，不发起聊天，不后台轮询。GeminiCLI 在总览中按账号/配额项展示，避免将不同额度池合并。
+- **额度**支持 Antigravity 与 GeminiCLI，分别查询和展示；GeminiCLI 使用官方客户端的 `retrieveUserQuota` 请求，保留可用数量、配额类型及重置时间，不按会员档位估算缺失数据。手动逐账号查询，可停止后续查询，不发起聊天，不后台轮询。同一账号的 Gemini、Claude 模型各折叠为额度组，模型数量不影响账号均值；渠道与 GeminiCLI 配额类型分别展示。同组上游报告不同则显示最低剩余、最晚重置和差异提示，不保证整个模型系列共享同一个池。当前额度接口未分别返回 5 小时与周窗口，页面明确显示未提供，保留实际上报的剩余比例与重置时间，不按距离重置的时长猜测窗口。
 - **平均与最低额度**仅计算成功返回数值的账号。失败、未查询、未返回该模型和未知比例不计入均值，未知不等于零；比例不能相加为余额或换算成调用次数。
 - **问题一览**保留 7 天，最多展示最近约 2000 次异常请求及旧版独立事件；聚合模式只保存失败、取消和重试明细，正常成功请求只计入汇总。清理日志不会删除用量统计和健康摘要。
 
@@ -167,14 +167,14 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 普通变量在 `wrangler.jsonc` 的 `vars` 或 Cloudflare 控制台中配置；API 与管理密码使用上面的 Secrets；OAuth 客户端已在 vars 中提供默认值。
 
-| 变量 | 默认值 | 说明 |
-| --- | --- | --- |
-| `MAX_CREDENTIAL_ATTEMPTS` | `3` | 一次生成请求最多尝试的凭证数，范围 1–5 |
-| `CREDENTIAL_SELECTION` | `round_robin` | `round_robin` 轮询、`priority` 优先级或 `weighted` 权重随机 |
-| `UPSTREAM_TIMEOUT_SECONDS` | `45` | 单次生成请求等待上游响应头的秒数，5–90；超时可在重试预算内切换凭证 |
-| `REQUEST_TIMEOUT_SECONDS` | `100` | 普通请求包含重试与正文读取的总等待秒数，10–110；流式请求仅限制开始输出前的等待 |
-| `ANTIGRAVITY_STREAM2NOSTREAM` | `true` | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应 |
-| `USAGE_STORAGE_MODE` | `aggregate` | `aggregate` 持久聚合；`detailed` 逐请求写 D1；缺少 TELEMETRY 时回退明细模式 |
+| 变量                          | 默认值        | 说明                                                                           |
+| ----------------------------- | ------------- | ------------------------------------------------------------------------------ |
+| `MAX_CREDENTIAL_ATTEMPTS`     | `3`           | 一次生成请求最多尝试的凭证数，范围 1–5                                         |
+| `CREDENTIAL_SELECTION`        | `round_robin` | `round_robin` 轮询、`priority` 优先级或 `weighted` 权重随机                    |
+| `UPSTREAM_TIMEOUT_SECONDS`    | `45`          | 单次生成请求等待上游响应头的秒数，5–90；超时可在重试预算内切换凭证             |
+| `REQUEST_TIMEOUT_SECONDS`     | `100`         | 普通请求包含重试与正文读取的总等待秒数，10–110；流式请求仅限制开始输出前的等待 |
+| `ANTIGRAVITY_STREAM2NOSTREAM` | `true`        | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应                                   |
+| `USAGE_STORAGE_MODE`          | `aggregate`   | `aggregate` 持久聚合；`detailed` 逐请求写 D1；缺少 TELEMETRY 时回退明细模式    |
 
 上述配置可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
 
@@ -220,11 +220,11 @@ npm run deploy
 
 默认使用聚合模式，升级会应用 `0007_packed_diagnostics.sql` 和 `0008_usage_aggregates.sql`，不清空凭证或历史统计。
 
-| 资源 | 控制台名称 / 绑定 | 保存内容与写入时机 |
-| --- | --- | --- |
-| D1 | `gcli2api` / `DB` | 凭证、配置、错误明细、每 5 分钟的用量汇总 |
-| KV | `gcli2api` / `CACHE` | 非敏感配置和模型 ID；设置保存、手动模型刷新、每小时配置预热才写入 |
-| SQLite Durable Object | Cloudflare 按 Worker 和类名生成命名空间 / `TELEMETRY` | 每次请求先持久累加，Alarm 约每 5 分钟批量写 D1 |
+| 资源                  | 控制台名称 / 绑定                                     | 保存内容与写入时机                                                |
+| --------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
+| D1                    | `gcli2api` / `DB`                                     | 凭证、配置、错误明细、每 5 分钟的用量汇总                         |
+| KV                    | `gcli2api` / `CACHE`                                  | 非敏感配置和模型 ID；设置保存、手动模型刷新、每小时配置预热才写入 |
+| SQLite Durable Object | Cloudflare 按 Worker 和类名生成命名空间 / `TELEMETRY` | 每次请求先持久累加，Alarm 约每 5 分钟批量写 D1                    |
 
 `npm run deploy` 的准备脚本会查找名为 `gcli2api` 的 KV，没有时创建，并将 ID 写回 `wrangler.jsonc` 的 `CACHE` 绑定。已配置 ID 的资源不会重建或改名。D1 和 KV 属于不同资源类型，可以同名；Durable Object 的命名空间由 Cloudflare 管理，内部对象名使用 `gcli2api`。
 
@@ -282,7 +282,7 @@ npm run check
 
 ### 找不到额度按钮，或额度显示未知
 
-“查看额度”只出现在 Antigravity 凭证中。先确认渠道；未知表示上游未报告数据，不能当作 0%。查询失败的账号会在额度总览下方优先显示。
+“查看额度”支持 Antigravity 与 GeminiCLI；GeminiCLI 需先完成项目校验。未知表示上游未报告数据，不能当作 0%。查询失败的账号会在额度总览下方优先显示。
 
 ### 域名无法访问
 
@@ -326,3 +326,5 @@ npm run check
 生成上游返回 524 或响应头等待超时，会按现有凭证尝试次数选择其他可用账号；普通请求另有总等待时限。已经接收成功响应后，不因正文中断重新生成。流式响应开始输出后清除总时限，允许正常长输出；服务端超时记录为 504/失败，不计为客户端取消。上游支持、账号资格或网络故障仍可能导致所有重试失败。
 
 Antigravity 普通请求默认通过 `streamGenerateContent` 获取上游 SSE 并汇总为完整 JSON，与原 Python 项目的默认行为一致；客户端不需要改为流式解析。若管理页曾保存该开关为关闭，升级会尊重原设置，需要在“系统设置 → 运行参数”手动开启。上游流式汇总可以改善等待首包的路径，但汇总期间客户端仍需等待完整 JSON，不能保证消除所有网络超时。
+
+流式汇总接受 SSE、完整 Gemini JSON 对象或分块 JSON 数组，均保留工具调用、签名和上游用量。完成标记不会被后续空元数据覆盖；缺少完成标记的中断流仍报告失败。问题一览会区分响应类型不符、无效 JSON、空流、中断及未完成流，并显示安全的汇总错误说明，不保存响应正文或聊天内容。响应已经成功开始后不会为格式错误重新发起生成请求。

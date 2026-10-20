@@ -32,7 +32,26 @@ function pageFromLocation() {
   ];
   return ids.find((id) => '/panel/' + id === path) || 'overview';
 }
+function restoreFilter(id, value) {
+  if (['statsFrom', 'statsTo', 'callsFrom', 'callsTo'].includes(id) && value) {
+    const date = new Date(/^\d+$/.test(value) ? Number(value) : value);
+    value = Number.isFinite(date.getTime())
+      ? new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16)
+      : '';
+  }
+  el(id).value = value;
+}
 function applyTargetFilters(params) {
+  if (currentPage === 'overview') {
+    for (const [key, id] of [
+      ['model', 'statsModel'],
+      ['mode', 'statsMode'],
+      ['email', 'statsEmail'],
+      ['from', 'statsFrom'],
+      ['to', 'statsTo'],
+    ])
+      if (params.has(key)) restoreFilter(id, params.get(key));
+  }
   if (currentPage === 'overview' && params.has('api_key_id')) {
     const id = params.get('api_key_id');
     if (id && !Array.from(el('statsApiKey').children).some((option) => option.value === id)) {
@@ -49,7 +68,7 @@ function applyTargetFilters(params) {
       ['mode', 'credentialMode'],
       ['search', 'credentialSearch'],
     ])
-      if (params.has(key)) el(id).value = params.get(key);
+      if (params.has(key)) restoreFilter(id, params.get(key));
     credentialPage = 0;
   }
   if (currentPage === 'logs') {
@@ -65,7 +84,7 @@ function applyTargetFilters(params) {
       ['from', 'callsFrom'],
       ['to', 'callsTo'],
     ])
-      if (params.has(key)) el(id).value = params.get(key);
+      if (params.has(key)) restoreFilter(id, params.get(key));
   }
 }
 function showPage(id, historyMode = 'push', params) {

@@ -2011,3 +2011,267 @@ test('healthy streaming responses outlive the initial generation deadline withou
   assert.ok(text.includes('long stream works'));
   assert.ok(text.includes('[DONE]'));
 });
+
+test('stream collection preserves a completed candidate when later metadata has an empty finish reason', async () => {
+  const { collectGoogleStream } = await import('../src/stream-collect.js');
+  const frames = [
+    candidate('complete'),
+    { candidates: [{ index: 0, finishReason: null }], usageMetadata: { totalTokenCount: 9 } },
+  ];
+  const result = await collectGoogleStream(
+    stream(frames.map((value) => 'data: ' + JSON.stringify(value) + '\n\n').join('')),
+  );
+  assert.equal(result.candidates[0].finishReason, 'STOP');
+  assert.equal(result.candidates[0].content.parts[0].text, 'complete');
+  assert.equal(result.usageMetadata.totalTokenCount, 9);
+});
+
+test('stream collection accepts complete JSON objects, JSON batches and mislabeled SSE without losing tool signatures', async () => {
+  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const value = {
+    response: {
+      candidates: [
+        {
+          content: {
+            parts: [
+              {
+                functionCall: { name: 'echo', args: { text: 'fixture' } },
+                thoughtSignature: 'fixture-signature',
+              },
+            ],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+    },
+  };
+  for (const text of [
+    JSON.stringify(value),
+    JSON.stringify([value]),
+    'data: ' + JSON.stringify(value) + '\n\n',
+  ]) {
+    const result = await collectGoogleResponse(
+      new Response(text, { headers: { 'content-type': 'application/json; charset=utf-8' } }),
+    );
+    assert.equal(result.candidates[0].content.parts[0].functionCall.name, 'echo');
+    assert.equal(result.candidates[0].content.parts[0].thoughtSignature, 'fixture-signature');
+    assert.equal(geminiToOpenai(result, 'm').choices[0].finish_reason, 'tool_calls');
+  }
+});
+
+test('collection failures expose stable distinct reasons and never accept truncated or HTML responses as success', async () => {
+  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  for (const [body, type, code, status] of [
+    ['<html>private body must not echo</html>', 'text/html', 'UPSTREAM_NOT_SSE', 502],
+    ['broken JSON', 'application/json', 'UPSTREAM_STREAM_JSON_INVALID', 502],
+    [
+      'data: ' +
+        JSON.stringify({ candidates: [{ content: { parts: [{ text: 'partial' }] } }] }) +
+        '\n\n',
+      'text/event-stream',
+      'UPSTREAM_STREAM_INCOMPLETE',
+      502,
+    ],
+    [
+      'data: ' +
+        JSON.stringify({ error: { code: 400, message: 'fixture unsupported parameter' } }) +
+        '\n\n',
+      'text/event-stream',
+      'UPSTREAM_STREAM_ERROR',
+      400,
+    ],
+    ['data: {}\n\n', 'text/event-stream', 'UPSTREAM_STREAM_EMPTY', 502],
+  ])
+    await assert.rejects(
+      collectGoogleResponse(new Response(body, { headers: { 'content-type': type } })),
+      (error) =>
+        error.status === status &&
+        error.errorCode === code &&
+        error.operation === 'stream_collection' &&
+        !error.message.includes('private body must not echo'),
+    );
+  await assert.rejects(
+    collectGoogleResponse(Response.json(candidate('exceeds tiny limit')), 4),
+    (error) => error.errorCode === 'UPSTREAM_STREAM_LIMIT',
+  );
+});
+
+test('malformed OpenAI messages and tools fail as 400 before contacting upstream', async () => {
+  const base = { model: 'gemini-2.5-flash-lite', messages: [{ role: 'user', content: 'hello' }] };
+  const bad = [
+    { messages: [null] },
+    { messages: [{ role: 'user', content: [null] }] },
+    { messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: 123 } }] }] },
+    { messages: [{ role: 'assistant', tool_calls: {} }] },
+    { messages: [{ role: 'assistant', tool_calls: [null] }] },
+    {
+      messages: [
+        { role: 'assistant', tool_calls: [{ function: { name: 'test', arguments: '[]' } }] },
+      ],
+    },
+    { tools: {} },
+    { tools: [null] },
+    { tools: [{ type: 'function', function: { name: 123 } }] },
+    ...[42, false, 'constructor', [], { function: { name: 'test' } }].map((tool_choice) => ({
+      tool_choice,
+    })),
+  ];
+  let fetched = 0;
+  for (const input of bad) {
+    const response = await handleRequest(
+      request('/v1/chat/completions', { ...base, ...input }),
+      { ...env, DB: fakeDB() },
+      async () => {
+        fetched++;
+        return Response.json(candidate());
+      },
+    );
+    assert.equal(response.status, 400, JSON.stringify(input));
+  }
+  assert.equal(fetched, 0);
+});
+
+test('Flash-Lite thinking budgets preserve disable/dynamic and clamp the supported range', async () => {
+  const { normalizeRequest } = await import('../src/normalize.js');
+  for (const [budget, expected] of [
+    [0, 0],
+    [-1, -1],
+    [1, 512],
+    [511, 512],
+    [512, 512],
+    [99999, 24576],
+  ]) {
+    const result = normalizeRequest(
+      { generationConfig: { thinkingConfig: { thinkingBudget: budget } } },
+      'gemini-2.5-flash-lite',
+      'geminicli',
+    );
+    assert.equal(result.request.generationConfig.thinkingConfig.thinkingBudget, expected);
+  }
+  const converted = openaiToGemini({
+    model: 'gemini-2.5-flash-lite',
+    messages: [{ role: 'user', content: 'hi' }],
+    reasoning_effort: 'low',
+  });
+  assert.equal(
+    normalizeRequest(converted, 'gemini-2.5-flash-lite', 'geminicli').request.generationConfig
+      .thinkingConfig.thinkingBudget,
+    1024,
+  );
+});
+
+test('split SSE usage agrees with telemetry and does not reset prompt tokens', async () => {
+  let recorded;
+  const frames = [
+    {
+      candidates: [{ content: { parts: [{ text: 'hi' }] }, finishReason: 'STOP' }],
+      usageMetadata: { promptTokenCount: 11 },
+    },
+    { usageMetadata: { candidatesTokenCount: 7, thoughtsTokenCount: 3, totalTokenCount: 21 } },
+  ];
+  const response = convertedStream(
+    stream(frames.map((value) => 'data: ' + JSON.stringify(value) + '\n\n').join('')),
+    'm',
+    true,
+    true,
+    () => {},
+    () => {},
+    async () => {},
+    async (value) => {
+      recorded = value;
+    },
+  );
+  const events = [];
+  for await (const event of sseEvents(response))
+    if (event !== '[DONE]') events.push(JSON.parse(event));
+  assert.deepEqual(events.at(-1).usage, {
+    prompt_tokens: 11,
+    completion_tokens: 10,
+    total_tokens: 21,
+  });
+  assert.equal(recorded.promptTokenCount, 11);
+  assert.equal(recorded.totalTokenCount, 21);
+});
+
+test('partial CLI model lists do not exclude explicitly requested Gemini models', async () => {
+  const { dbCache } = await import('../src/db-cache.js');
+  const { unifiedRouting } = await import('../src/unified.js');
+  const { knownModelId, publicModelId } = await import('../src/model-names.js');
+  const DB = fakeDB();
+  const scope = dbCache(DB);
+  scope.cliModels = { value: { ids: ['gemini-2.5-pro'], queriedAt: new Date().toISOString() } };
+  scope.models = { value: { ids: ['gemini-2.5-flash-lite'], queriedAt: new Date().toISOString() } };
+  assert.deepEqual(unifiedRouting({ DB }, 'gemini-2.5-flash-lite').modes, [
+    'geminicli',
+    'antigravity',
+  ]);
+  assert.deepEqual(unifiedRouting({ DB }, 'claude-sonnet-4-6').modes, ['antigravity']);
+  scope.models = {
+    value: {
+      ids: ['gemini-2.5-flash'],
+      routes: { 'gemini-2.5-flash': 'gemini-raw' },
+      queriedAt: 'invalid',
+    },
+  };
+  assert.equal(knownModelId({ DB }, 'antigravity', 'gemini-2.5-flash'), null);
+  assert.equal(publicModelId({ DB }, 'antigravity', 'gemini-raw'), 'gemini-raw');
+});
+
+test('cancelling a request aborts OAuth refresh without persisting tokens', async () => {
+  const db = fakeDB();
+  const controller = new AbortController();
+  let started;
+  const ready = new Promise((resolve) => {
+    started = resolve;
+  });
+  const result = accessToken(
+    db,
+    { id: '1', mode: 'geminicli', data: { refresh_token: 'local-refresh' } },
+    async (_url, options) => {
+      started();
+      return new Promise((_resolve, reject) =>
+        options.signal.addEventListener('abort', () => reject(options.signal.reason), {
+          once: true,
+        }),
+      );
+    },
+    false,
+    {},
+    controller.signal,
+  );
+  await ready;
+  controller.abort(new DOMException('deadline', 'TimeoutError'));
+  await assert.rejects(
+    result,
+    (error) => error.status === 504 && error.operation === 'oauth_refresh',
+  );
+  assert.equal(db.calls.length, 0);
+});
+
+test('shared quota families count once per account and keep unknown windows unknown', async () => {
+  const { groupQuotaModels } = await import('../src/quota-groups.js');
+  const groups = groupQuotaModels([
+    { id: 'gemini-2.5-flash', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
+    { id: 'gemini-2.5-pro', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
+    { id: 'claude-sonnet-4-6', remaining: 0.2, resetTime: '2026-10-22T08:00:00Z' },
+    { id: 'claude-opus-4-6', remaining: 0, resetTime: '2026-10-23T08:00:00Z' },
+  ]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups[0].remaining, 0.6);
+  assert.equal(groups[0].members.length, 2);
+  assert.equal(groups[0].inconsistent, false);
+  assert.equal(groups[1].remaining, 0);
+  assert.equal(groups[1].inconsistent, true);
+  assert.equal(groups[1].resetTime, '2026-10-23T08:00:00Z');
+  assert.equal(groups[1].weekly, undefined);
+  assert.equal(
+    groupQuotaModels(
+      [
+        { id: 'gemini-x', tokenType: 'INPUT' },
+        { id: 'gemini-x', tokenType: 'OUTPUT' },
+      ],
+      'geminicli',
+    ).length,
+    2,
+  );
+});

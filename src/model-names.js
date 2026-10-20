@@ -60,12 +60,14 @@ export async function loadModelNames(env, mode) {
 export function knownModelId(env, mode, model) {
   if (!env.DB) return null;
   const value = dbCache(env.DB)[cacheKey(mode)]?.value;
-  if (!value || Date.parse(value.queriedAt) < Date.now() - 86400000) return null;
+  if (!value || !(Date.parse(value.queriedAt) >= Date.now() - 86400000)) return null;
   if (value.routes && Object.hasOwn(value.routes, model)) return value.routes[model];
   return Object.values(value.routes || {}).includes(model) ? model : null;
 }
 
 export function publicModelId(env, mode, raw) {
-  const routes = env.DB ? dbCache(env.DB)[cacheKey(mode)]?.value?.routes : null;
+  const value = env.DB ? dbCache(env.DB)[cacheKey(mode)]?.value : null;
+  const routes =
+    value && Date.parse(value.queriedAt) >= Date.now() - 86400000 ? value.routes : null;
   return Object.entries(routes || {}).find(([, id]) => id === raw)?.[0] || raw;
 }

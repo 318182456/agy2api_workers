@@ -1,5 +1,9 @@
+import { groupQuotaModels } from './quota-groups.js';
 // Embedded into the panel script; all upstream labels are rendered as text nodes.
 export const analyticsScript = String.raw`
+${groupQuotaModels.toString()}
+function accountQuota(entry) { return groupQuotaModels(entry.value.models,entry.credential.mode); }
+function quotaWindows(model) { return model.family ? '5 小时额度：上游未单独提供 · 周额度：上游未单独提供'+(model.inconsistent ? ' · 同组报告不同，暂显示最低剩余、最晚重置；不代表全部模型共享同一额度' : '') : ''; }
 function ui(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -86,8 +90,8 @@ function quotaGroups() {
   const groups = new Map();
   for (const entry of quotaOverviewResults) {
     if (entry.error) continue;
-    for (const model of entry.value.models) {
-      const key = JSON.stringify([entry.credential.mode,model.id,entry.credential.mode === 'geminicli' ? entry.credential.id : null,model.bucketIndex ?? null]);
+    for (const model of accountQuota(entry)) {
+      const key = JSON.stringify([entry.credential.mode,model.id,entry.credential.mode === 'geminicli' ? entry.credential.id : null,model.tokenType ?? null,model.bucketIndex ?? null]);
       if (!groups.has(key)) groups.set(key,{ id:model.id,mode:entry.credential.mode,tokenType:model.tokenType || null,accounts:[],values:[],unknown:0 });
       const group = groups.get(key); group.accounts.push({ credential:entry.credential,...model });
       if (model.remaining == null) group.unknown++; else group.values.push(model.remaining);
@@ -110,11 +114,12 @@ function quotaAccountLine(account) {
   const row = ui('div','quota-account-line');
   const identity = ui('div'); identity.append(ui('strong','',account.credential.user_email || account.credential.name),ui('small','',account.credential.disabled ? '已停用' : '已启用'));
   const balance = ui('div','quota-line-balance'); balance.append(ui('strong',quotaTone(account.remaining),quotaPercent(account.remaining)),meter(account.remaining, '账号剩余额度'));
-  row.append(identity,balance,ui('small','',[quotaAmount(account),'重置 '+formatReset(account.resetTime)].filter(Boolean).join(' · '))); return row;
+  row.append(identity,balance,ui('small','',[quotaAmount(account),'当前报告重置 '+formatReset(account.resetTime),quotaWindows(account)].filter(Boolean).join(' · '))); return row;
 }
-function renderSingleQuota(container, models) {
+function renderSingleQuota(container, models, mode) {
+  models = groupQuotaModels(models,mode);
   let page = 0;
-  const search = ui('input'); search.type='search'; search.placeholder='筛选模型名称'; search.setAttribute('aria-label','筛选该账号的模型');
+  const search = ui('input'); search.type='search'; search.placeholder='筛选 Gemini / Claude'; search.setAttribute('aria-label','筛选该账号的模型');
   const grid = ui('div','quota-model-grid');
   const navigation = ui('div','pagination'); const info = ui('span'); const buttons = ui('div');
   const previous = ui('button','secondary','上一页'); const next = ui('button','secondary','下一页'); buttons.append(previous,next); navigation.append(info,buttons);
@@ -124,7 +129,7 @@ function renderSingleQuota(container, models) {
     for (const model of filtered.slice(page*8,page*8+8)) {
       const card = ui('article','quota-model-card'); const heading = ui('div','quota-card-heading');
       heading.append(ui('h3','',model.id+(model.tokenType?' · '+model.tokenType:'')),ui('strong',quotaTone(model.remaining),quotaPercent(model.remaining)));
-      card.append(heading,meter(model.remaining,model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'重置 '+formatReset(model.resetTime)+'（北京时间）'].filter(Boolean).join(' · '))); grid.append(card);
+      card.append(heading,meter(model.remaining,model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'当前报告重置 '+formatReset(model.resetTime)+'（北京时间）',quotaWindows(model)].filter(Boolean).join(' · '))); grid.append(card);
     }
     if (!filtered.length) grid.append(ui('div','empty-state','没有匹配的模型'));
     info.textContent = filtered.length ? '第 '+(page+1)+' / '+Math.ceil(filtered.length/8)+' 页 · '+filtered.length+' 个模型' : '0 个模型';
@@ -167,19 +172,19 @@ function renderQuotaOverview() {
   paginationState('quotaModels',quotaModelPage,8,filtered.length);
   const accounts = entries.filter(entry=>{
     const query = el('quotaSearch').value.trim().toLowerCase();
-    return !query || (entry.credential.user_email || entry.credential.name).toLowerCase().includes(query) || (!entry.error && entry.value.models.some(m=>m.id.toLowerCase().includes(query)));
+    return !query || (entry.credential.user_email || entry.credential.name).toLowerCase().includes(query) || (!entry.error && accountQuota(entry).some(m=>m.id.toLowerCase().includes(query)));
   }).sort((a,b)=>Number(!!b.error)-Number(!!a.error));
   quotaAccountPage = Math.min(quotaAccountPage,Math.max(0,Math.ceil(accounts.length/6)-1));
   el('quotaOverviewBody').replaceChildren();
   for (const entry of accounts.slice(quotaAccountPage*6,quotaAccountPage*6+6)) {
     const card = ui('details','quota-account-card'); card.open = !!entry.error;
-    const title = ui('summary'); title.append(ui('strong','',(entry.credential.user_email || entry.credential.name)+' · '+entry.credential.mode),ui('span','pill '+(entry.error ? 'empty' : 'healthy'),entry.error ? '查询失败' : entry.value.models.length+' 个额度项'));
+    const title = ui('summary'); title.append(ui('strong','',(entry.credential.user_email || entry.credential.name)+' · '+entry.credential.mode),ui('span','pill '+(entry.error ? 'empty' : 'healthy'),entry.error ? '查询失败' : accountQuota(entry).length+' 个额度组'));
     card.append(title);
     if (entry.error) card.append(ui('p','error-message',entry.error));
     else {
       card.append(ui('small','','查询于 '+formatReset(entry.value.queriedAt)+'（北京时间）'));
       if (!entry.value.models.length) card.append(ui('p','','上游未返回模型，额度未知。'));
-      for (const model of entry.value.models) { const row = ui('div','account-model-line'); row.append(ui('strong','',model.id),ui('span',quotaTone(model.remaining),quotaPercent(model.remaining)),meter(model.remaining, model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'重置 '+formatReset(model.resetTime)].filter(Boolean).join(' · '))); card.append(row); }
+      for (const model of accountQuota(entry)) { const row = ui('div','account-model-line'); row.append(ui('strong','',model.id),ui('span',quotaTone(model.remaining),quotaPercent(model.remaining)),meter(model.remaining, model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'当前报告重置 '+formatReset(model.resetTime),quotaWindows(model)].filter(Boolean).join(' · '))); card.append(row); }
     }
     el('quotaOverviewBody').append(card);
   }

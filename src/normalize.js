@@ -12,6 +12,13 @@ const lowLevels = {
   max: 'high',
 };
 const profiles = {
+  'gemini-2.5-flash-lite': {
+    kind: 'budget',
+    min: 0,
+    positiveMin: 512,
+    max: 24576,
+    efforts: budgets,
+  },
   'gemini-2.5-flash': { kind: 'budget', min: 0, max: 24576, efforts: budgets, noPrefill: true },
   'gemini-2.5-pro': {
     kind: 'budget',
@@ -111,6 +118,8 @@ export function normalizeRequest(request, model, mode) {
                   ? 'high'
                   : 'max'
         ];
+    if (p.kind === 'budget' && resolved > 0 && p.positiveMin)
+      resolved = Math.max(p.positiveMin, resolved);
     const normalized = { ...thinking };
     delete normalized.thinkingBudget;
     delete normalized.thinkingLevel;

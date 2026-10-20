@@ -324,7 +324,7 @@ export async function selectCredential(
   return { ...row, data: parseCredentialData(row.data) };
 }
 
-export async function accessToken(db, row, fetcher = fetch, force = false, env = {}) {
+export async function accessToken(db, row, fetcher = fetch, force = false, env = {}, signal) {
   const data = row.data;
   const token = data.token || data.access_token;
   const expiry = Date.parse(data.expiry);
@@ -342,7 +342,9 @@ export async function accessToken(db, row, fetcher = fetch, force = false, env =
     {
       method: 'POST',
       redirect: 'manual',
-      signal: AbortSignal.timeout(30000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(30000)])
+        : AbortSignal.timeout(30000),
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         client_id: data.client_id || oauthClients(env)[row.mode]?.client_id,
