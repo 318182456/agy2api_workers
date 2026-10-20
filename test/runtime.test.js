@@ -922,3 +922,61 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
     await mf.dispose();
   }
 });
+
+test('active location probe constructs supported Requests inside workerd and refuses upstream redirects', async () => {
+  const { Response: RuntimeResponse } = await import('miniflare');
+  const bundle = (
+    await build({
+      entryPoints: ['src/index.js'],
+      bundle: true,
+      write: false,
+      format: 'esm',
+      platform: 'browser',
+      target: 'es2022',
+    })
+  ).outputFiles[0].text;
+  let calls = 0,
+    redirect = false;
+  const mf = new Miniflare({
+    modules: true,
+    script: bundle,
+    compatibilityDate: '2025-09-01',
+    bindings: { PANEL_PASSWORD: 'local-probe-fixture' },
+    log: new Log(LogLevel.NONE),
+    outboundService: async (request) => {
+      calls++;
+      assert.equal(request.url, 'https://www.cloudflare.com/cdn-cgi/trace');
+      assert.equal(request.headers.get('authorization'), null);
+      assert.equal(request.headers.get('cookie'), null);
+      return redirect
+        ? new RuntimeResponse('', {
+            status: 302,
+            headers: { location: 'https://unexpected.example/' },
+          })
+        : new RuntimeResponse('loc=JP\ncolo=NRT\nip=PRIVATE_IP');
+    },
+  });
+  try {
+    const send = () =>
+      mf.dispatchFetch('https://test/admin/runtime-location', {
+        headers: { authorization: 'Bearer local-probe-fixture' },
+      });
+    const response = await send();
+    assert.equal(response.status, 200, await response.clone().text());
+    const value = await response.json();
+    assert.equal(value.country, 'JP');
+    assert.equal(value.probe_colo, 'NRT');
+    assert.equal(value.execution_colo, null);
+    assert.equal(calls, 1);
+    assert.ok(!JSON.stringify(value).includes('PRIVATE'));
+    redirect = true;
+    const rejected = await send();
+    assert.equal(rejected.status, 503);
+    const error = (await rejected.json()).error;
+    assert.equal(error.reason, 'REGION_PROBE_HTTP_302');
+    assert.equal(error.stage, 'runtime_location');
+    assert.equal(calls, 2); // Do not follow a redirect to another host.
+  } finally {
+    await mf.dispose();
+  }
+});

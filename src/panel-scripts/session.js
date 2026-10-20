@@ -16,6 +16,8 @@ el('logout').onclick = () =>
     el('credential').value = '';
     el('file').value = '';
     resetKeys();
+    runtimeProbe = null;
+    updateRuntimeRegion({});
     selectedCredentials.clear();
     credentialsSnapshot = [];
     credentialsLoaded = false;

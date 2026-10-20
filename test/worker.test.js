@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { dbCache as probeCache } from '../src/db-cache.js';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { handleRequest } from '../src/index.js';
@@ -2578,4 +2579,110 @@ test('single-frame text EOF compatibility is explicit and never accepts tools, b
   const completed = structuredClone(value);
   completed.response.candidates[0].finishReason = 'STOP';
   assert.equal((await read(response(event(completed)))).completion_status, undefined);
+});
+
+test('active runtime probe uses a fixed endpoint without credentials or D1, caches and coalesces concurrent requests', async () => {
+  const { runtimeLocation } = await import('../src/runtime-location.js');
+  const env = {
+    DB: {
+      prepare() {
+        throw new Error('D1 must not be used');
+      },
+    },
+  };
+  const request = new Request('https://test/admin/runtime-location', {
+    headers: {
+      authorization: 'Bearer private-panel-password',
+      'x-api-key': 'private-key',
+      cookie: 'private-cookie',
+    },
+  });
+  let calls = 0;
+  const fetcher = async (url, options) => {
+    calls++;
+    assert.equal(url, 'https://www.cloudflare.com/cdn-cgi/trace');
+    assert.equal(options.redirect, 'manual');
+    assert.equal(options.headers.authorization, undefined);
+    assert.equal(options.headers.cookie, undefined);
+    assert.equal(options.headers['x-api-key'], undefined);
+    await new Promise((resolve) => setImmediate(resolve));
+    return new Response('ip=PRIVATE_IP\nua=PRIVATE_UA\nloc=JP\ncolo=NRT\n');
+  };
+  const values = await Promise.all(
+    Array.from({ length: 10 }, () => runtimeLocation(request, env, fetcher)),
+  );
+  assert.equal(calls, 1);
+  const value = await runtimeLocation(request, env, fetcher);
+  assert.equal(value.cached, true);
+  assert.equal(value.country, 'JP');
+  assert.equal(value.probe_colo, 'NRT');
+  assert.equal(value.execution_colo, null);
+  assert.equal(value.cache_seconds, 60);
+  assert.equal(calls, 1);
+  assert.ok(!JSON.stringify(values).includes('PRIVATE'));
+  const placed = new Request('https://test/admin/runtime-location', {
+    headers: { 'cf-placement': 'remote-IAD' },
+  });
+  const separate = await runtimeLocation(placed, env, fetcher);
+  assert.equal(separate.execution_colo, 'IAD');
+  assert.equal(separate.probe_colo, 'NRT'); // Never substitute probe colo for execution.
+  assert.equal(separate.country, 'JP');
+  assert.equal(calls, 2);
+});
+
+test('active runtime probe rejects unavailable, malformed and oversized trace without caching failure', async () => {
+  const { runtimeLocation } = await import('../src/runtime-location.js');
+  const request = new Request('https://test/admin/runtime-location');
+  for (const fetcher of [
+    async () => new Response('loc=JP\ncolo=NRT', { status: 503 }),
+    async () => new Response('loc=JP\ncolo=bad private output'),
+    async () => new Response('loc=JP\ncolo=NRT\n' + 'x'.repeat(8192)),
+    async () => {
+      throw new Error('PRIVATE_NETWORK_ERROR');
+    },
+  ]) {
+    const env = {},
+      messages = [];
+    for (let n = 0; n < 2; n++)
+      await assert.rejects(runtimeLocation(request, env, fetcher), (error) => {
+        messages.push(error.message);
+        return error.status === 503 && !error.message.includes('PRIVATE');
+      });
+    assert.equal(messages.length, 2);
+    assert.equal(probeCache(env).runtimeLocations.size, 0);
+  }
+});
+
+test('runtime location endpoint requires panel authentication and works without D1', async () => {
+  const { adminRoute } = await import('../src/routes/admin.js');
+  let calls = 0;
+  const env = { PANEL_PASSWORD: 'local-panel-fixture' };
+  const fetcher = async () => {
+    calls++;
+    return new Response('loc=US\ncolo=IAD');
+  };
+  const path = 'https://test/admin/runtime-location';
+  await assert.rejects(adminRoute(new Request(path), env, fetcher), { status: 401 });
+  assert.equal(calls, 0);
+  const response = await adminRoute(
+    new Request(path, { headers: { authorization: 'Bearer local-panel-fixture' } }),
+    env,
+    fetcher,
+  );
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('cache-control'), 'no-store');
+  assert.equal((await response.json()).country, 'US');
+  assert.equal(calls, 1);
+  await assert.rejects(
+    adminRoute(
+      new Request(path, {
+        method: 'POST',
+        headers: { authorization: 'Bearer local-panel-fixture' },
+      }),
+      env,
+      fetcher,
+    ),
+    { status: 405 },
+  );
+  assert.equal(calls, 1);
 });

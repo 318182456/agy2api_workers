@@ -289,6 +289,7 @@ for (const button of document.querySelectorAll('[data-copy]'))
       } else status('请复制接口地址：' + text);
     });
 
+let runtimeProbe = null;
 function updateRuntimeRegion(response) {
   const badge = el('runtimeRegion');
   if (!badge) return;
@@ -310,6 +311,22 @@ function updateRuntimeRegion(response) {
     LHR: '英国 · 伦敦',
     FRA: '德国 · 法兰克福',
   };
+  if (!code && runtimeProbe) {
+    const stale = Date.now() - runtimeProbe.queried_at >= runtimeProbe.cache_seconds * 1000;
+    badge.textContent =
+      '探测节点：' +
+      (regions[runtimeProbe.probe_colo] || runtimeProbe.probe_colo) +
+      (stale ? '（待更新）' : '');
+    badge.title =
+      'Cloudflare trace 地域提示（不用于判断 Worker 出口国家）：' +
+      runtimeProbe.country +
+      '；探测接收节点：' +
+      runtimeProbe.probe_colo +
+      '；查询时间：' +
+      new Date(runtimeProbe.queried_at).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai' }) +
+      '（北京时间）。不是实际执行节点，也不保证 Google 使用同一出口。';
+    return;
+  }
   badge.textContent = code
     ? '执行位置：' + (regions[code] ? regions[code] + ' (' + code + ')' : code)
     : '执行位置：未知';
@@ -319,6 +336,22 @@ function updateRuntimeRegion(response) {
       '。这是本次请求执行位置，不代表固定 Google 出口 IP。'
     : 'Cloudflare 未提供 cf-placement，无法确认本次请求执行位置。';
 }
+el('runtimeRegionRefresh').onclick = () =>
+  run(async () => {
+    status('正在由 Worker 查询探测节点…');
+    const value = await api('/admin/runtime-location');
+    runtimeProbe = value;
+    updateRuntimeRegion({
+      headers: { get: () => (value.execution_colo ? 'remote-' + value.execution_colo : null) },
+    });
+    status(
+      '地区查询完成' +
+        (value.cached ? '（60 秒缓存）' : '') +
+        '；探测接收节点 ' +
+        value.probe_colo +
+        '，不代表 Google 出口或实际执行节点。',
+    );
+  });
 async function api(path, method = 'GET', body, responseType) {
   const raw = typeof Blob !== 'undefined' && body instanceof Blob;
   const headers = {};

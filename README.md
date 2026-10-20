@@ -276,7 +276,7 @@ npm run check
 
 ### Google 返回 403、429 或连接失败
 
-403 可能与账号、项目权限或地区有关；429 表示上游限流。Cloudflare 不提供固定国家出口，本项目也不保证绕过 Google 地区限制。 当前 `wrangler.jsonc` 使用 `placement.region: "aws:us-east-1"`，请求 Worker 尽量靠近美国东部执行；部署后生效。这是执行位置提示，不是固定国家或固定出口 IP，不能保证 Google 接受。若需改为靠近日本东京，可替换为 `aws:ap-northeast-1`。具体调度以 Cloudflare 为准，不能用客户端入口的 `CF-Ray` 位置直接判断 Google 看到的出口；配置说明见 [Cloudflare Placement 文档](https://developers.cloudflare.com/workers/configuration/placement/)。
+403 可能与账号、项目权限或地区有关；429 表示上游限流。Cloudflare 不提供固定国家出口，本项目也不保证绕过 Google 地区限制。 `wrangler.jsonc` 的 `placement.region` 配置 Worker 的执行目标；`aws:us-east-1` 表示靠近美国东部，`aws:ap-northeast-1` 表示靠近日本东京，部署后生效。这是执行位置提示，不是固定国家或固定出口 IP，不能保证 Google 接受。若需改为靠近日本东京，可替换为 `aws:ap-northeast-1`。具体调度以 Cloudflare 为准，不能用客户端入口的 `CF-Ray` 位置直接判断 Google 看到的出口；配置说明见 [Cloudflare Placement 文档](https://developers.cloudflare.com/workers/configuration/placement/)。
 
 错误中的 `stage` 和 `request_id` 可帮助定位：`oauth_refresh` 是令牌刷新，`generation_fetch` 是聊天连接，`quota_fetch` 是额度查询。网络错误通常返回 502，超时返回 504；数据库迁移无法解决 Google 网络问题。
 
@@ -363,3 +363,6 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 读取预算优化：统计查询会先按时间、API 密钥和账号缩小明细与聚合表范围，再做合并去重；`0010_read_budget.sql` 添加密钥/时间与最后成功查询索引。凭证列表和健康页通过索引定位最后成功记录，避免每次浏览扫描所有聚合历史。统计使用 60 秒实例缓存及同执行节点的 Cache API 快照，并合并同一实例中的并发查询；手动刷新仍可绕过缓存。Cache API 不可用时回退到 D1，快照不写入 KV，也不保存令牌或鉴权结果。API 密钥停用、删除、到期仍在每次请求中实时校验。新索引会在迁移时一次性构建，后续每个聚合桶落盘有少量索引维护写入，仍按 5 分钟批量落盘。
 
 控制台顶部显示最近一次管理请求的 `cf-placement` 执行位置；常见节点显示国家和城市，未知代码显示原始节点码，缺少该响应头则显示“未知”。这不是固定 Google 出口，也不通过 `CF-Ray` 猜测执行地区。
+
+
+顶部“查询地区”会调用已登录管理员接口 `/admin/runtime-location`，由 Worker 请求固定的 Cloudflare `/cdn-cgi/trace` 地址来查询探测接收节点及 trace 地域提示。结果缓存 60 秒，同实例并发合并，最多等待 5 秒，无 Google 调用、D1/KV 读写或额外 Cloudflare 管理令牌。仅返回白名单地区字段，不返回 IP、认证头或原始 trace 内容。页面明确区分 `cf-placement` 的实际执行节点与 trace 的“探测节点”；trace 的 `loc` 可能受入口信息影响，不能用来断定 Worker 出口国家，探测结果不保证等于 Google 看到的出口，也不推断部署配置。探测失败可重试，不影响模型调用。部署目标与调度状态仍需在 Cloudflare 控制台或其管理 API 查询，不能用探测接收节点替代。

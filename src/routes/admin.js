@@ -1,3 +1,4 @@
+import { runtimeLocation } from '../runtime-location.js';
 import { importArchive, exportArchive } from '../credential-archive.js';
 import { configurePreview } from '../preview.js';
 import { HttpError, json, readJson, operation } from '../common.js';
@@ -23,6 +24,10 @@ export async function adminRoute(request, env, fetcher) {
   const url = new URL(request.url);
   await authenticatePanel(request, env.PANEL_PASSWORD);
   env = { ...env, STATS_CACHE_ORIGIN: url.origin };
+  if (url.pathname === '/admin/runtime-location') {
+    if (request.method !== 'GET') throw new HttpError(405, '请求方法不支持');
+    return json(await runtimeLocation(request, env, fetcher));
+  }
   if (url.pathname === '/admin/models' && request.method === 'GET')
     return json(
       await discoverModels(
