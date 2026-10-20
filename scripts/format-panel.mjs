@@ -12,9 +12,11 @@ for (const file of await readdir(directory)) {
   if (!match) throw new Error('Unrecognized panel source: ' + file);
   const body = match[1]
     .replace('${JSON.stringify(panelPages)}', '__PAGE_DEFINITIONS__')
+    .replace('${JSON.stringify(panelTabs)}', '__TAB_DEFINITIONS__')
     .replace('${analyticsScript}', '__ANALYTICS_SCRIPT__();');
   const formatted = (await format(body, { ...options, parser: 'babel' }))
     .replace('__PAGE_DEFINITIONS__', '${JSON.stringify(panelPages)}')
+    .replace('__TAB_DEFINITIONS__', '${JSON.stringify(panelTabs)}')
     .replace('__ANALYTICS_SCRIPT__();', '${analyticsScript}');
   const result = source.slice(0, match.index) + 'String.raw`' + formatted + '`;\n';
   if (result !== source) {

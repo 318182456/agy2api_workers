@@ -15,8 +15,11 @@ el('logout').onclick = () =>
     el('credentials').replaceChildren();
     el('credential').value = '';
     el('file').value = '';
+    resetKeys();
     selectedCredentials.clear();
     credentialsSnapshot = [];
+    credentialsLoaded = false;
+    renderEndpoints();
     loadedPages.clear();
     credentialPage = 0;
     duplicateSnapshot = [];

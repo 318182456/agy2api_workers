@@ -219,8 +219,6 @@ test('management script: quota failures continue, stop works, stats/health and s
   const settings = {
     effective: {
       MAX_CREDENTIAL_ATTEMPTS: 3,
-      GEMINICLI_MODELS: 'm',
-      ANTIGRAVITY_MODELS: 'm',
       ANTIGRAVITY_STREAM2NOSTREAM: false,
       CREDENTIAL_SELECTION: 'priority',
     },
@@ -241,6 +239,19 @@ test('management script: quota failures continue, stop works, stats/health and s
         ],
       });
     }
+    if (path === '/admin/credentials/d/quota')
+      return Response.json({
+        queriedAt: '2026-10-15T00:00:00Z',
+        models: [
+          {
+            id: 'cli-model',
+            remaining: 0.7,
+            remainingAmount: '70',
+            tokenType: 'REQUESTS',
+            bucketIndex: 0,
+          },
+        ],
+      });
     if (path === '/admin/credentials/b/quota')
       return Response.json({ error: { message: 'test quota failure' } }, { status: 502 });
     if (path === '/admin/credentials/a/health')
@@ -307,21 +318,21 @@ test('management script: quota failures continue, stop works, stats/health and s
   vm.runInContext(panel.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise((resolve) => setImmediate(resolve));
   await el('quotaOverviewRefresh').onclick();
-  assert.equal(requests.filter((r) => r.path.endsWith('/quota')).length, 2);
-  assert.equal(el('quotaOverviewBody').children.length, 2);
+  assert.equal(requests.filter((r) => r.path.endsWith('/quota')).length, 3);
+  assert.equal(el('quotaOverviewBody').children.length, 3);
   assert.match(el('quotaOverviewState').textContent, /失败 1/);
   const summary = el('quotaSummary').children.find(
-    (card) => card.children[0].children[0].textContent === 'm',
+    (card) => card.children[0].children[0].textContent === 'm · antigravity',
   );
   assert.equal(summary.children[1].children[0].textContent, '40.0%');
   assert.equal(summary.children[3].children[1].textContent, '1 个已知 · 0 个未知');
   assert.equal(
     el('quotaSummary').children.find(
-      (card) => card.children[0].children[0].textContent === 'unknown',
+      (card) => card.children[0].children[0].textContent === 'unknown · antigravity',
     ).children[1].children[0].textContent,
     '未知',
   );
-  assert.equal(el('quotaKpis').children[0].children[1].textContent, '2');
+  assert.equal(el('quotaKpis').children[0].children[1].textContent, '3');
   assert.equal(el('quotaOverviewBody').children[0].children[0].children[1].textContent, '查询失败');
   stopOnFirst = true;
   const before = requests.length;
@@ -378,7 +389,12 @@ test('management script: quota failures continue, stop works, stats/health and s
 
   // Dozens of accounts/models stay bounded; null values never dilute averages.
   context.largeQuota = Array.from({ length: 35 }, (_, i) => ({
-    credential: { id: String(i), name: 'account-' + i, user_email: 'user' + i + '@example.test' },
+    credential: {
+      id: String(i),
+      mode: 'antigravity',
+      name: 'account-' + i,
+      user_email: 'user' + i + '@example.test',
+    },
     value: {
       queriedAt: '2026-10-15T00:00:00Z',
       models: Array.from({ length: 21 }, (_, j) => ({
@@ -528,8 +544,6 @@ test('management pages: deep-link restore, lazy loading, history, retained input
         effective: {
           CREDENTIAL_SELECTION: 'round_robin',
           MAX_CREDENTIAL_ATTEMPTS: 3,
-          GEMINICLI_MODELS: 'm',
-          ANTIGRAVITY_MODELS: 'm',
           ANTIGRAVITY_STREAM2NOSTREAM: false,
         },
       });
@@ -566,7 +580,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   assert.equal(el('workspace').hidden, false);
   assert.equal(el('page-logs').hidden, false);
   assert.equal(el('page-overview').hidden, true);
-  assert.equal(document.title, '调用日志 · GCLI2API Workers');
+  assert.equal(document.title, '问题一览 · GCLI2API Workers');
   assert.equal(
     calls.some((path) => path.startsWith('/admin/stats')),
     false,
@@ -611,7 +625,8 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   });
   assert.equal(prevented, true);
   assert.equal(el('stats-view-credentials').hidden, false);
-  await el('nav-quota').onclick({ preventDefault() {} });
+  await el('nav-credentials').onclick({ preventDefault() {} });
+  await el('tab-quota').onclick({ preventDefault() {} });
   assert.equal(
     calls.some((path) => path.endsWith('/quota')),
     false,
@@ -619,7 +634,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   await el('nav-settings').onclick({ preventDefault() {} });
   assert.equal(el('settingsStrategy').value, 'round_robin');
   el('settingsStrategy').value = 'weighted';
-  await el('nav-import').onclick({ preventDefault() {} });
+  await el('tab-import').onclick({ preventDefault() {} });
   assert.equal(el('credential').value, 'unsaved-json');
   const before = calls.length;
   location.pathname = '/panel/logs';
@@ -631,4 +646,16 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   await el('nav-settings').onclick({ preventDefault() {} });
   assert.equal(el('settingsStrategy').value, 'weighted');
   assert.ok(visits.includes('/panel/import'));
+  vm.runInContext(
+    `quotaOverviewResults = [
+    {credential:{id:'ag',mode:'antigravity',name:'same-email'},value:{models:[{id:'same-model',remaining:.8}]}},
+    {credential:{id:'cli',mode:'geminicli',name:'same-email'},value:{models:[{id:'same-model',remaining:.4,bucketIndex:0}]}}
+  ]`,
+    context,
+  );
+  assert.equal(vm.runInContext('quotaGroups().length', context), 2);
+  assert.equal(
+    vm.runInContext('quotaGroups().find(g=>g.mode==="geminicli").average', context),
+    0.4,
+  );
 });

@@ -1,6 +1,7 @@
 import { HttpError, googleFetch, operation } from './common.js';
 import { accessToken, selectCredential } from './credentials.js';
 import { cooldownSeconds, putCooldown, recordAttempt } from './reliability.js';
+import { loadModelNames, knownModelId, publicModelId } from './model-names.js';
 import { normalizeRequest } from './normalize.js';
 
 export function upstreamOrigin(env, mode) {
@@ -52,9 +53,11 @@ export async function callUpstream(
   fetcher = fetch,
   meta = {},
 ) {
+  await loadModelNames(env, mode);
+  const known = knownModelId(env, mode, model);
   const normalized = normalizeRequest(request, model, mode);
-  model = normalized.model;
-  meta.model = model;
+  model = known || normalized.model;
+  meta.model = publicModelId(env, mode, model);
   request = normalized.request;
   const requestId = meta.requestId || crypto.randomUUID();
   const configured = Number(env.MAX_CREDENTIAL_ATTEMPTS ?? 3);
@@ -64,9 +67,13 @@ export async function callUpstream(
   const used = [];
   const origin = upstreamOrigin(env, mode);
   const action = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
-  let row = await operation('credential_select', () =>
-    selectCredential(env.DB, mode, model, [], env.CREDENTIAL_SELECTION),
-  );
+  const initialRow = meta.initialRow;
+  delete meta.initialRow;
+  let row =
+    initialRow ||
+    (await operation('credential_select', () =>
+      selectCredential(env.DB, mode, model, [], env.CREDENTIAL_SELECTION),
+    ));
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     used.push(row.id);
     meta.row = row;

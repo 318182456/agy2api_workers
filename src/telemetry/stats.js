@@ -1,4 +1,5 @@
 import { pendingTelemetry } from './client.js';
+import { HttpError } from '../common.js';
 import { dbCache } from '../db-cache.js';
 import { filters, credentialJoin, displayName } from '../filters.js';
 
@@ -18,12 +19,12 @@ const dimensions = ['credential_name', 'mode', 'model', 'status', 'outcome'];
 const source = `WITH usage_source AS (
  SELECT r.credential_id,r.credential_name,r.mode,r.model,r.status,r.outcome,r.created_at,r.request_id,
   1 AS requests,(r.outcome='success') AS successes,(r.outcome='failed') AS failures,(r.outcome='cancelled') AS cancellations,r.duration_ms AS total_duration_ms,
-  r.input_tokens,r.output_tokens,r.thought_tokens,r.total_tokens,(r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.thought_tokens IS NOT NULL OR r.total_tokens IS NOT NULL) AS token_reports
+  r.input_tokens,r.output_tokens,r.thought_tokens,r.total_tokens,(r.input_tokens IS NOT NULL OR r.output_tokens IS NOT NULL OR r.thought_tokens IS NOT NULL OR r.total_tokens IS NOT NULL) AS token_reports,r.api_key_id
  FROM request_usage r WHERE (r.aggregate_key IS NULL OR NOT EXISTS(SELECT 1 FROM usage_aggregates a,json_each(a.members) m WHERE a.bucket_key=r.aggregate_key AND m.value=r.request_id))
  AND (r.aggregate_key IS NULL OR r.request_id NOT IN(SELECT value FROM json_each(?)))
  UNION ALL
  SELECT a.credential_id,${dimensions.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')},a.created_at,NULL,
- ${metricKeys.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')}
+ ${metricKeys.map((key) => "json_extract(a.payload,'$." + key + "')").join(',')},a.api_key_id
  FROM usage_aggregates a WHERE a.bucket_key NOT IN(SELECT value FROM json_each(?))
 )`;
 const aggregates = metricKeys.map((key) => 'SUM(u.' + key + ') AS ' + key).join(',');
@@ -75,7 +76,13 @@ export async function usageStats(db, params, env = {}) {
   if (params.get('fresh') !== '1' && cache.stats.get(key)?.until > Date.now())
     return structuredClone(cache.stats.get(key).value);
   if (!safe.has('from')) safe.set('from', String(Date.now() - 30 * 86400000));
-  const { where, values } = filters(safe, 'u', false);
+  let { where, values } = filters(safe, 'u', false);
+  const apiKeyId = safe.get('api_key_id');
+  if (apiKeyId) {
+    if (!/^[a-f0-9-]{36}$/.test(apiKeyId)) throw new HttpError(400, 'API 密钥 ID 无效');
+    where += (where ? ' AND ' : ' WHERE ') + 'u.api_key_id=?';
+    values.push(apiKeyId);
+  }
   values.push(Date.now() - 30 * 86400000);
   const snapshot = await pendingTelemetry(env);
   const pendingKeys = snapshot.buckets.map((bucket) => bucket.key),
@@ -115,6 +122,7 @@ export async function usageStats(db, params, env = {}) {
         current = lookup.get(row.credential_id);
       const label = current?.email || current?.name || row.credential_name || '未选中凭证';
       if (safe.get('request_id')) continue;
+      if (apiKeyId && row.api_key_id !== apiKeyId) continue;
       if (safe.get('credential_id') && row.credential_id !== safe.get('credential_id')) continue;
       if (safe.get('mode') && row.mode !== safe.get('mode')) continue;
       if (safe.get('model') && row.model !== safe.get('model')) continue;

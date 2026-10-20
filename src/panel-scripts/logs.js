@@ -18,7 +18,10 @@ async function loadCalls(before = null) {
         '\n' +
         record.mode,
       record.model,
-      record.status + '\n' + record.stage + (record.detail_code ? '\n' + record.detail_code : ''),
+      record.status +
+        '\n' +
+        (record.status < 400 && record.retried ? '重试后成功' : record.stage) +
+        (record.detail_code ? '\n' + record.detail_code : ''),
       record.duration_ms + ' ms',
       record.request_id,
     ]) {
@@ -29,7 +32,11 @@ async function loadCalls(before = null) {
     el('callsBody').append(tr);
   }
   status(
-    value.records.length ? '已加载 ' + value.records.length + ' 条调用记录。' : '暂无调用记录。',
+    value.records.length
+      ? '已加载 ' +
+          value.records.length +
+          (el('callsScope').value === 'all' ? ' 条已保留事件。' : ' 条问题相关事件。')
+      : '暂无匹配的问题记录；正常成功请求请查看用量统计。',
   );
 }
 el('callsRefresh').onclick = () => run(() => loadCalls());

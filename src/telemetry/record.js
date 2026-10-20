@@ -18,8 +18,8 @@ export async function recordUsage(db, record) {
     const insert = db
       .prepare(
         `INSERT OR IGNORE INTO request_usage
-      (request_id, credential_id, credential_name, mode, model, status, outcome, duration_ms, created_at, input_tokens, output_tokens, thought_tokens, total_tokens, attempts, aggregate_key)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      (request_id, credential_id, credential_name, mode, model, status, outcome, duration_ms, created_at, input_tokens, output_tokens, thought_tokens, total_tokens, attempts, aggregate_key, api_key_id, api_key_name)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .bind(
         record.requestId,
@@ -37,6 +37,8 @@ export async function recordUsage(db, record) {
         u.total,
         JSON.stringify((record.attempts || []).slice(0, 16)),
         record.aggregateKey || null,
+        record.apiKey?.id || null,
+        record.apiKey?.name || null,
       );
     const statements = [insert];
     if (record.row && record.outcome === 'success')

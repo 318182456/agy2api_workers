@@ -8,7 +8,9 @@ el('quotaOverviewRefresh').onclick = () =>
   run(async () => {
     await refresh();
     const rows = credentialsSnapshot.filter(
-      (c) => c.mode === 'antigravity' && (!c.disabled || el('quotaIncludeDisabled').checked),
+      (c) =>
+        ['antigravity', 'geminicli'].includes(c.mode) &&
+        (!c.disabled || el('quotaIncludeDisabled').checked),
     );
     quotaOverviewResults = [];
     quotaModelPage = 0;

@@ -234,13 +234,24 @@ export async function selectCredential(
   model = '',
   excluded = [],
   strategy = 'round_robin',
+  routing = null,
 ) {
   const exclusions = excluded.length
     ? ` AND c.id NOT IN (${excluded.map(() => '?').join(',')})`
     : '';
-  const eligible = `FROM credentials c WHERE c.mode=? AND c.disabled=0
-    AND NOT EXISTS (SELECT 1 FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.model=? AND q.until_ms>?)${exclusions}`;
-  const values = [mode, model, Date.now(), ...excluded];
+  const unified = mode === 'auto';
+  const channelPredicate = unified ? 'c.mode IN (SELECT value FROM json_each(?))' : 'c.mode=?';
+  const quotaModel = unified ? "CASE c.mode WHEN 'geminicli' THEN ? ELSE ? END" : '?';
+  const selectionValues = unified
+    ? [
+        JSON.stringify(routing?.modes || ['geminicli', 'antigravity']),
+        routing?.models?.geminicli || model,
+        routing?.models?.antigravity || model,
+      ]
+    : [mode, model];
+  const eligible = `FROM credentials c WHERE ${channelPredicate} AND c.disabled=0
+    AND NOT EXISTS (SELECT 1 FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.model=${quotaModel} AND q.until_ms>?)${exclusions}`;
+  const values = [...selectionValues, Date.now(), ...excluded];
   const scope = dbCache(db);
   scope.rotation ||= new Map();
   for (const [id, seen] of scope.rotation)
@@ -275,9 +286,9 @@ export async function selectCredential(
     const cooling = await db
       .prepare(
         `SELECT MIN(q.until_ms) AS earliest FROM credential_cooldowns q JOIN credentials c ON c.id=q.credential_id
-      WHERE c.mode=? AND c.disabled=0 AND q.model=? AND q.until_ms>?`,
+      WHERE ${channelPredicate} AND c.disabled=0 AND q.model=${quotaModel} AND q.until_ms>?`,
       )
-      .bind(mode, model, Date.now())
+      .bind(...selectionValues, Date.now())
       .first();
     if (cooling?.earliest) {
       const error = new HttpError(429, `${mode} 当前模型的可用凭证正在冷却，请稍后重试或切换模型`);
@@ -287,7 +298,9 @@ export async function selectCredential(
     const base = mode === 'antigravity' ? '/antigravity/v1' : '/v1';
     throw new HttpError(
       503,
-      `${mode} 渠道没有已启用的凭证。请检查管理页的渠道与启用状态；本次调用的 Base URL 应为 ${base}。Antigravity 凭证请通过 /antigravity/v1 调用。`,
+      unified
+        ? '当前模型没有可用凭证，请检查账号启用状态、模型支持和额度冷却。'
+        : `${mode} 渠道没有已启用的凭证。请检查管理页的渠道与启用状态；本次调用的 Base URL 应为 ${base}。Antigravity 凭证请通过 /antigravity/v1 调用。`,
     );
   }
   const now = Date.now();

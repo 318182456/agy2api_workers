@@ -2,8 +2,6 @@ import { readShared, publishShared } from './shared-cache.js';
 import { dbCache } from './db-cache.js';
 import { HttpError } from './common.js';
 const keys = [
-  'GEMINICLI_MODELS',
-  'ANTIGRAVITY_MODELS',
   'MAX_CREDENTIAL_ATTEMPTS',
   'ANTIGRAVITY_STREAM2NOSTREAM',
   'CREDENTIAL_SELECTION',
@@ -18,8 +16,6 @@ function defaults(env) {
       : 'round_robin',
     ANTIGRAVITY_STREAM2NOSTREAM:
       env.ANTIGRAVITY_STREAM2NOSTREAM === true || env.ANTIGRAVITY_STREAM2NOSTREAM === 'true',
-    GEMINICLI_MODELS: String(env.GEMINICLI_MODELS || ''),
-    ANTIGRAVITY_MODELS: String(env.ANTIGRAVITY_MODELS || ''),
     MAX_CREDENTIAL_ATTEMPTS: Number.isFinite(attempts)
       ? Math.min(5, Math.max(1, Math.floor(attempts)))
       : 3,
@@ -46,19 +42,7 @@ export function validateSetting(key, value) {
       throw new HttpError(400, '尝试凭证数量必须是 1–5 的整数');
     return value;
   }
-  if (typeof value !== 'string' || value.length > 20000)
-    throw new HttpError(400, '模型列表必须是英文逗号分隔的字符串');
-  const ids = [
-    ...new Set(
-      value
-        .split(',')
-        .map((id) => id.trim())
-        .filter(Boolean),
-    ),
-  ];
-  if (ids.length > 200 || ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id)))
-    throw new HttpError(400, '模型列表最多 200 个，模型 ID 格式无效');
-  return ids.join(',');
+  throw new HttpError(400, '不支持的配置项');
 }
 export async function readSettings(env, cached = false) {
   const base = defaults(env);
@@ -73,7 +57,7 @@ export async function readSettings(env, cached = false) {
       try {
         overrides = {};
         for (const [key, value] of Object.entries(shared.value))
-          overrides[key] = validateSetting(key, value);
+          if (keys.includes(key)) overrides[key] = validateSetting(key, value);
       } catch {
         overrides = null;
       }

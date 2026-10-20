@@ -1,8 +1,10 @@
-import { authenticate, HttpError, json, readJson } from '../common.js';
+import { HttpError, json, readJson } from '../common.js';
+import { authenticateApi } from '../api-keys.js';
 import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../convert.js';
 import { collectGoogleStream } from '../stream-collect.js';
 import { callUpstream } from '../upstream.js';
 import { discoverModels } from '../model-list.js';
+import { callUnifiedUpstream, discoverUnifiedModels } from '../unified.js';
 import { recordAttempt } from '../reliability.js';
 import { recordTelemetry } from '../metrics.js';
 import { effectiveEnv } from '../settings.js';
@@ -25,8 +27,9 @@ function validateModel(model) {
 
 export async function generationRoute(request, env, fetcher, context) {
   const url = new URL(request.url);
-  const mode = url.pathname.startsWith('/antigravity/') ? 'antigravity' : 'geminicli';
-  const path = mode === 'antigravity' ? url.pathname.slice('/antigravity'.length) : url.pathname;
+  const fixed = url.pathname.match(/^\/(antigravity|geminicli)\//)?.[1];
+  let mode = fixed || 'geminicli';
+  const path = fixed ? url.pathname.slice(('/' + fixed).length) : url.pathname;
   const nativeMatch = path.match(
     /^\/v1(?:beta)?\/models\/([^/:]+):(generateContent|streamGenerateContent|countTokens)$/,
   );
@@ -40,10 +43,12 @@ export async function generationRoute(request, env, fetcher, context) {
       '接口不存在；支持 OpenAI Chat Completions、Anthropic Messages 和 Gemini generateContent',
     );
   if (request.method !== (isModelList ? 'GET' : 'POST')) throw new HttpError(405, '请求方法不支持');
-  await authenticate(request, env.API_PASSWORD, !!nativeMatch || path === '/v1beta/models');
+  const apiKey = await authenticateApi(request, env, !!nativeMatch || path === '/v1beta/models');
   env = await effectiveEnv(env);
   if (isModelList) {
-    const result = await discoverModels(env, mode, fetcher);
+    const result = fixed
+      ? await discoverModels(env, mode, fetcher)
+      : await discoverUnifiedModels(env, fetcher);
     const response =
       path === '/v1beta/models'
         ? json({
@@ -58,7 +63,7 @@ export async function generationRoute(request, env, fetcher, context) {
             data: result.ids.map((id) => ({ id, object: 'model', created: 0, owned_by: 'google' })),
           });
     response.headers.set('x-model-list-source', result.source);
-    if (result.source === 'fallback')
+    if (result.source === 'cache')
       response.headers.set('x-model-list-warning', 'dynamic-discovery-failed');
     return response;
   }
@@ -86,7 +91,7 @@ export async function generationRoute(request, env, fetcher, context) {
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
   const stream =
     isOpenai || isAnthropic ? body.stream === true : nativeMatch[2] === 'streamGenerateContent';
-  const collect = mode === 'antigravity' && !stream && env.ANTIGRAVITY_STREAM2NOSTREAM;
+  let collect = mode === 'antigravity' && !stream && env.ANTIGRAVITY_STREAM2NOSTREAM;
   const abort = new AbortController();
   const cancel = () => abort.abort();
   const incomingSignal = request.signal;
@@ -108,8 +113,9 @@ export async function generationRoute(request, env, fetcher, context) {
     await persist(
       recordTelemetry(env, {
         requestId,
+        apiKey,
         row: attemptMeta.row,
-        mode,
+        mode: attemptMeta.mode || mode,
         model: attemptMeta.model || model,
         status,
         outcome,
@@ -121,16 +127,31 @@ export async function generationRoute(request, env, fetcher, context) {
   };
   const completed = (usage) => finishUsage(200, 'success', usage);
   try {
-    const response = await callUpstream(
-      env,
-      mode,
-      model,
-      geminiRequest,
-      stream || collect,
-      abort.signal,
-      fetcher,
-      attemptMeta,
-    );
+    let response;
+    if (!fixed) {
+      const selected = await callUnifiedUpstream(
+        env,
+        model,
+        geminiRequest,
+        stream,
+        abort.signal,
+        fetcher,
+        attemptMeta,
+      );
+      response = selected.response;
+      mode = selected.mode;
+      collect = selected.collect;
+    } else
+      response = await callUpstream(
+        env,
+        mode,
+        model,
+        geminiRequest,
+        stream || collect,
+        abort.signal,
+        fetcher,
+        attemptMeta,
+      );
     if (!response.ok) {
       await finishUsage(response.status, 'failed');
       if (isAnthropic) {
@@ -149,6 +170,7 @@ export async function generationRoute(request, env, fetcher, context) {
           response.status,
         );
         result.headers.set('x-request-id', requestId);
+        result.headers.set('x-upstream-channel', attemptMeta.mode || mode);
         if (response.headers.has('retry-after'))
           result.headers.set('retry-after', response.headers.get('retry-after'));
         return result;
@@ -160,6 +182,7 @@ export async function generationRoute(request, env, fetcher, context) {
           'content-type': response.headers.get('content-type') || 'application/json',
           'cache-control': 'no-store',
           'x-request-id': requestId,
+          'x-upstream-channel': attemptMeta.mode || mode,
           ...(response.headers.has('retry-after')
             ? { 'retry-after': response.headers.get('retry-after') }
             : {}),
@@ -217,6 +240,7 @@ export async function generationRoute(request, env, fetcher, context) {
           'content-type': 'text/event-stream; charset=utf-8',
           'cache-control': 'no-cache, no-transform',
           'x-request-id': requestId,
+          'x-upstream-channel': attemptMeta.mode || mode,
         },
       });
     }
@@ -249,6 +273,7 @@ export async function generationRoute(request, env, fetcher, context) {
           : unwrap(value),
     );
     result.headers.set('x-request-id', requestId);
+    result.headers.set('x-upstream-channel', attemptMeta.mode || mode);
     if (collect) result.headers.set('x-upstream-mode', 'stream-collected');
     await completed(latestUsage);
     return result;

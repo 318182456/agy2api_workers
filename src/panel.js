@@ -12,6 +12,8 @@ import { quotaScript } from './panel-scripts/quota.js';
 import { modelsScript } from './panel-scripts/models.js';
 import { oauthScript } from './panel-scripts/oauth.js';
 import { importScript } from './panel-scripts/import.js';
+import { keysScript } from './panel-scripts/keys.js';
+import { endpointsScript } from './panel-scripts/endpoints.js';
 import { bootstrapScript } from './panel-scripts/bootstrap.js';
 
 export const panel = String.raw`<!doctype html>
@@ -29,5 +31,7 @@ ${quotaScript}
 ${modelsScript}
 ${oauthScript}
 ${importScript}
+${keysScript}
+${endpointsScript}
 ${bootstrapScript}
 </script></body></html>`;

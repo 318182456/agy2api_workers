@@ -85,7 +85,24 @@ export async function fetchEmail(env, row, fetcher) {
   await saveData(env.DB, row, { user_email: value.email });
   return { success: true, user_email: value.email };
 }
-export async function verifyProject(env, row, fetcher) {
+export async function verifyProject(env, row, fetcher, options = {}) {
+  const suppliedProject = options?.project_id;
+  if (
+    suppliedProject !== undefined &&
+    (row.mode !== 'geminicli' ||
+      typeof suppliedProject !== 'string' ||
+      !/^[a-z][a-z0-9-]{4,28}[a-z0-9]$/.test(suppliedProject.trim()))
+  )
+    throw new HttpError(
+      400,
+      '请输入有效的 Google Cloud 项目 ID（6–30 位小写字母、数字或短横线），不是项目名称或数字编号',
+    );
+  const projectRequired = (message) => {
+    const error = new HttpError(400, message);
+    error.errorCode = 'PROJECT_REQUIRED';
+    error.operation = 'project_verify';
+    return error;
+  };
   let projectId;
   let tier = null;
   let credits = null;
@@ -110,29 +127,146 @@ export async function verifyProject(env, row, fetcher) {
     credits =
       typeof rawCredits === 'string' || typeof rawCredits === 'number' ? String(rawCredits) : null;
   } else {
-    let next;
-    const projects = [];
-    for (let page = 0; page < 3; page++) {
-      const url = new URL('https://cloudresourcemanager.googleapis.com/v1/projects');
-      url.searchParams.set('pageSize', '100');
-      if (next) url.searchParams.set('pageToken', next);
-      const value = await googleJson(
-        await accountRequest(env, row, url.href, undefined, 'project_verify', fetcher),
-        'Google 项目列表查询',
+    const origin = upstreamOrigin(env, row.mode);
+    const metadata = {
+      ideType: 'IDE_UNSPECIFIED',
+      platform: 'PLATFORM_UNSPECIFIED',
+      pluginType: 'GEMINI',
+    };
+    const knownProject =
+      suppliedProject?.trim() ||
+      (typeof row.data.project_id === 'string' ? row.data.project_id.trim() : '');
+    const readProject = (value) =>
+      typeof value === 'string'
+        ? value.trim()
+        : typeof value?.id === 'string'
+          ? value.id.trim()
+          : '';
+    const pending = row.data.project_verification_operation;
+    let onboarding;
+    if (pending) {
+      if (suppliedProject !== undefined)
+        throw new HttpError(
+          409,
+          '项目开通仍在处理中，请先点击“校验项目”查询已有任务，完成后再更换项目',
+        );
+      if (
+        typeof pending !== 'string' ||
+        !/^operations\/[A-Za-z0-9_/-]{1,250}$/.test(pending) ||
+        pending.includes('..')
+      )
+        throw new HttpError(400, '项目开通任务格式无效，请重新导入凭证');
+      onboarding = await googleJson(
+        await accountRequest(
+          env,
+          row,
+          origin + '/v1internal/' + pending,
+          undefined,
+          'project_verify',
+          fetcher,
+        ),
+        'Google 项目开通状态查询',
       );
-      for (const project of value.projects || [])
-        if (
-          typeof project.projectId === 'string' &&
-          (!project.lifecycleState || project.lifecycleState === 'ACTIVE')
-        )
-          projects.push(project.projectId);
-      next = value.nextPageToken;
-      if (!next) break;
+      tier = row.data.subscription_tier || null;
+    } else {
+      const value = await googleJson(
+        await accountRequest(
+          env,
+          row,
+          origin + '/v1internal:loadCodeAssist',
+          {
+            ...(knownProject ? { cloudaicompanionProject: knownProject } : {}),
+            metadata: { ...metadata, ...(knownProject ? { duetProject: knownProject } : {}) },
+          },
+          'project_verify',
+          fetcher,
+        ),
+        'Google GeminiCLI 项目校验',
+      );
+      if (value.error) throw new HttpError(502, 'Google 项目校验返回错误，未保存项目');
+      const rawTier = value.paidTier?.id || value.currentTier?.id;
+      tier = typeof rawTier === 'string' ? rawTier : null;
+      projectId = readProject(value.cloudaicompanionProject);
+      if (!projectId && value.currentTier) {
+        if (knownProject) projectId = knownProject;
+        else
+          throw projectRequired(
+            'Google 未返回已开通账号的 GeminiCLI 项目，请填写该账号有权限使用的 Google Cloud 项目 ID',
+          );
+      }
+      if (!projectId) {
+        if (value.ineligibleTiers?.some((item) => item?.reasonCode === 'VALIDATION_REQUIRED'))
+          throw new HttpError(
+            400,
+            'Google 要求先完成账号验证，请使用官方 GeminiCLI 登录并按提示验证后重试',
+          );
+        const selected = Array.isArray(value.allowedTiers)
+          ? value.allowedTiers.find((item) => item?.isDefault && typeof item.id === 'string')
+          : null;
+        if (!selected) {
+          const validation = value.ineligibleTiers?.some(
+            (item) => item?.reasonCode === 'VALIDATION_REQUIRED',
+          );
+          throw new HttpError(
+            400,
+            validation
+              ? 'Google 要求先完成账号验证，请使用官方 GeminiCLI 登录并按提示验证后重试'
+              : '此账号尚未获得 GeminiCLI 服务资格，Google 未返回可开通的等级',
+          );
+        }
+        const free = selected.id === 'free-tier';
+        if (!free && selected.userDefinedCloudaicompanionProject === true && !knownProject)
+          throw projectRequired(
+            'Google 明确要求此等级（' +
+              selected.id +
+              '）使用自有 Cloud 项目，请在下方填写项目 ID 后校验',
+          );
+        tier = selected.id;
+        onboarding = await googleJson(
+          await accountRequest(
+            env,
+            row,
+            origin + '/v1internal:onboardUser',
+            {
+              tierId: tier,
+              ...(!free && knownProject ? { cloudaicompanionProject: knownProject } : {}),
+              metadata: {
+                ...metadata,
+                ...(!free && knownProject ? { duetProject: knownProject } : {}),
+              },
+            },
+            'project_verify',
+            fetcher,
+          ),
+          'Google GeminiCLI 服务开通',
+        );
+      }
     }
-    if (projects.includes(row.data.project_id)) projectId = row.data.project_id;
-    else if (projects.length === 1 && !next) projectId = projects[0];
-    else if (projects.length > 1 || next)
-      throw new HttpError(400, '账号下有多个项目，请在凭证中指定正确的 project_id 后重新导入');
+    if (onboarding) {
+      if (onboarding.error) {
+        if (pending) await saveData(env.DB, row, { project_verification_operation: null });
+        throw new HttpError(400, 'Google GeminiCLI 服务开通失败，请在官方 CLI 确认账号资格后重试');
+      }
+      if (!onboarding.done) {
+        const name = onboarding.name || pending;
+        if (
+          typeof name !== 'string' ||
+          !/^operations\/[A-Za-z0-9_/-]{1,250}$/.test(name) ||
+          name.includes('..')
+        )
+          throw new HttpError(502, 'Google 未返回有效的项目开通任务');
+        if (name !== pending)
+          await saveData(env.DB, row, {
+            project_verification_operation: name,
+            subscription_tier: tier,
+          });
+        throw new HttpError(
+          409,
+          'Google 正在开通 GeminiCLI 项目，请稍后再次点击“校验项目”查看结果',
+        );
+      }
+      projectId = readProject(onboarding.response?.cloudaicompanionProject) || knownProject;
+    }
   }
   if (!projectId)
     throw new HttpError(
@@ -141,17 +275,14 @@ export async function verifyProject(env, row, fetcher) {
     );
   await saveData(env.DB, row, {
     project_id: projectId,
+    ...(row.mode === 'geminicli' ? { project_verification_operation: null } : {}),
     subscription_tier: tier,
     credit_amount: credits,
   });
   return { success: true, project_id: projectId, subscription_tier: tier, credit_amount: credits };
 }
 export async function testCredential(env, row, model, fetcher) {
-  const fallback =
-    (row.mode === 'antigravity' ? env.ANTIGRAVITY_MODELS : env.GEMINICLI_MODELS)
-      ?.split(',')[0]
-      ?.trim() || 'gemini-2.5-flash';
-  model ||= fallback;
+  model ||= 'gemini-2.5-flash';
   if (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(model))
     throw new HttpError(400, '测试模型名称无效');
   if (!row.data.project_id) throw new HttpError(400, '请先校验项目或补充 project_id');

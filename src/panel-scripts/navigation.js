@@ -1,10 +1,12 @@
-import { panelPages } from '../panel-views.js';
+import { panelPages, panelTabs } from '../panel-views.js';
 export const navigationScript = String.raw`const pageDefinitions = ${JSON.stringify(panelPages)};
+const tabDefinitions = ${JSON.stringify(panelTabs)};
 const el = (id) => document.getElementById(id);
 const status = (text) => {
   el('status').textContent = text;
 };
 let credentialsSnapshot = [];
+let credentialsLoaded = false;
 let oauthClientModes = {};
 const selectedCredentials = new Set();
 let stopBatch = false;
@@ -13,56 +15,160 @@ let settingsLoaded = false;
 let busy = false;
 
 let currentPage = 'overview';
+let currentSection = 'overview';
 const loadedPages = new Set();
+function parentPage(id) {
+  return (
+    Object.entries(tabDefinitions).find(([, tabs]) => tabs.some((tab) => tab.id === id))?.[0] || id
+  );
+}
 function pageFromLocation() {
   const path = (location.pathname || '/').replace(/\/$/, '');
-  return pageDefinitions.find((page) => page.path === path)?.id || 'overview';
+  const ids = [
+    ...pageDefinitions.map((page) => page.id),
+    ...Object.values(tabDefinitions)
+      .flat()
+      .map((tab) => tab.id),
+  ];
+  return ids.find((id) => '/panel/' + id === path) || 'overview';
 }
-function showPage(id, historyMode = 'push') {
-  const page = pageDefinitions.find((page) => page.id === id) || pageDefinitions[0];
+function applyTargetFilters(params) {
+  if (currentPage === 'credentials') {
+    for (const [key, id] of [
+      ['state', 'credentialState'],
+      ['mode', 'credentialMode'],
+      ['search', 'credentialSearch'],
+    ])
+      if (params.has(key)) el(id).value = params.get(key);
+    credentialPage = 0;
+  }
+  if (currentPage === 'logs') {
+    for (const [key, id] of [
+      ['scope', 'callsScope'],
+      ['status', 'callsStatus'],
+      ['model', 'callsModel'],
+      ['mode', 'callsMode'],
+      ['request_id', 'callsRequest'],
+      ['email', 'callsEmail'],
+      ['stage', 'callsStage'],
+      ['credential_id', 'callsCredential'],
+      ['from', 'callsFrom'],
+      ['to', 'callsTo'],
+    ])
+      if (params.has(key)) el(id).value = params.get(key);
+  }
+}
+function showPage(id, historyMode = 'push', params) {
+  const page = pageDefinitions.find((page) => page.id === parentPage(id)) || pageDefinitions[0];
+  if (currentPage === 'keys' && page.id !== 'keys') {
+    clearKeySecret();
+    el('keyImportData').value = '';
+    el('keyImportFile').value = '';
+  }
   currentPage = page.id;
+  currentSection = tabDefinitions[page.id]?.some((tab) => tab.id === id) ? id : page.id;
   for (const item of pageDefinitions) {
     el('page-' + item.id).hidden = item.id !== page.id;
     if (item.id === page.id) el('nav-' + item.id).setAttribute('aria-current', 'page');
     else el('nav-' + item.id).removeAttribute('aria-current');
+  }
+  for (const [group, tabs] of Object.entries(tabDefinitions)) {
+    const selected = group === page.id ? currentSection : tabs[0].id;
+    for (const tab of tabs) {
+      el('section-' + tab.id).hidden = tab.id !== selected;
+      el('tab-' + tab.id).setAttribute('aria-selected', String(tab.id === selected));
+      el('tab-' + tab.id).tabIndex = tab.id === selected ? 0 : -1;
+    }
   }
   el('pageTitle').textContent = page.title;
   el('pageDescription').textContent = page.description;
   el('pageBreadcrumb').textContent = page.title;
   document.title = page.title + ' · GCLI2API Workers';
   if (historyMode && typeof scrollTo === 'function') scrollTo({ top: 0, behavior: 'auto' });
-  if (historyMode && typeof history !== 'undefined' && location.pathname !== page.path)
-    history[historyMode === 'replace' ? 'replaceState' : 'pushState'](
-      { page: page.id },
-      '',
-      page.path,
-    );
+  const query = params?.toString();
+  const search = params
+    ? query
+      ? '?' + query
+      : ''
+    : historyMode !== 'push'
+      ? location.search || ''
+      : '';
+  const path = '/panel/' + currentSection + search;
+  if (
+    historyMode &&
+    typeof history !== 'undefined' &&
+    location.pathname + (location.search || '') !== path
+  )
+    history[historyMode === 'replace' ? 'replaceState' : 'pushState']({ page: page.id }, '', path);
+  applyTargetFilters(params || new URLSearchParams(location.search || ''));
 }
 async function loadPage(id) {
   if (loadedPages.has(id)) return;
-  status('正在加载' + (pageDefinitions.find((page) => page.id === id)?.title || '页面') + '…');
-  if (id === 'overview') {
+  const parent = parentPage(id);
+  status('正在加载页面…');
+  if (parent === 'overview') {
     await refresh();
     await loadStats();
-  } else if (id === 'credentials') await refresh();
-  else if (id === 'logs') {
+  } else if (parent === 'credentials') {
+    if (!loadedPages.has('credentials')) {
+      await refresh();
+      loadedPages.add('credentials');
+    }
+    status('账号管理已就绪。');
+  } else if (parent === 'logs') {
     await refresh();
     await loadCalls();
-  } else if (id === 'import') {
-    const value = await api('/admin/credentials');
-    oauthClientModes = value.oauth_clients || {};
-    status('页面已就绪。');
-  } else if (id === 'settings') {
+  } else if (parent === 'keys') await loadKeys();
+  else if (id === 'settings') {
     fillSettings(await api('/admin/settings'));
     status('设置已加载。');
+  } else if (id === 'api') {
+    if (!credentialsLoaded) await refresh();
+    renderEndpoints();
+    status('接口可用状态已加载。');
   } else status('页面已就绪。');
   loadedPages.add(id);
 }
 async function openWorkspace() {
   el('loginCard').hidden = true;
   el('workspace').hidden = false;
-  showPage(pageFromLocation(), 'replace');
-  await loadPage(currentPage);
+  const id = pageFromLocation();
+  showPage(id, 'replace');
+  await loadPage(id);
+}
+function bindMetricLink(node, id, params = {}, detail) {
+  node.className += ' metric-link';
+  const query = new URLSearchParams(params);
+  node.setAttribute(
+    'href',
+    '/panel/' + id + (query.size ? '?' + query : '') + (detail ? '#' + detail : ''),
+  );
+  node.onclick = (event) => {
+    if (
+      event &&
+      (event.ctrlKey ||
+        event.metaKey ||
+        event.shiftKey ||
+        event.altKey ||
+        (event.button != null && event.button !== 0))
+    )
+      return;
+    event?.preventDefault();
+    return run(async () => {
+      const cached = loadedPages.has(id);
+      showPage(id, 'push', query);
+      await loadPage(id);
+      if (id === 'credentials') renderCredentials();
+      if (id === 'logs' && cached) await loadCalls();
+      if (detail) {
+        const target = el(detail);
+        target.open = true;
+        if (typeof history !== 'undefined')
+          history.replaceState({}, '', location.pathname + (location.search || '') + '#' + detail);
+        target.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      }
+    });
+  };
 }
 function followPage(id, event) {
   if (
@@ -81,7 +187,10 @@ function followPage(id, event) {
   }
   showPage(id);
   el('pageTitle').focus?.();
-  return run(() => loadPage(id));
+  return run(async () => {
+    await loadPage(id);
+    if (parentPage(id) === 'credentials') renderCredentials();
+  });
 }
 for (const page of pageDefinitions)
   el('nav-' + page.id).onclick = (event) => followPage(page.id, event);
@@ -89,9 +198,30 @@ for (const link of document.querySelectorAll('[data-page-link]'))
   link.onclick = (event) => followPage(link.dataset.pageLink, event);
 if (typeof addEventListener !== 'undefined')
   addEventListener('popstate', () => {
-    showPage(pageFromLocation(), null);
-    if (!el('workspace').hidden) run(() => loadPage(currentPage));
+    const id = pageFromLocation();
+    showPage(id, null);
+    if (!el('workspace').hidden)
+      run(async () => {
+        await loadPage(id);
+        if (currentPage === 'credentials') renderCredentials();
+        else if (currentPage === 'logs' && location.search) await loadCalls();
+      });
   });
+for (const tabs of Object.values(tabDefinitions))
+  for (const [index, tab] of tabs.entries()) {
+    el('tab-' + tab.id).onclick = (event) => followPage(tab.id, event);
+    el('tab-' + tab.id).onkeydown = (event) => {
+      let next = index;
+      if (event.key === 'ArrowRight') next = (index + 1) % tabs.length;
+      else if (event.key === 'ArrowLeft') next = (index + tabs.length - 1) % tabs.length;
+      else if (event.key === 'Home') next = 0;
+      else if (event.key === 'End') next = tabs.length - 1;
+      else return;
+      event.preventDefault();
+      followPage(tabs[next].id);
+      el('tab-' + tabs[next].id).focus?.();
+    };
+  }
 function selectStatsTab(id) {
   for (const key of ['days', 'models', 'credentials']) {
     el('stats-view-' + key).hidden = key !== id;
@@ -136,16 +266,20 @@ async function api(path, method = 'GET', body) {
   });
   const value = await response.json();
   if (response.status === 401) {
+    resetKeys();
     loadedPages.clear();
     el('workspace').hidden = true;
     el('loginCard').hidden = false;
   }
-  if (!response.ok)
-    throw new Error(
+  if (!response.ok) {
+    const error = new Error(
       (value.error?.message || 'HTTP ' + response.status) +
         (value.error?.stage ? ' [阶段：' + value.error.stage + ']' : '') +
         (value.error?.request_id ? ' [请求ID：' + value.error.request_id + ']' : ''),
     );
+    error.reason = value.error?.reason;
+    throw error;
+  }
   return value;
 }
 async function run(action) {

@@ -79,17 +79,17 @@ function logRow(row) {
 }
 // Keep a bounded view of recent final requests, alongside retained retry/error events.
 const events = `WITH events AS (
- SELECT id,request_id,credential_id,credential_name,mode,model,status,stage,duration_ms,created_at,detail_code,0 AS event_source,NULL AS parent_id,NULL AS attempt_index FROM call_logs WHERE created_at>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000}
+ SELECT id,request_id,credential_id,credential_name,mode,model,status,stage,duration_ms,created_at,detail_code,0 AS event_source,NULL AS parent_id,NULL AS attempt_index,0 AS retried FROM call_logs WHERE created_at>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000}
  UNION ALL
  SELECT id,request_id,credential_id,credential_name,mode,model,status,
    CASE outcome WHEN 'success' THEN 'completed' WHEN 'cancelled' THEN 'client_cancelled' ELSE 'request_failed' END AS stage,
-   duration_ms,created_at+duration_ms AS created_at,NULL AS detail_code,1 AS event_source,id AS parent_id,NULL AS attempt_index FROM request_usage
+   duration_ms,created_at+duration_ms AS created_at,NULL AS detail_code,1 AS event_source,id AS parent_id,NULL AS attempt_index,(attempts<>'[]') AS retried FROM request_usage
  WHERE log_visible=1 AND created_at+duration_ms>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000} AND id>(SELECT COALESCE(MAX(id),0)-2000 FROM request_usage)
  UNION ALL
  SELECT u.id*32+CAST(j.key AS INTEGER) AS id,u.request_id,
  json_extract(j.value,'$.credential_id'),json_extract(j.value,'$.credential_name'),json_extract(j.value,'$.mode'),json_extract(j.value,'$.model'),
  json_extract(j.value,'$.status'),json_extract(j.value,'$.stage'),json_extract(j.value,'$.duration_ms'),json_extract(j.value,'$.created_at'),
- json_extract(j.value,'$.detail_code'),2 AS event_source,u.id AS parent_id,CAST(j.key AS INTEGER) AS attempt_index
+ json_extract(j.value,'$.detail_code'),2 AS event_source,u.id AS parent_id,CAST(j.key AS INTEGER) AS attempt_index,1 AS retried
  FROM request_usage u,json_each(u.attempts) j
  WHERE u.id>(SELECT COALESCE(MAX(id),0)-2000 FROM request_usage)
  AND json_extract(j.value,'$.created_at')>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000}
@@ -97,6 +97,8 @@ const events = `WITH events AS (
 )`;
 function eventFilters(params, cursor = true) {
   const result = filters(params, 'l', false);
+  if (params.get('issues') === '1')
+    result.where += (result.where ? ' AND ' : ' WHERE ') + '(l.status>=400 OR l.retried=1)';
   const before = params.get('before');
   if (cursor && before) {
     const match = before.match(/^(\d+):([012]):(\d+)$/);

@@ -1,6 +1,8 @@
 export const credentialsScript = String.raw`async function refresh() {
   const value = await api('/admin/credentials');
   credentialsSnapshot = value.credentials;
+  credentialsLoaded = true;
+  renderEndpoints();
   oauthClientModes = value.oauth_clients || {};
   for (const id of selectedCredentials)
     if (!value.credentials.some((c) => c.id === id)) selectedCredentials.delete(id);
@@ -26,14 +28,20 @@ export const credentialsScript = String.raw`async function refresh() {
   renderCredentials();
   for (const target of ['overviewAccounts', 'credentialSummary']) {
     el(target).replaceChildren();
-    for (const [label, count] of [
-      ['全部账号', value.credentials.length],
-      ['已启用', value.credentials.filter((c) => !c.disabled).length],
-      ['模型冷却中', value.credentials.filter((c) => c.cooling_models).length],
-      ['最近异常', value.credentials.filter((c) => c.last_failure > (c.last_success || 0)).length],
+    for (const [label, count, state] of [
+      ['全部账号', value.credentials.length, ''],
+      ['已启用', value.credentials.filter((c) => !c.disabled).length, 'enabled'],
+      ['已停用', value.credentials.filter((c) => c.disabled).length, 'disabled'],
+      ['模型冷却中', value.credentials.filter((c) => c.cooling_models).length, 'cooling'],
+      [
+        '最近异常',
+        value.credentials.filter((c) => c.last_failure > (c.last_success || 0)).length,
+        'error',
+      ],
     ]) {
-      const box = document.createElement('div');
+      const box = document.createElement('a');
       box.className = 'metric';
+      bindMetricLink(box, 'credentials', { state, mode: '', search: '' });
       const title = document.createElement('small');
       title.textContent = label;
       const number = document.createElement('strong');
@@ -156,12 +164,7 @@ function renderCredentials() {
     const verify = document.createElement('button');
     verify.className = 'secondary';
     verify.textContent = '校验项目';
-    verify.onclick = () =>
-      run(async () => {
-        const result = await api('/admin/credentials/' + credential.id + '/verify', 'POST', {});
-        await refresh();
-        status('项目校验成功：' + result.project_id);
-      });
+    verify.onclick = () => run(() => verifyCredentialProject(credential));
     const test = document.createElement('button');
     test.className = 'secondary';
     test.textContent = '测试调用';
@@ -273,7 +276,7 @@ function renderCredentials() {
     extraActions.append(rename, scheduling, email, verify, test, download);
     const history = document.createElement('button');
     history.className = 'secondary';
-    history.textContent = '调用记录';
+    history.textContent = '问题记录';
     history.onclick = () =>
       run(async () => {
         showPage('logs');
@@ -342,7 +345,7 @@ function renderCredentials() {
       };
       extraActions.append(repair);
     }
-    if (credential.mode === 'antigravity') {
+    if (['antigravity', 'geminicli'].includes(credential.mode)) {
       const quota = document.createElement('button');
       quota.textContent = '查看额度';
       quota.onclick = () => run(() => showQuota(credential));
@@ -396,12 +399,67 @@ function formatReset(value) {
     hour12: false,
   }).format(date);
 }
+async function verifyCredentialProject(credential, body = {}) {
+  const details = el('quota-' + credential.id);
+  const hadQuota = details && !details.hidden;
+  try {
+    const result = await api('/admin/credentials/' + credential.id + '/verify', 'POST', body);
+    await refresh();
+    status('项目校验成功，已保存：' + result.project_id);
+    if (hadQuota) await showQuota(credential);
+  } catch (error) {
+    const current = el('quota-' + credential.id);
+    if (current) {
+      current.hidden = false;
+      const cell = current.firstChild;
+      cell.textContent = '项目校验未完成：' + error.message;
+      if (error.reason === 'PROJECT_REQUIRED') {
+        const form = document.createElement('form');
+        const label = document.createElement('label');
+        const input = document.createElement('input');
+        input.id = 'project-id-' + credential.id;
+        input.name = 'project_id';
+        input.required = true;
+        input.pattern = '[a-z][a-z0-9-]{4,28}[a-z0-9]';
+        input.maxLength = 30;
+        input.placeholder = '例如 my-gemini-project';
+        input.value = body.project_id || credential.project_id || '';
+        label.htmlFor = input.id;
+        label.textContent = 'Google Cloud 项目 ID（不是项目名称或数字编号）';
+        const submit = document.createElement('button');
+        submit.type = 'submit';
+        submit.textContent = '使用此项目校验';
+        const help = document.createElement('a');
+        help.href =
+          'https://geminicli.com/docs/get-started/authentication/#set-your-google-cloud-project';
+        help.target = '_blank';
+        help.rel = 'noopener noreferrer';
+        help.textContent = '查看 Google 官方项目配置说明';
+        const projects = document.createElement('a');
+        projects.className = 'button secondary';
+        projects.href = 'https://console.cloud.google.com/cloud-resource-manager';
+        projects.target = '_blank';
+        projects.rel = 'noopener noreferrer';
+        projects.textContent = '打开 Google Cloud 项目列表';
+        const note = document.createElement('p');
+        note.textContent = '使用此凭证对应的 Google 账号登录，复制项目 ID 后填入上方。';
+        form.append(label, input, submit, projects, note, help);
+        form.onsubmit = (event) => {
+          event.preventDefault();
+          run(() => verifyCredentialProject(credential, { project_id: input.value.trim() }));
+        };
+        cell.append(form);
+      }
+    }
+    throw error;
+  }
+}
 async function showQuota(credential) {
   const details = el('quota-' + credential.id);
   const cell = details.firstChild;
   details.hidden = false;
   cell.textContent = '正在查询额度…';
-  status('正在查询 ' + credential.name + ' 的 Antigravity 额度…');
+  status('正在查询 ' + credential.name + ' 的 ' + credential.mode + ' 额度…');
   try {
     const value = await api('/admin/credentials/' + credential.id + '/quota');
     cell.replaceChildren();

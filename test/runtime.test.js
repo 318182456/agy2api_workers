@@ -35,6 +35,7 @@ test('Workers runtime: incoming request signal, real D1, quota and OAuth failure
       '0006_d1_budget.sql',
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
+      '0009_api_keys.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
@@ -177,6 +178,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
       '0006_d1_budget.sql',
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
+      '0009_api_keys.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
@@ -387,6 +389,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
       '0006_d1_budget.sql',
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
+      '0009_api_keys.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const a = '11111111-1111-4111-8111-111111111111';
@@ -586,8 +589,6 @@ test('production Worker: web settings take effect, backups restore state, duplic
     bindings: {
       API_PASSWORD: 'api',
       PANEL_PASSWORD: 'panel',
-      GEMINICLI_MODELS: 'original',
-      ANTIGRAVITY_MODELS: 'backup',
       MAX_CREDENTIAL_ATTEMPTS: '3',
     },
     d1Databases: { DB: 'settings-backup-test' },
@@ -610,6 +611,7 @@ test('production Worker: web settings take effect, backups restore state, duplic
       '0006_d1_budget.sql',
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
+      '0009_api_keys.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const admin = (path, method = 'GET', body) =>
@@ -622,13 +624,11 @@ test('production Worker: web settings take effect, backups restore state, duplic
     assert.equal((await response.json()).effective.MAX_CREDENTIAL_ATTEMPTS, 3);
     response = await admin('/admin/settings', 'PATCH', {
       MAX_CREDENTIAL_ATTEMPTS: 1,
-      GEMINICLI_MODELS: 'custom, new,custom',
-      ANTIGRAVITY_MODELS: 'fallback-new',
     });
     assert.equal(response.status, 200, await response.clone().text());
     const setting = await response.json();
-    assert.equal(setting.effective.GEMINICLI_MODELS, 'custom,new');
-    assert.equal(setting.defaults.GEMINICLI_MODELS, 'original');
+    assert.equal(setting.effective.MAX_CREDENTIAL_ATTEMPTS, 1);
+    assert.equal(setting.defaults.MAX_CREDENTIAL_ATTEMPTS, 3);
     assert.equal(JSON.stringify(setting).includes('PANEL_PASSWORD'), false);
     response = await admin('/admin/settings', 'PATCH', {
       MAX_CREDENTIAL_ATTEMPTS: 2,
@@ -639,13 +639,10 @@ test('production Worker: web settings take effect, backups restore state, duplic
       (await (await admin('/admin/settings')).json()).effective.MAX_CREDENTIAL_ATTEMPTS,
       1,
     );
-    response = await mf.dispatchFetch('https://test/v1/models', {
+    response = await mf.dispatchFetch('https://test/geminicli/v1/models', {
       headers: { authorization: 'Bearer api' },
     });
-    assert.deepEqual(
-      (await response.json()).data.map((item) => item.id),
-      ['custom', 'new'],
-    );
+    assert.equal(response.status, 503); // No enabled GeminiCLI credential yet.
     const credential = {
       project_id: 'p',
       token: 'fake-token',
@@ -708,14 +705,11 @@ test('production Worker: web settings take effect, backups restore state, duplic
     response = await mf.dispatchFetch('https://test/antigravity/v1/models', {
       headers: { authorization: 'Bearer api' },
     });
-    assert.equal(response.headers.get('x-model-list-source'), 'fallback');
-    assert.equal((await response.json()).data[0].id, 'fallback-new');
+    assert.equal(response.status, 403); // No manually configured fallback list.
     response = await admin('/admin/settings', 'PATCH', {
       MAX_CREDENTIAL_ATTEMPTS: null,
-      GEMINICLI_MODELS: null,
-      ANTIGRAVITY_MODELS: null,
     });
-    assert.equal((await response.json()).effective.GEMINICLI_MODELS, 'original');
+    assert.equal((await response.json()).effective.MAX_CREDENTIAL_ATTEMPTS, 3);
   } finally {
     await mf.dispose();
   }
@@ -803,6 +797,7 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
       '0006_d1_budget.sql',
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
+      '0009_api_keys.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     for (const [id, mode, token] of [

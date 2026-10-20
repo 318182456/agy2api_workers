@@ -1,3 +1,4 @@
+import { refreshOfficialModels } from './official-models.js';
 import { readShared, publishShared } from './shared-cache.js';
 import { dbCache } from './db-cache.js';
 import { HttpError, modeValue, operation } from './common.js';
@@ -5,61 +6,57 @@ import { parseCredentialData } from './credentials.js';
 import { accountRequest, googleJson } from './account.js';
 import { upstreamOrigin } from './upstream.js';
 
-function configuredModels(env, mode) {
-  return [
-    ...new Set(
-      String((mode === 'antigravity' ? env.ANTIGRAVITY_MODELS : env.GEMINICLI_MODELS) || '')
-        .split(',')
-        .map((id) => id.trim())
-        .filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id)),
-    ),
-  ];
-}
+import { modelCatalog, validModelId as validId, validRoutes } from './model-names.js';
 export function parseModelList(value) {
   const models = value?.models;
   if (!models || typeof models !== 'object' || Array.isArray(models))
     throw new HttpError(502, 'Google 未返回有效的模型列表');
-  // Return upstream model IDs only, without inventing aliases or feature prefixes.
-  return Object.keys(models)
-    .filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id))
-    .sort();
+  return Object.keys(models).filter(validId).sort();
+}
+export function parseCliModels(value) {
+  if (!Array.isArray(value?.buckets))
+    throw new HttpError(502, 'Google 未返回有效的 GeminiCLI 配额信息');
+  return [
+    ...new Set(
+      value.buckets
+        .map((bucket) => bucket?.modelId)
+        .filter((id) => validId(id) && id.startsWith('gemini-')),
+    ),
+  ].sort();
 }
 export async function discoverModels(env, mode, fetcher, options = {}) {
   modeValue(mode);
-  const fallback = configuredModels(env, mode);
-  const queriedAt = new Date().toISOString();
-  if (mode === 'geminicli')
-    return {
-      ids: fallback,
-      source: 'vars',
-      queriedAt,
-      warning: 'GeminiCLI 暂未接入动态模型发现，当前使用 GEMINICLI_MODELS 配置',
-    };
-  if (!options.fresh && env.DB) {
-    const local = dbCache(env.DB).models;
+  if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库，无法动态获取模型');
+  const cacheKey = mode === 'antigravity' ? 'models' : 'cliModels',
+    scope = dbCache(env.DB);
+  const source = mode === 'antigravity' ? 'google' : 'quota';
+  if (!options.fresh) {
+    const local = scope[cacheKey];
     if (local?.until > Date.now()) return { ...structuredClone(local.value), cache: 'memory' };
-    const shared = await readShared(env, 'models:antigravity');
-    const ids = shared?.value?.ids;
+    const shared = await readShared(env, 'models:' + mode),
+      ids = shared?.value?.ids;
     if (
       Array.isArray(ids) &&
       ids.length &&
       ids.length <= 2000 &&
-      ids.every((id) => typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id))
+      ids.every(validId) &&
+      shared.created > Date.now() - 900000
     ) {
       const value = {
         ids,
-        source: 'google',
+        routes: validRoutes(ids, shared.value.routes)
+          ? shared.value.routes
+          : Object.fromEntries(ids.map((id) => [id, id])),
+        source,
         queriedAt: new Date(shared.created).toISOString(),
         warning: null,
         cache: 'kv',
       };
-      dbCache(env.DB).models = { until: Math.min(shared.expires, Date.now() + 60000), value };
+      scope[cacheKey] = { until: Math.min(shared.expires, Date.now() + 60000), value };
       return structuredClone(value);
     }
   }
   try {
-    if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
-    // Discovery must not change credential rotation order or use disabled credentials.
     const stored = await operation('model_discovery', () =>
       env.DB.prepare(
         'SELECT * FROM credentials WHERE mode=? AND disabled=0 ORDER BY last_used, id LIMIT 1',
@@ -67,32 +64,57 @@ export async function discoverModels(env, mode, fetcher, options = {}) {
         .bind(mode)
         .first(),
     );
-    if (!stored) throw new HttpError(503, 'Antigravity 没有已启用的凭证，无法动态获取模型');
+    if (!stored) throw new HttpError(503, mode + ' 没有已启用的凭证，无法动态获取模型');
     const row = { ...stored, data: parseCredentialData(stored.data) };
+    const cli = mode === 'geminicli';
+    if (cli && !row.data.project_id)
+      throw new HttpError(400, 'GeminiCLI 凭证缺少 project_id，请先校验项目');
     const response = await accountRequest(
       env,
       row,
-      upstreamOrigin(env, mode) + '/v1internal:fetchAvailableModels',
-      {},
+      upstreamOrigin(env, mode) +
+        '/v1internal:' +
+        (cli ? 'retrieveUserQuota' : 'fetchAvailableModels'),
+      cli ? { project: row.data.project_id } : {},
       'model_discovery',
       fetcher,
     );
-    const value = await googleJson(response, 'Google 模型列表查询');
-    const result = { ids: parseModelList(value), source: 'google', queriedAt, warning: null };
-    dbCache(env.DB).models = { until: Date.now() + 60000, value: structuredClone(result) };
-    if (options.publish && result.ids.length)
-      await publishShared(env, 'models:antigravity', { ids: result.ids }, 900);
-    return result;
-  } catch (error) {
-    if (!fallback.length) throw error;
-    return {
-      ids: fallback,
-      source: 'fallback',
-      queriedAt,
-      warning:
-        error instanceof HttpError
-          ? `动态查询失败，使用 ANTIGRAVITY_MODELS 备用配置：${error.message}`
-          : '动态查询发生内部异常，使用 ANTIGRAVITY_MODELS 备用配置',
+    const data = await googleJson(response, 'Google 模型列表查询');
+    const rawIds = cli ? parseCliModels(data) : parseModelList(data);
+    const catalog = modelCatalog(rawIds.map((id) => [id, cli ? null : data.models[id]]));
+    const ids = catalog.ids;
+    const reference = await refreshOfficialModels(env, rawIds, fetcher);
+    const officialIds = new Set(reference?.ids || []);
+    const value = {
+      ...catalog,
+      reference: reference
+        ? {
+            source: reference.source,
+            queriedAt: reference.queriedAt,
+            error: reference.error,
+            matched: ids.filter((id) => officialIds.has(id)).length,
+          }
+        : null,
+      source,
+      queriedAt: new Date().toISOString(),
+      warning: cli
+        ? 'GeminiCLI 列表来自 Google 配额中的模型 ID，可能不是完整可用模型清单；未返回的模型仍可由客户端显式指定。'
+        : null,
     };
+    scope[cacheKey] = { until: Date.now() + 60000, value: structuredClone(value) };
+    if (ids.length) {
+      await publishShared(env, 'models:' + mode, catalog, 900);
+      await publishShared(env, 'model-names:' + mode, catalog, 86400);
+    }
+    return value;
+  } catch (error) {
+    const previous = scope[cacheKey]?.value;
+    if (previous?.ids?.length && Date.parse(previous.queriedAt) > Date.now() - 86400000)
+      return {
+        ...structuredClone(previous),
+        source: 'cache',
+        warning: '实时查询失败，展示最近一次动态发现的模型，可能已过期；不代表当前凭证一定可用。',
+      };
+    throw error;
   }
 }

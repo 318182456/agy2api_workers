@@ -66,6 +66,8 @@ export class TelemetryBuffer {
         const row = stored
           ? JSON.parse(stored.payload)
           : {
+              api_key_id: value.api_key_id || null,
+              api_key_name: value.api_key_name || null,
               credential_id: value.credential_id,
               credential_name: value.credential_name,
               mode: value.mode,
@@ -86,6 +88,7 @@ export class TelemetryBuffer {
               last_success: null,
             };
         row.credential_name = value.credential_name;
+        row.api_key_name = value.api_key_name || null;
         row.requests++;
         row[
           value.outcome === 'success'
@@ -177,7 +180,7 @@ export class TelemetryBuffer {
       const payload = JSON.parse(row.payload),
         statements = [
           this.env.DB.prepare(
-            `INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,payload,members)VALUES(?,?,?,?,?,?) ON CONFLICT(bucket_key) DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members WHERE version<excluded.version`,
+            `INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,payload,members,api_key_id)VALUES(?,?,?,?,?,?,?) ON CONFLICT(bucket_key) DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members WHERE version<excluded.version`,
           ).bind(
             row.bucket_key,
             row.version,
@@ -185,6 +188,7 @@ export class TelemetryBuffer {
             payload.credential_id,
             row.payload,
             row.members,
+            payload.api_key_id || null,
           ),
           this.env.DB.prepare(
             `DELETE FROM request_usage WHERE aggregate_key=? AND outcome='success' AND attempts='[]' AND request_id IN (SELECT value FROM json_each(?))`,

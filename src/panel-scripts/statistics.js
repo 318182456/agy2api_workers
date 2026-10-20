@@ -1,6 +1,7 @@
 import { analyticsScript } from '../panel-analytics.js';
 export const statisticsScript = String.raw`function panelFilters(prefix) {
   const params = new URLSearchParams();
+  if (prefix === 'calls' && el('callsScope').value !== 'all') params.set('issues', '1');
   for (const [suffix, key] of [
     ['Email', 'email'],
     ['Model', 'model'],
@@ -71,8 +72,27 @@ async function loadStats(fresh = false) {
     ['有用量报告的请求', (s.token_reports || 0) + ' / ' + s.requests],
     ['平均耗时', duration(s.avg_duration_ms)],
   ]) {
-    const box = document.createElement('div');
+    const box = document.createElement('a');
     box.className = 'metric';
+    bindMetricLink(
+      box,
+      label === '失败 / 取消' ? 'logs' : 'overview',
+      label === '失败 / 取消'
+        ? {
+            scope: 'issues',
+            status: '',
+            model: '',
+            mode: '',
+            request_id: '',
+            email: '',
+            stage: '',
+            credential_id: '',
+            from: '',
+            to: '',
+          }
+        : {},
+      label === '失败 / 取消' ? null : 'statsDetails',
+    );
     const name = document.createElement('small');
     name.textContent = label;
     const number = document.createElement('strong');
@@ -108,24 +128,30 @@ el('statsFlush').onclick = () =>
 el('callsExport').onclick = () =>
   run(async () => {
     const value = await api('/admin/calls/export?' + panelFilters('calls'));
-    downloadJson(value, 'call-logs-' + Date.now() + '.json');
+    downloadJson(value, 'issue-events-' + Date.now() + '.json');
     status('已导出 ' + value.records.length + ' 条日志。');
   });
 el('callsClear').onclick = () => {
-  if (
-    confirm(
-      '确认删除当前筛选匹配的调用日志？没有筛选条件时将删除全部事件日志。用量统计与健康摘要会保留。',
-    )
-  )
+  if (confirm('确认清理当前范围及筛选匹配的问题记录？用量统计与健康摘要会保留。'))
     return run(async () => {
       const value = await api('/admin/calls?' + panelFilters('calls'), 'DELETE', {
         confirm: 'delete-matching-logs',
       });
       await loadCalls();
-      status('已删除 ' + value.deleted + ' 条调用日志，用量统计和健康摘要已保留。');
+      status('已删除 ' + value.deleted + ' 条问题记录，用量统计和健康摘要已保留。');
     });
 };
-for (const suffix of ['Email', 'Model', 'Mode', 'Status', 'Stage', 'Request', 'From', 'To'])
+for (const suffix of [
+  'Scope',
+  'Email',
+  'Model',
+  'Mode',
+  'Status',
+  'Stage',
+  'Request',
+  'From',
+  'To',
+])
   el('calls' + suffix).onchange = () => {
     nextCall = null;
     el('callsNext').hidden = true;

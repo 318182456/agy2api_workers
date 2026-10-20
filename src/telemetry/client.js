@@ -20,6 +20,7 @@ export async function flushTelemetry(env) {
 export async function telemetryPayload(record) {
   const created_at = Math.floor(record.started / 300000) * 300000;
   const group = JSON.stringify([
+    record.apiKey?.id || null,
     record.row?.id || null,
     record.mode,
     record.model,
@@ -36,6 +37,8 @@ export async function telemetryPayload(record) {
   return {
     key: String(created_at).padStart(13, '0') + ':' + hash,
     request_id: record.requestId,
+    api_key_id: record.apiKey?.id || null,
+    api_key_name: record.apiKey?.name || null,
     credential_id: record.row?.id || null,
     credential_name: record.row?.data?.user_email || record.row?.name || '',
     mode: record.mode,

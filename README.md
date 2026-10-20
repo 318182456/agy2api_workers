@@ -46,7 +46,7 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 | Secret | 用途 |
 | --- | --- |
-| `API_PASSWORD` | 客户端 API Key |
+| `API_PASSWORD` | 兼容总密钥，可逐步改用管理页的独立密钥 |
 | `PANEL_PASSWORD` | 管理台登录密码，与 API 密码不同 |
 
 四项 OAuth 客户端配置已直接写入 `wrangler.jsonc` 的 `vars`，与原 Python 项目 `src/utils.py` 使用的值一致，无需部署时重复填写：
@@ -94,7 +94,7 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 ## 接入客户端
 
-下面用 `https://your-worker.example.com` 代表你的 Worker 域名，**API Key 一律填写 `API_PASSWORD`**。
+下面用 `https://your-worker.example.com` 代表你的 Worker 域名，**API Key 可填写管理页创建/导入的独立密钥，或兼容总密钥 `API_PASSWORD`**。
 
 | 接口 | GeminiCLI | Antigravity |
 | --- | --- | --- |
@@ -118,7 +118,9 @@ curl https://your-worker.example.com/v1/chat/completions \
   -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
 
-Antigravity 调用将路径替换为 `/antigravity/v1/chat/completions`，并填写该账号实际可用的模型。`stream: true` 启用 SSE；OpenAI 请求可用 `stream_options: {"include_usage": true}` 获取末尾用量块。
+默认 `/v1/chat/completions` 为统一入口，按模型支持与凭证策略选择 GeminiCLI / Antigravity，所有重试共享 `MAX_CREDENTIAL_ATTEMPTS` 上限。同一个客户端请求只记一次最终用量，内部重试保留实际渠道和账号。模型匹配参考两边已动态发现的模型 ID，专有模型只进入对应渠道；未知模型由 Google 最终校验。
+
+需要固定渠道时使用 `/antigravity/v1/chat/completions` 或 `/geminicli/v1/chat/completions`；对应的 Models、Messages、Gemini 原生接口也支持这两个前缀。统一 `/v1/models` 合并启用渠道的模型列表。收到响应头前的连接/OAuth 故障及 429/500/502/503/504 可在预算内换账号；流开始后或成功响应内容解析失败时不会自动重新生成。`stream: true` 启用 SSE；OpenAI 请求可用 `stream_options: {"include_usage": true}` 获取末尾用量块。
 
 Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用请求头。Anthropic 客户端也可使用 `x-api-key`。
 
@@ -126,26 +128,40 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 | 页面 | 地址 | 主要内容 |
 | --- | --- | --- |
-| 概览 | `/panel/overview` | 请求与用量卡片、每日趋势、模型和账号排行、分页统计明细 |
-| 凭证管理 | `/panel/credentials` | 搜索、启停、优先级和权重、健康详情、批量操作与查重 |
-| 额度总览 | `/panel/quota` | 模型额度卡片、搜索筛选、最低额度排序、账号详情 |
-| 调用日志 | `/panel/logs` | 筛选、分页、JSON 导出、清理匹配事件 |
-| 导入凭证 | `/panel/import` | 单个和多个 JSON、备份恢复 |
-| Google 授权 | `/panel/oauth` | 生成授权链接、回填 URL、保存凭证 |
-| 模型列表 | `/panel/models` | 查询模型 ID，查看实时或备用来源 |
-| 系统设置 | `/panel/settings` | 调度、重试数量、模型列表、流式汇总 |
-| 接口接入 | `/panel/api` | 查看并复制客户端地址 |
+| 概览 | `/panel/overview` | 请求与用量、趋势、排行；点击指标直达详情或筛选账号 |
+| 凭证管理 | `/panel/credentials` | 账号列表、额度总览、文件导入、Google 授权四个页签 |
+| API 密钥 | `/panel/keys` | 创建、导入、查看/复制、改名、启停、删除、可选到期时间与独立用量 |
+| 问题一览 | `/panel/logs` | 失败、取消、重试及恢复事件；筛选、导出和清理 |
+| 系统设置 | `/panel/settings` | 运行参数、模型列表、接口接入三个页签 |
+
+侧栏只保留以上 5 个入口，使用紧凑卡片、表格和工具栏。原 `/panel/import`、`/panel/oauth`、`/panel/quota`、`/panel/models`、`/panel/api` 链接仍可直接打开对应页签。
 
 登录会话保留 7 天，使用 HttpOnly Cookie；退出、修改管理密码或切换域名后需要重新登录。管理接口也支持 `Authorization: Bearer <PANEL_PASSWORD>`，与客户端 API 密码独立。
+
+### API 密钥管理
+
+升级后执行 `npm run db:remote` 应用 `0009_api_keys.sql`。原 `API_PASSWORD` 继续作为兼容总密钥使用；独立密钥通过 D1 校验，停用、到期、删除会拒绝后续请求，不中断已经开始的生成。所有现有 OpenAI、Anthropic、Gemini 接口都支持独立密钥；密钥不能用于管理接口。
+
+在 **API 密钥** 页为每个项目创建独立密钥，密钥默认永久有效，到期时间可留空；服务在 D1 保存完整密钥及用于鉴权的 SHA-256 摘要，管理员可在列表中重新查看、复制或隐藏密钥。支持导入完整密钥文本（每行一个）和 JSON，单次最多 200 个；重复项跳过，不覆盖名称、到期时间或停用状态。示例 JSON：
+
+```json
+[{"name":"MoviePilot","key":"sk-your-existing-full-key"}]
+```
+
+迁移 New API 时选择 **New API** 格式：支持令牌对象数组、`data` 数组、`data.items` 和单个令牌对象；读取 `key`、`name`、`status`、`expired_time`，没有 `sk-` 前缀时自动补全。列表 API 返回的脱敏密钥不能导入，需要获取完整令牌。`status=1` 启用，其他状态停用；`expired_time=-1` 永不过期，其余为 Unix 秒时间戳。字段依据 [New API 令牌模型](https://github.com/QuantumNous/new-api/blob/main/model/token.go)。
+
+原密钥值可继续使用，客户端 Base URL 仍须指向本服务。导入不会连接 New API，也不会继承其余额、计费、分组、模型权限、IP 限制或历史用量。独立密钥共享本服务的凭证池和模型权限。
+
+每个密钥可查看最近 24 小时、7 天、30 天的请求、成功/失败/取消、Token、模型与日期统计。统计沿用 DO 持久聚合，不逐请求更新密钥表或写 KV；聚合桶按密钥区分，包含尚未落盘的数据。升级前的记录保持未归属，不推测历史密钥；删除密钥仍保留全局统计，通过原 ID 的 `/admin/stats?api_key_id=...` 可查询保留期内的历史用量。
 
 ### 统计和额度口径
 
 - **请求统计**按一次客户端生成请求的最终结果记录，内部重试不重复计数；额度查询、模型发现和管理页测试调用不计入该统计。
 - **Token**仅采用上游实际报告值，缺失显示“未报告”，不会用本地估算补齐。账号消耗排行仅比较已报告的总 Token。
 - **统计保留**：聚合模式保留最近 30 天完整汇总，明细模式保留最近 30 天且最多约 10000 次请求；默认展示最近 7 天，日期按北京时间分组。模型和账号分组最多各 200 项。
-- **额度**仅支持 Antigravity，手动逐账号查询，可停止后续查询；不会发起聊天，也不会后台定时轮询。
+- **额度**支持 Antigravity 与 GeminiCLI，分别查询和展示；GeminiCLI 使用官方客户端的 `retrieveUserQuota` 请求，保留可用数量、配额类型及重置时间，不按会员档位估算缺失数据。手动逐账号查询，可停止后续查询，不发起聊天，不后台轮询。GeminiCLI 在总览中按账号/配额项展示，避免将不同额度池合并。
 - **平均与最低额度**仅计算成功返回数值的账号。失败、未查询、未返回该模型和未知比例不计入均值，未知不等于零；比例不能相加为余额或换算成调用次数。
-- **调用日志**保留 7 天，最多展示最近约 2000 次异常请求及旧版独立事件；聚合模式只保存失败、取消和重试明细，正常成功请求只计入汇总。清理日志不会删除用量统计和健康摘要。
+- **问题一览**保留 7 天，最多展示最近约 2000 次异常请求及旧版独立事件；聚合模式只保存失败、取消和重试明细，正常成功请求只计入汇总。清理日志不会删除用量统计和健康摘要。
 
 ## 配置说明
 
@@ -153,8 +169,6 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `GEMINICLI_MODELS` | `gemini-2.5-flash,gemini-2.5-pro` | GeminiCLI 对外模型列表，英文逗号分隔 |
-| `ANTIGRAVITY_MODELS` | `gemini-2.5-flash,gemini-2.5-pro` | Antigravity 动态模型查询失败时的备用列表 |
 | `MAX_CREDENTIAL_ATTEMPTS` | `3` | 一次生成请求最多尝试的凭证数，范围 1–5 |
 | `CREDENTIAL_SELECTION` | `round_robin` | `round_robin` 轮询、`priority` 优先级或 `weighted` 权重随机 |
 | `ANTIGRAVITY_STREAM2NOSTREAM` | `false` | 将 Antigravity 上游 SSE 汇总为普通 JSON 响应 |
@@ -162,7 +176,7 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 上述配置可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
 
-Antigravity 模型列表优先实时查询 Google，失败时才使用备用列表；GeminiCLI 使用配置列表。模型被列出不代表账号一定有权限或剩余额度。
+Antigravity 模型列表从 Google 动态查询；GeminiCLI 从 Google 配额返回的 `modelId` 动态获取，可能不是完整清单。两种模型变量及手工列表已移除。结果在内存缓存 60 秒，管理员查询会发布到 KV；实时查询失败时仅可展示最近 24 小时内的历史动态记录，并明确标记过期风险，没有记录则返回查询失败。模型被列出不代表账号一定有权限或剩余额度。
 
 ## 手动部署
 
@@ -198,7 +212,7 @@ npm run deploy
 
 更新前保留自己账号的 Worker 名称与 D1 配置。通过部署按钮生成的仓库是你自己的副本，不会自动接收本仓库的更新；同步代码时不要覆盖数据库 ID 或删除已有 Secrets。
 
-若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.15.0**。
+若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.16.0**。
 
 ## 存储与写入控制
 
@@ -298,3 +312,11 @@ npm run check
 - `test/`：协议、真实运行时、页面、持久聚合及 D1 成本回归；fixture 不包含真实账号。
 
 修改代码后运行 `npm run format`、`npm test`、`npm run format:check` 和 `npm run check`。最后一项只打包，不创建资源、不迁移远程数据库、不发布。
+
+### 自动模型名称与官网参考
+
+模型清单来自账号实时接口，不依赖环境变量中的模型名称表。已有版本号的模型 ID 保留完整后缀；不含版本号的 Gemini 内部 ID，在上游 `displayName` 提供明确的英文型号及版本时，自动生成通用名称，并在请求 Google 时还原为渠道真实 ID。同一渠道存在命名冲突时保留原始 ID，不合并不同模型。未知或不明确的名称保持原样。
+
+仅在获取账号模型列表时发现此前未见过的模型 ID，才查询一次 [Google 官方模型目录](https://ai.google.dev/gemini-api/docs/models?hl=en)，提取官方模型代码和已见模型 ID 存入 `CACHE` KV，保留一年；相同 ID 不重复查询，不再每日同步。查询失败也记录已见 ID，并沿用已有参考和上游名称，不影响生成请求。官网目录与[发布记录](https://ai.google.dev/gemini-api/docs/changelog?hl=en)作为参考，不能代替 GeminiCLI/Antigravity 的账号资格及渠道 ID，不能从版本说明推测内部 ID。官网页面格式变化时同步会告警，动态账号模型发现仍继续工作。
+
+模型清单的 KV 缓存为 15 分钟，通用名称到渠道 ID 的映射缓存为 24 小时，冷启动可复用；正常生成请求不抓官网、不写模型缓存。没有配置 KV 时仅使用当前实例内存，跨实例的名称映射需要重新发现模型。

@@ -15,6 +15,7 @@ import { effectiveEnv, readSettings, saveSettings } from '../settings.js';
 import { duplicateCredentials } from '../duplicates.js';
 import { authenticatePanel } from '../session.js';
 import { flushTelemetry } from '../telemetry/client.js';
+import { apiKeysRoute } from '../api-keys.js';
 
 export async function adminRoute(request, env, fetcher) {
   const url = new URL(request.url);
@@ -29,6 +30,8 @@ export async function adminRoute(request, env, fetcher) {
       ),
     );
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
+  if (url.pathname === '/admin/api-keys' || url.pathname.startsWith('/admin/api-keys/'))
+    return apiKeysRoute(request, env, url);
   if (url.pathname === '/admin/telemetry/flush' && request.method === 'POST')
     return json(await flushTelemetry(env));
   if (url.pathname === '/admin/settings') {
@@ -80,7 +83,10 @@ export async function adminRoute(request, env, fetcher) {
       throw new HttpError(405, '请求方法不支持');
     const row = await credentialById(env.DB, accountMatch[1]);
     if (action === 'email') return json(await fetchEmail(env, row, fetcher));
-    if (action === 'verify') return json(await verifyProject(env, row, fetcher));
+    if (action === 'verify')
+      return json(
+        await verifyProject(env, row, fetcher, request.body ? await readJson(request) : {}),
+      );
     if (action === 'test')
       return json(
         await testCredential(

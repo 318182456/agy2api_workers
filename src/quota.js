@@ -1,5 +1,6 @@
 import { HttpError, googleFetch, operation } from './common.js';
 import { accessToken, parseCredentialData } from './credentials.js';
+import { modelCatalog } from './model-names.js';
 import { upstreamOrigin } from './upstream.js';
 
 export function normalizeQuota(value) {
@@ -7,7 +8,10 @@ export function normalizeQuota(value) {
   if (!source || typeof source !== 'object' || Array.isArray(source)) {
     throw new HttpError(502, 'Google 未返回有效的模型额度信息');
   }
-  return Object.entries(source).map(([id, model]) => {
+  const names = modelCatalog(Object.entries(source));
+  const publicIds = new Map(Object.entries(names.routes).map(([name, raw]) => [raw, name]));
+  return Object.entries(source).map(([rawId, model]) => {
+    const id = publicIds.get(rawId) || rawId;
     const quota = model?.quotaInfo;
     const fraction = quota?.remainingFraction;
     // Missing, null and malformed values do not imply a zero balance.
@@ -22,21 +26,54 @@ export function normalizeQuota(value) {
   });
 }
 
+// Gemini CLI reports quota buckets rather than Antigravity's model map.
+// Keep missing fractions/counts unknown; do not derive a total allowance from them.
+export function normalizeGeminiCliQuota(value) {
+  if (!Array.isArray(value?.buckets))
+    throw new HttpError(502, 'Google 未返回有效的 GeminiCLI 配额信息');
+  return value.buckets.map((bucket, index) => {
+    const fraction = bucket?.remainingFraction,
+      reset = bucket?.resetTime;
+    const amount = bucket?.remainingAmount;
+    return {
+      id:
+        typeof bucket?.modelId === 'string' && bucket.modelId.trim()
+          ? bucket.modelId.slice(0, 200)
+          : '共享配额',
+      remaining:
+        typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+          ? fraction
+          : null,
+      resetTime: typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? reset : null,
+      remainingAmount:
+        typeof amount === 'string' && /^\d{1,30}$/.test(amount)
+          ? amount
+          : Number.isSafeInteger(amount) && amount >= 0
+            ? String(amount)
+            : null,
+      tokenType: typeof bucket?.tokenType === 'string' ? bucket.tokenType.slice(0, 100) : null,
+      bucketIndex: index,
+    };
+  });
+}
+
 export async function credentialQuota(env, id, fetcher = fetch) {
   const row = await operation('credential_read', () =>
     env.DB.prepare('SELECT * FROM credentials WHERE id=?').bind(id).first(),
   );
   if (!row) throw new HttpError(404, '凭证不存在');
-  if (row.mode !== 'antigravity')
-    throw new HttpError(400, '额度查询仅支持 Antigravity 凭证，GeminiCLI 暂不支持');
+  if (!['antigravity', 'geminicli'].includes(row.mode)) throw new HttpError(400, '未知凭证渠道');
   row.data = parseCredentialData(row.data);
   const origin = upstreamOrigin(env, row.mode);
+  const cli = row.mode === 'geminicli';
+  if (cli && (typeof row.data.project_id !== 'string' || !row.data.project_id.trim()))
+    throw new HttpError(400, 'GeminiCLI 凭证缺少 project_id，请先校验项目');
   let token = await operation('oauth_refresh', () => accessToken(env.DB, row, fetcher, false, env));
   const signal = AbortSignal.timeout(30000);
   const send = () =>
     googleFetch(
       fetcher,
-      `${origin}/v1internal:fetchAvailableModels`,
+      `${origin}/v1internal:${cli ? 'retrieveUserQuota' : 'fetchAvailableModels'}`,
       {
         method: 'POST',
         redirect: 'manual',
@@ -44,9 +81,9 @@ export async function credentialQuota(env, id, fetcher = fetch) {
         headers: {
           authorization: `Bearer ${token}`,
           'content-type': 'application/json',
-          'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
+          'user-agent': cli ? 'GeminiCLI' : 'antigravity/hub/2.23.1 darwin/arm64',
         },
-        body: '{}',
+        body: cli ? JSON.stringify({ project: row.data.project_id }) : '{}',
       },
       'quota_fetch',
     );
@@ -81,6 +118,6 @@ export async function credentialQuota(env, id, fetcher = fetch) {
     credentialId: id,
     mode: row.mode,
     queriedAt: new Date().toISOString(),
-    models: normalizeQuota(value),
+    models: cli ? normalizeGeminiCliQuota(value) : normalizeQuota(value),
   };
 }

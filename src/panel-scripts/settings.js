@@ -2,8 +2,6 @@ export const settingsScript = String.raw`function fillSettings(value) {
   el('settingsStorage').value = value.effective.USAGE_STORAGE_MODE || 'aggregate';
   el('settingsStrategy').value = value.effective.CREDENTIAL_SELECTION;
   el('settingsAttempts').value = value.effective.MAX_CREDENTIAL_ATTEMPTS;
-  el('settingsCliModels').value = value.effective.GEMINICLI_MODELS;
-  el('settingsAntiModels').value = value.effective.ANTIGRAVITY_MODELS;
   el('settingsCollect').checked = value.effective.ANTIGRAVITY_STREAM2NOSTREAM;
   settingsLoaded = true;
 }
@@ -22,8 +20,6 @@ el('settingsForm').onsubmit = (event) => {
         CREDENTIAL_SELECTION: el('settingsStrategy').value,
         ANTIGRAVITY_STREAM2NOSTREAM: el('settingsCollect').checked,
         MAX_CREDENTIAL_ATTEMPTS: Number(el('settingsAttempts').value),
-        GEMINICLI_MODELS: el('settingsCliModels').value,
-        ANTIGRAVITY_MODELS: el('settingsAntiModels').value,
       }),
     );
     status('配置已保存，新的调用立即生效。');
@@ -37,8 +33,6 @@ el('settingsReset').onclick = () =>
         CREDENTIAL_SELECTION: null,
         ANTIGRAVITY_STREAM2NOSTREAM: null,
         MAX_CREDENTIAL_ATTEMPTS: null,
-        GEMINICLI_MODELS: null,
-        ANTIGRAVITY_MODELS: null,
       }),
     );
     status('已恢复使用 vars 中的配置。');

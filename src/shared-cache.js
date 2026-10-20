@@ -1,4 +1,4 @@
-// KV contains only settings and model IDs. Telemetry/tokens are never written here.
+// KV contains only settings and public model metadata. Telemetry/tokens are never written here.
 async function cacheKey(env, name) {
   const scope = JSON.stringify([
     env.CACHE_SCOPE || '',
@@ -28,7 +28,7 @@ export async function readShared(env, name) {
     return null;
   }
 }
-// Called only for an explicit settings save/model refresh or the hourly warmer.
+// Low-frequency settings/catalog publication only; never called by per-request telemetry.
 export async function publishShared(env, name, value, ttl) {
   if (!env.CACHE?.put) return false;
   try {
