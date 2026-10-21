@@ -132,7 +132,9 @@ async function loadStorageNodes(fresh = false) {
       ({
         ready:
           row.id === value.active_node_id
-            ? '使用中 · 缓存节点'
+            ? row.usage?.available && row.usage.today.requests === 0
+              ? '当前值班 · 尚无缓存流量'
+              : '当前值班 · 缓存调度目标'
             : row.activated_at > Math.floor(Date.now() / 3600000) * 3600000
               ? '已接入 · 下个整点参与'
               : '已接入 · 等待轮换',
@@ -188,7 +190,8 @@ async function loadStorageNodes(fresh = false) {
         formatReset(data.sampled_at);
     } else usage.textContent = row.usage?.reason || '尚未采集';
     const checked = document.createElement('td');
-    checked.textContent = formatReset(row.checked_at);
+    checked.textContent = formatReset(row.usage?.available ? row.usage.sampled_at : row.checked_at);
+    checked.title = '最近连接检查：' + formatReset(row.checked_at);
     const actions = document.createElement('td');
     actions.className = 'actions';
     if (row.url) {
@@ -261,6 +264,25 @@ async function loadStorageNodes(fresh = false) {
   }
 }
 el('storageRefresh').onclick = () => run(() => loadStorageNodes(true));
+async function refreshVisibleStorage() {
+  if (
+    busy ||
+    currentSection !== 'storage' ||
+    el('workspace').hidden ||
+    document.visibilityState !== 'visible'
+  )
+    return;
+  await run(() => loadStorageNodes());
+}
+if (typeof setInterval === 'function')
+  setInterval(() => {
+    void refreshVisibleStorage();
+  }, 30000);
+if (typeof document.addEventListener === 'function')
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') void refreshVisibleStorage();
+  });
+
 el('storageForm').onsubmit = (event) => {
   event.preventDefault();
   return run(async () => {
