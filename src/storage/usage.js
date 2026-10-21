@@ -68,3 +68,56 @@ export async function nodeUsage(env, row, fetcher = fetch, fresh = false) {
   cache.nodeUsage.set(key, { until: Date.now() + 30000, value });
   return value;
 }
+
+export async function primaryUsage(env, fresh = false) {
+  if (!env.TELEMETRY) return { available: false, reason: '未绑定主节点 TELEMETRY DO' };
+  const cache = dbCache(env.DB),
+    previous = cache.primaryNodeUsage;
+  if (!fresh && previous?.until > Date.now()) return { ...previous.value, cached: true };
+  let value;
+  try {
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const response = await stub.fetch('https://telemetry/node-usage' + (fresh ? '?fresh=1' : ''));
+    if (!response.ok) throw new Error('main DO unavailable');
+    const data = await response.json();
+    const fields = [
+      'today_requests',
+      'pending_buckets',
+      'pending_requests',
+      'buffer_buckets',
+      'buffer_bytes',
+      'quota_entries',
+      'quota_bytes',
+      'history_bytes',
+    ];
+    if (
+      data.available !== true ||
+      data.kind !== 'primary' ||
+      fields.some((field) => !Number.isSafeInteger(data[field]) || data[field] < 0) ||
+      !Number.isFinite(data.sampled_at) ||
+      !Number.isFinite(data.activity?.started_at) ||
+      ['requests', 'reads', 'writes', 'errors'].some(
+        (field) => !Number.isSafeInteger(data.activity[field]) || data.activity[field] < 0,
+      )
+    )
+      throw new Error('invalid primary metrics');
+    value = {
+      available: true,
+      kind: 'primary',
+      ...Object.fromEntries(fields.map((key) => [key, data[key]])),
+      sampled_at: data.sampled_at,
+      history_synced_at: Number.isFinite(data.history_synced_at) ? data.history_synced_at : null,
+      next_flush_at: Number.isFinite(data.next_flush_at) ? data.next_flush_at : null,
+      activity: Object.fromEntries(
+        ['started_at', 'requests', 'reads', 'writes', 'errors', 'last_activity'].map((key) => [
+          key,
+          data.activity[key] ?? null,
+        ]),
+      ),
+    };
+  } catch {
+    value = { available: false, reason: '主节点用量暂时不可读，请稍后刷新' };
+  }
+  cache.primaryNodeUsage = { until: Date.now() + 30000, value };
+  return value;
+}

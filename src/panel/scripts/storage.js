@@ -24,6 +24,75 @@ function editStorageToken(row) {
   );
 }
 el('storageCancel').onclick = resetStorageForm;
+function renderPrimaryStorageNode(row) {
+  const tr = document.createElement('tr');
+  const text = (value) => {
+    const td = document.createElement('td');
+    td.textContent = value;
+    return td;
+  };
+  const name = text(row.name),
+    entry = document.createElement('td'),
+    link = document.createElement('a');
+  link.href = row.url + '/panel/overview';
+  link.textContent = new URL(row.url).hostname;
+  entry.append(link);
+  const usage = document.createElement('td'),
+    data = row.usage;
+  const bytes = (n) =>
+    n < 1024
+      ? n + ' B'
+      : n < 1048576
+        ? (n / 1024).toFixed(1) + ' KB'
+        : (n / 1048576).toFixed(2) + ' MB';
+  if (data?.available) {
+    const lines = [
+      '今日接收用量 ' + data.today_requests.toLocaleString() + ' 次',
+      '待落盘 ' + data.pending_requests.toLocaleString() + ' 次 / ' + data.pending_buckets + ' 桶',
+      '用量缓冲 ' + data.buffer_buckets + ' 桶 · ' + bytes(data.buffer_bytes),
+      '额度缓存 ' +
+        data.quota_entries +
+        ' 条 · ' +
+        bytes(data.quota_bytes) +
+        '；历史快照 ' +
+        bytes(data.history_bytes),
+      '本次实例接口读/写 ' +
+        data.activity.reads.toLocaleString() +
+        '/' +
+        data.activity.writes.toLocaleString() +
+        ' · 错误 ' +
+        data.activity.errors,
+      '历史同步：' + formatReset(data.history_synced_at),
+    ];
+    for (const line of lines) {
+      const div = document.createElement('div');
+      div.textContent = line;
+      usage.append(div);
+    }
+    usage.title =
+      '接口计数起始：' +
+      formatReset(data.activity.started_at) +
+      '；最近使用：' +
+      formatReset(data.activity.last_activity) +
+      '；下次落盘：' +
+      formatReset(data.next_flush_at);
+  } else usage.textContent = data?.reason || '尚未采集';
+  const actions = document.createElement('td'),
+    overview = document.createElement('a');
+  overview.href = '/panel/overview';
+  overview.textContent = '用量概览';
+  actions.append(overview);
+  tr.append(
+    name,
+    entry,
+    text('主账号配置'),
+    text('固定主节点 · 用量计数 / D1 落盘'),
+    usage,
+    text(formatReset(data?.sampled_at)),
+    actions,
+  );
+  return tr;
+}
 async function loadStorageNodes(fresh = false) {
   const value = await api('/admin/storage-nodes' + (fresh ? '?usage_fresh=1' : ''));
   const nextNode = value.nodes.find((node) => node.id === value.next_node_id);
@@ -31,6 +100,7 @@ async function loadStorageNodes(fresh = false) {
     ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
     : '当前没有可用缓存节点，使用主号缓存。';
   el('storageNodes').replaceChildren();
+  if (value.primary_node) el('storageNodes').append(renderPrimaryStorageNode(value.primary_node));
   for (const row of value.nodes) {
     const tr = document.createElement('tr');
     const account = document.createElement('td');
@@ -181,7 +251,7 @@ async function loadStorageNodes(fresh = false) {
     tr.append(account, worker, savedToken, state, usage, checked, actions);
     el('storageNodes').append(tr);
   }
-  if (!value.nodes.length) {
+  if (!value.nodes.length && !value.primary_node) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
     td.colSpan = 7;

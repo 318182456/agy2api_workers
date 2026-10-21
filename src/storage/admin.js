@@ -1,4 +1,4 @@
-import { nodeUsage } from './usage.js';
+import { nodeUsage, primaryUsage } from './usage.js';
 import { nodeSchedule } from './client.js';
 import { HttpError, json, readJson } from '../core/common.js';
 import { storageNodeSource, storagePagesSource } from './node-worker.js';
@@ -15,47 +15,109 @@ function failure(message, status = 400) {
   error.operation = 'storage_node';
   return error;
 }
+function cloudflareOperation(path, method = 'GET') {
+  if (path.includes('/pages/projects')) {
+    if (path.includes('/deployments/')) return 'Pages 发布进度查询';
+    if (path.endsWith('/deployments')) return 'Pages 发布';
+    return method === 'POST'
+      ? 'Pages 项目创建'
+      : method === 'PATCH'
+        ? 'Pages 配置更新'
+        : 'Pages 配置读取';
+  }
+  if (path.endsWith('/settings')) return 'Worker 配置读取';
+  if (path.includes('/workers/scripts/')) return 'Worker 上传';
+  return path.startsWith('/accounts?') ? '账号列表读取' : '账号校验';
+}
 async function cloudflare(fetcher, token, path, options = {}, allowMissing = false) {
-  let response;
-  try {
-    response = await fetcher('https://api.cloudflare.com/client/v4' + path, {
-      ...options,
-      headers: { authorization: 'Bearer ' + token, ...options.headers },
-      signal: AbortSignal.timeout(15000),
-      redirect: 'manual',
-    });
-  } catch {
-    throw failure('Cloudflare API 连接失败或超时；可重新提交，已创建资源会复用', 502);
-  }
-  if (allowMissing && response.status === 404) {
-    await response.body?.cancel();
-    return null;
-  }
-  let value;
-  try {
-    value = await response.json();
-  } catch {
-    throw failure('Cloudflare API 返回无效响应', 502);
-  }
-  if (!response.ok || value.success !== true) {
-    if ([401, 403].includes(response.status))
+  const { retryPermissionOnce = false, ...init } = options;
+  const operation = cloudflareOperation(path, init.method);
+  let response, value;
+  for (let attempt = 0; attempt < (retryPermissionOnce ? 2 : 1); attempt++) {
+    try {
+      response = await fetcher('https://api.cloudflare.com/client/v4' + path, {
+        ...init,
+        headers: { authorization: 'Bearer ' + token, ...init.headers },
+        signal: AbortSignal.timeout(15000),
+        redirect: 'manual',
+      });
+    } catch {
       throw failure(
-        'Cloudflare Token 无效或权限不足，请检查账号访问、Workers Scripts 编辑和 Cloudflare Pages 编辑权限',
-      );
-    if (response.status === 429) throw failure('Cloudflare API 触发限流，请稍后重试', 503);
-    if (Number(value.errors?.[0]?.code) === 10021)
-      throw failure(
-        'Cloudflare 节点脚本启动校验失败（10021）；请更新主服务后重试部署，现有节点记录可复用',
+        'Cloudflare API 连接失败或超时（操作：' + operation + '）；已创建资源会复用',
         502,
       );
-    throw failure(
-      'Cloudflare 操作失败（HTTP ' +
-        response.status +
-        '，错误码 ' +
-        (Number(value.errors?.[0]?.code) || '未知') +
-        '）',
-      502,
+    }
+    if (allowMissing && response.status === 404) {
+      await response.body?.cancel();
+      return null;
+    }
+    try {
+      value = await response.json();
+    } catch {
+      throw failure(
+        'Cloudflare API 返回无效响应（操作：' + operation + '，HTTP ' + response.status + '）',
+        502,
+      );
+    }
+    // Only the first upload of a new Worker may retry one generic 403. This is bounded;
+    // invalid tokens (401), permission-specific errors and other writes are never retried here.
+    if (!(
+      retryPermissionOnce &&
+      attempt === 0 &&
+      response.status === 403 &&
+      Number(value.errors?.[0]?.code) === 10000
+    ))
+      break;
+    console.warn(
+      JSON.stringify({
+        event: 'storage_node_initial_upload_retry',
+        operation: 'worker_upload',
+        status: 403,
+        code: 10000,
+      }),
     );
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  if (!response.ok || value.success !== true) {
+    const code = Number(value.errors?.[0]?.code) || '未知';
+    const ray = response.headers.get('cf-ray') || '';
+    const trace = /^[a-f0-9]{16,32}-[a-z]{3}$/i.test(ray) ? '，Ray ID：' + ray : '';
+    const details =
+      '（操作：' + operation + '，HTTP ' + response.status + '，错误码 ' + code + trace + '）';
+    console.warn(
+      JSON.stringify({
+        event: 'storage_node_cloudflare_failed',
+        operation,
+        status: response.status,
+        code,
+      }),
+    );
+    if ([401, 403].includes(response.status)) {
+      const permission = path.includes('/pages/')
+        ? 'Cloudflare Pages 编辑'
+        : path.includes('/workers/')
+          ? 'Workers Scripts 编辑'
+          : 'Account Settings 读取及目标账号资源';
+      throw failure(
+        response.status === 401
+          ? 'Cloudflare 鉴权失败' + details + '；请确认 Token 未过期或撤销'
+          : 'Cloudflare 拒绝此操作' +
+              details +
+              '；请检查 ' +
+              permission +
+              ' 权限和新账号 Workers / Pages 初始化状态',
+      );
+    }
+    if (response.status === 429)
+      throw failure('Cloudflare API 触发限流' + details + '，请稍后重试', 503);
+    if (code === 10021)
+      throw failure(
+        'Cloudflare 节点脚本启动校验失败（10021）' +
+          details +
+          '；请更新主服务后重试部署，现有节点记录可复用',
+        502,
+      );
+    throw failure('Cloudflare 操作失败' + details, 502);
   }
   return value.result;
 }
@@ -280,22 +342,20 @@ async function create(env, input, fetcher) {
     // Query existing settings before retrying an upload whose acknowledgement may have been lost.
     let exists = !!row.deployed;
     if (!exists) {
-      const response = await fetcher(
-        'https://api.cloudflare.com/client/v4' + base + '/scripts/' + row.worker_name + '/settings',
-        {
-          headers: { authorization: 'Bearer ' + token },
-          redirect: 'manual',
-          signal: AbortSignal.timeout(15000),
-        },
+      const state = await cloudflare(
+        fetcher,
+        token,
+        base + '/scripts/' + row.worker_name + '/settings',
+        {},
+        true,
       );
-      if (response.ok) {
-        const state = await response.json();
-        const bindings = state.result?.bindings || [];
-        if (!bindings.some((binding) => binding.name === 'NODE_ID' && binding.text === row.id))
+      if (state) {
+        if (
+          !state.bindings?.some((binding) => binding.name === 'NODE_ID' && binding.text === row.id)
+        )
           throw failure('目标 Worker 名称已存在且不属于此节点，已停止覆盖');
         exists = true;
-      } else if (response.status !== 404)
-        throw failure('无法确认现有 Worker 状态，请检查 Token 权限后重试');
+      }
     }
     const metadata = {
       main_module: 'index.js',
@@ -320,6 +380,7 @@ async function create(env, input, fetcher) {
       'index.js',
     );
     await cloudflare(fetcher, token, base + '/scripts/' + row.worker_name, {
+      retryPermissionOnce: !exists,
       method: 'PUT',
       body: form,
     });
@@ -464,6 +525,13 @@ export async function storageNodesRoute(request, env, url, fetcher) {
         .sort((a, b) => a.id.localeCompare(b.id));
       const schedule = nodeSchedule(eligible);
       return json({
+        primary_node: {
+          id: 'primary',
+          kind: 'primary',
+          name: '主节点（当前账号）',
+          url: url.origin,
+          usage: await primaryUsage(env, url.searchParams.get('usage_fresh') === '1'),
+        },
         nodes,
         rotation_enabled: !!eligible.length,
         active_node_id: schedule.current?.id || null,

@@ -50,6 +50,7 @@ function cloudMock(options = {}) {
   let pages;
   const namespace = 'c'.repeat(32);
   let probeFailed = false;
+  let uploadAttempts = 0;
   const fetcher = async (url, init = {}) => {
     const path = new URL(url).pathname;
     calls.push({ path, method: init.method || 'GET' });
@@ -121,6 +122,13 @@ function cloudMock(options = {}) {
         return Response.json({ success: true, result: pages });
       }
       if (init.method === 'PUT' && path.includes('/scripts/')) {
+        uploadAttempts++;
+        if (options.uploadDenied || (options.firstUploadDenied && uploadAttempts === 1))
+          return Response.json(
+            { success: false, errors: [{ code: 10000, message: token }] },
+            { status: options.uploadStatus || 403, headers: { 'cf-ray': '0123456789abcdef-HKG' } },
+          );
+
         metadata = JSON.parse(await init.body.get('metadata').text());
         assert.equal(await init.body.get('index.js').text(), storageNodeSource);
         assert.ok(!JSON.stringify(metadata).includes(options.token || token));
@@ -1017,3 +1025,109 @@ test('node usage checkpoints survive a Durable Object restart without counting t
     await mf.dispose();
   }
 });
+
+test('primary node appears separately from rotating children and cannot be removed', () =>
+  database(async (env) => {
+    let response = await handleRequest(request(), env, async () => {
+      throw Error('No public node fetch expected');
+    });
+    let value = await response.json();
+    assert.equal(value.nodes.length, 0);
+    assert.equal(value.primary_node.id, 'primary');
+    assert.equal(value.primary_node.usage.available, false);
+    assert.equal(value.active_node_id, null);
+    let calls = 0;
+    env.TELEMETRY = {
+      idFromName: () => '',
+      get: () => ({
+        fetch: async () => {
+          calls++;
+          return Response.json({
+            available: true,
+            kind: 'primary',
+            today_requests: 11,
+            pending_buckets: 1,
+            pending_requests: 2,
+            buffer_buckets: 4,
+            buffer_bytes: 200,
+            quota_entries: 3,
+            quota_bytes: 100,
+            history_bytes: 300,
+            sampled_at: Date.now(),
+            activity: { started_at: Date.now(), requests: 12, reads: 5, writes: 7, errors: 0 },
+            node_secret: 'must-not-return',
+          });
+        },
+      }),
+    };
+    response = await handleRequest(request('?usage_fresh=1'), env, async () => {
+      throw Error('No public node fetch expected');
+    });
+    value = await response.json();
+    assert.equal(value.primary_node.usage.available, true);
+    assert.equal(value.primary_node.usage.today_requests, 11);
+    assert.equal(value.nodes.length, 0);
+    assert.equal(value.next_node_id, null);
+    assert.ok(!JSON.stringify(value).includes('must-not-return'));
+    assert.equal(calls, 1);
+    response = await handleRequest(request('/primary', 'DELETE'), env);
+    assert.equal(response.status, 404);
+  }));
+
+test('new Worker upload retries one generic 403 and surfaces precise permanent failures without exposing secrets', () =>
+  database(async (env) => {
+    const recovering = cloudMock({ firstUploadDenied: true });
+    let response = await handleRequest(
+      request('', 'POST', { email: 'cf@example.test', token }),
+      env,
+      recovering.fetcher,
+    );
+    assert.equal(response.status, 201, await response.clone().text());
+    assert.equal(
+      recovering.calls.filter((call) => call.method === 'PUT' && call.path.includes('/scripts/'))
+        .length,
+      2,
+    );
+    const node = (await response.json()).node;
+    const denied = cloudMock({ uploadDenied: true });
+    response = await handleRequest(request('/' + node.id + '/deploy', 'POST'), env, denied.fetcher);
+    assert.equal(response.status, 400);
+    const text = await response.text();
+    assert.match(text, /Worker 上传.*HTTP 403.*10000.*0123456789abcdef-HKG/);
+    assert.ok(!text.includes(token));
+    assert.equal(
+      denied.calls.filter((call) => call.method === 'PUT' && call.path.includes('/scripts/'))
+        .length,
+      1,
+    );
+  }));
+
+test('permanent new-worker 403 stops after two attempts and invalid-token 401 is never retried', () =>
+  database(async (env) => {
+    const denied = cloudMock({ uploadDenied: true });
+    let response = await handleRequest(
+      request('', 'POST', { email: 'cf@example.test', token }),
+      env,
+      denied.fetcher,
+    );
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error.message, /Worker 上传.*HTTP 403.*10000/);
+    assert.equal(
+      denied.calls.filter((call) => call.method === 'PUT' && call.path.includes('/scripts/'))
+        .length,
+      2,
+    );
+    const invalid = cloudMock({ uploadDenied: true, uploadStatus: 401 });
+    response = await handleRequest(
+      request('', 'POST', { email: 'cf@example.test', token }),
+      env,
+      invalid.fetcher,
+    );
+    assert.equal(response.status, 400);
+    assert.match((await response.json()).error.message, /鉴权失败.*HTTP 401/);
+    assert.equal(
+      invalid.calls.filter((call) => call.method === 'PUT' && call.path.includes('/scripts/'))
+        .length,
+      1,
+    );
+  }));

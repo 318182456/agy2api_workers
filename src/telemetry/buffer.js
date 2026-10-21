@@ -1,3 +1,4 @@
+import { primaryNodeSnapshot } from './node-usage.js';
 import { StatsHistory } from './history.js';
 import { HttpError } from '../core/common.js';
 const WINDOW = 300000;
@@ -17,6 +18,14 @@ export class TelemetryBuffer {
     this.env = env;
     this.sql = ctx.storage.sql;
     this.alarmAt = 0;
+    this.nodeActivity = {
+      started_at: Date.now(),
+      requests: 0,
+      reads: 0,
+      writes: 0,
+      errors: 0,
+      last_activity: null,
+    };
     ctx.blockConcurrencyWhile(async () => {
       this.sql.exec(
         `CREATE TABLE IF NOT EXISTS buckets(bucket_key TEXT PRIMARY KEY,version INTEGER NOT NULL,created_at INTEGER NOT NULL,payload TEXT NOT NULL,members TEXT NOT NULL,dirty INTEGER NOT NULL) WITHOUT ROWID`,
@@ -42,6 +51,21 @@ export class TelemetryBuffer {
     }
   }
   async fetch(request) {
+    const url = new URL(request.url);
+    if (url.pathname === '/node-usage' && request.method === 'GET')
+      return json(primaryNodeSnapshot(this, url.searchParams.get('fresh') === '1'));
+    let response;
+    try {
+      response = await this.handle(request);
+      return response;
+    } finally {
+      this.nodeActivity.requests++;
+      this.nodeActivity[request.method === 'GET' ? 'reads' : 'writes']++;
+      this.nodeActivity.last_activity = Date.now();
+      if (!response || response.status >= 400) this.nodeActivity.errors++;
+    }
+  }
+  async handle(request) {
     const path = new URL(request.url).pathname;
     const quotaId = path.match(/^\/quota\/([a-f0-9-]{36})$/)?.[1];
     if (quotaId) {

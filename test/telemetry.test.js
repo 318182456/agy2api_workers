@@ -601,3 +601,49 @@ test('KV query snapshot serves a new Worker cache without calling DO and manual 
     await mf.dispose();
   }
 });
+
+test('primary node usage reads existing buffers without D1 I/O or extra SQL writes', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const item = record();
+    await recordTelemetry(env, item);
+    await recordTelemetry(env, item);
+    await stub.fetch('https://test/quota/' + id, {
+      method: 'POST',
+      body: JSON.stringify({
+        credentialId: id,
+        mode: 'antigravity',
+        queriedAt: new Date().toISOString(),
+        models: [{ id: 'm', remaining: 0.5 }],
+      }),
+    });
+    const before = await (await stub.fetch('https://test/test/status')).json();
+    let response = await stub.fetch('https://test/node-usage?fresh=1'),
+      usage = await response.json();
+    assert.equal(response.status, 200);
+    assert.equal(usage.today_requests, 1);
+    assert.equal(usage.pending_requests, 1);
+    assert.equal(usage.pending_buckets, 1);
+    assert.equal(usage.quota_entries, 1);
+    assert.equal(usage.activity.writes, 3);
+    assert.equal(usage.activity.requests, 3);
+    assert.ok(usage.buffer_bytes > 0);
+    assert.ok(!JSON.stringify(usage).includes('account@example.test'));
+    const after = await (await stub.fetch('https://test/test/status')).json();
+    assert.equal(after.reads, before.reads);
+    assert.equal(after.writes, before.writes);
+    assert.equal(after.queries, before.queries);
+    assert.equal(after.sqlWrites, before.sqlWrites);
+    const again = await (await stub.fetch('https://test/node-usage')).json();
+    assert.equal(again.activity.requests, 3);
+    await flush(env);
+    usage = await (await stub.fetch('https://test/node-usage?fresh=1')).json();
+    assert.equal(usage.today_requests, 1);
+    assert.equal(usage.pending_requests, 0);
+    assert.equal(usage.pending_buckets, 0);
+  } finally {
+    await mf.dispose();
+  }
+});
