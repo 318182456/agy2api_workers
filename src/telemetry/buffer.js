@@ -1,3 +1,5 @@
+import { bumpRevision } from './archive.js';
+import { bufferedHealth } from './live-health.js';
 import { primaryNodeSnapshot } from './node-usage.js';
 import { StatsHistory } from './history.js';
 import { HttpError } from '../core/common.js';
@@ -179,12 +181,19 @@ export class TelemetryBuffer {
         )
       )
         return json({ error: 'invalid node telemetry' }, 400);
+      let changed = 0;
+      const imported = [];
+      this.importVersions ||= new Map();
       this.ctx.storage.transactionSync(() => {
         for (const row of buckets) {
+          if ((this.importVersions.get(row.key) || 0) >= row.version) continue;
           const previous = this.sql
             .exec('SELECT version FROM buckets WHERE bucket_key=?', row.key)
             .toArray()[0];
-          if (previous?.version >= row.version) continue;
+          if (previous?.version >= row.version) {
+            this.importVersions.set(row.key, previous.version);
+            continue;
+          }
           this.sql.exec(
             'INSERT INTO buckets(bucket_key,version,created_at,payload,members,dirty)VALUES(?,?,?,?,?,1) ON CONFLICT(bucket_key)DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members,dirty=1',
             row.key,
@@ -193,6 +202,8 @@ export class TelemetryBuffer {
             JSON.stringify(row.value),
             JSON.stringify(row.members),
           );
+          changed++;
+          imported.push([row.key, row.version]);
           if (this.liveStatsBuckets)
             this.liveStatsBuckets.set(row.key, {
               bucket_key: row.key,
@@ -204,7 +215,9 @@ export class TelemetryBuffer {
             });
         }
       });
-      if (buckets.length) await this.schedule();
+      for (const [key, version] of imported) this.importVersions.set(key, version);
+      if (changed) await this.schedule();
+      if (this.importVersions.size > 5000) this.importVersions.clear();
       return json({ success: true });
     }
     if (path === '/record' && request.method === 'POST') {
@@ -351,60 +364,68 @@ export class TelemetryBuffer {
     }
   }
   async flushBatch() {
+    let size = 0;
     const rows = this.sql
       .exec('SELECT * FROM buckets WHERE dirty=1 ORDER BY bucket_key LIMIT 25')
-      .toArray();
+      .toArray()
+      .filter((row) => {
+        const bytes = new TextEncoder().encode(row.payload + row.members).byteLength;
+        if (size && size + bytes > 512000) return false;
+        size += bytes;
+        return true;
+      });
     let written = 0;
-    for (const row of rows) {
-      const payload = JSON.parse(row.payload),
-        statements = [
-          this.env.DB.prepare(
-            `INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,payload,members,api_key_id)VALUES(?,?,?,?,?,?,?) ON CONFLICT(bucket_key) DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members WHERE version<excluded.version`,
-          ).bind(
-            row.bucket_key,
-            row.version,
-            row.created_at,
-            payload.credential_id,
-            row.payload,
-            row.members,
-            payload.api_key_id || null,
+    if (rows.length) {
+      const statements = [bumpRevision(this.env.DB)];
+      statements.push(
+        this.env.DB.prepare(
+          `INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,payload,members,api_key_id,change_seq)
+        SELECT json_extract(value,'$.bucket_key'),json_extract(value,'$.version'),json_extract(value,'$.created_at'),json_extract(value,'$.credential_id'),json_extract(value,'$.payload'),json_extract(value,'$.members'),json_extract(value,'$.api_key_id'),(SELECT value FROM telemetry_revision WHERE id=1)
+        FROM json_each(?) WHERE true ON CONFLICT(bucket_key)DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members,change_seq=excluded.change_seq WHERE version<excluded.version`,
+        ).bind(
+          JSON.stringify(
+            rows.map((row) => ({
+              ...row,
+              credential_id: JSON.parse(row.payload).credential_id,
+              api_key_id: JSON.parse(row.payload).api_key_id || null,
+            })),
           ),
-          this.env.DB.prepare(
-            `DELETE FROM request_usage WHERE aggregate_key=? AND outcome='success' AND attempts='[]' AND request_id IN (SELECT value FROM json_each(?))`,
-          ).bind(row.bucket_key, row.members),
-        ];
-      if (payload.credential_id && payload.last_success)
-        statements.push(
-          this.env.DB.prepare(
-            `INSERT INTO credential_health(credential_id,last_success,failure_streak)SELECT id,?,0 FROM credentials WHERE id=? ON CONFLICT(credential_id)DO UPDATE SET last_success=MAX(COALESCE(last_success,0),excluded.last_success),failure_streak=CASE WHEN COALESCE(last_failure,0)<=excluded.last_success THEN 0 ELSE failure_streak END WHERE last_success IS NULL OR last_success<excluded.last_success-300000 OR failure_streak>0`,
-          ).bind(payload.last_success, payload.credential_id),
-        );
-      if (payload.credential_id && payload.last_used)
-        statements.push(
-          this.env.DB.prepare(
-            'UPDATE credentials SET last_used=MAX(COALESCE(last_used,0),?) WHERE id=? AND COALESCE(last_used,0)<?',
-          ).bind(payload.last_used, payload.credential_id, payload.last_used - 300000),
-        );
-      const failures = { ...(payload.attempt_health || {}) };
-      if (
-        payload.credential_id &&
-        payload.last_failure &&
-        payload.last_failure >= (failures[payload.credential_id]?.last_failure || 0)
-      )
-        failures[payload.credential_id] = payload;
-      for (const [id, failure] of Object.entries(failures))
-        statements.push(
-          this.env.DB.prepare(
-            `INSERT INTO credential_health(credential_id,last_failure,last_status,last_stage,last_code,failure_streak) SELECT id,?,?,?,?,1 FROM credentials WHERE id=? ON CONFLICT(credential_id)DO UPDATE SET last_failure=excluded.last_failure,last_status=excluded.last_status,last_stage=excluded.last_stage,last_code=excluded.last_code,failure_streak=CASE WHEN COALESCE(last_success,0)>=excluded.last_failure THEN 0 ELSE failure_streak+1 END WHERE COALESCE(last_failure,0)<excluded.last_failure`,
-          ).bind(
-            failure.last_failure,
-            failure.last_status,
-            failure.last_stage || 'request_failed',
-            failure.last_code || null,
-            id,
-          ),
-        );
+        ),
+      );
+      statements.push(
+        this.env.DB.prepare(
+          `DELETE FROM request_usage WHERE outcome='success' AND attempts='[]'
+        AND aggregate_key IN(SELECT json_extract(value,'$.bucket_key') FROM json_each(?))
+        AND request_id IN(SELECT m.value FROM json_each(?) b,json_each(json_extract(b.value,'$.members')) m)`,
+        ).bind(JSON.stringify(rows), JSON.stringify(rows)),
+      );
+      const health = bufferedHealth(rows.map((row) => ({ value: JSON.parse(row.payload) })));
+      const states = JSON.stringify([...health.values()]);
+      statements.push(
+        this.env.DB.prepare(
+          `INSERT INTO credential_health(credential_id,last_success,last_failure,last_status,last_stage,last_code,failure_streak)
+        SELECT c.id,NULLIF(json_extract(j.value,'$.last_success'),0),NULLIF(json_extract(j.value,'$.last_failure'),0),json_extract(j.value,'$.last_status'),json_extract(j.value,'$.last_stage'),json_extract(j.value,'$.last_code'),CASE WHEN COALESCE(json_extract(j.value,'$.last_failure'),0)>COALESCE(json_extract(j.value,'$.last_success'),0) THEN 1 ELSE 0 END
+        FROM json_each(?) j JOIN credentials c ON c.id=json_extract(j.value,'$.credential_id') WHERE true
+        ON CONFLICT(credential_id)DO UPDATE SET
+        last_success=NULLIF(MAX(COALESCE(last_success,0),COALESCE(excluded.last_success,0)),0),
+        last_failure=NULLIF(MAX(COALESCE(last_failure,0),COALESCE(excluded.last_failure,0)),0),
+        last_status=CASE WHEN COALESCE(excluded.last_failure,0)>COALESCE(last_failure,0) THEN excluded.last_status ELSE last_status END,
+        last_stage=CASE WHEN COALESCE(excluded.last_failure,0)>COALESCE(last_failure,0) THEN excluded.last_stage ELSE last_stage END,
+        last_code=CASE WHEN COALESCE(excluded.last_failure,0)>COALESCE(last_failure,0) THEN excluded.last_code ELSE last_code END,
+        failure_streak=CASE WHEN MAX(COALESCE(last_success,0),COALESCE(excluded.last_success,0))>=MAX(COALESCE(last_failure,0),COALESCE(excluded.last_failure,0)) THEN 0 WHEN COALESCE(excluded.last_failure,0)>COALESCE(last_failure,0) THEN failure_streak+1 ELSE failure_streak END
+        WHERE COALESCE(excluded.last_failure,0)>COALESCE(last_failure,0) OR COALESCE(excluded.last_success,0)>COALESCE(last_success,0)+300000 OR (last_success IS NULL AND excluded.last_success IS NOT NULL) OR (failure_streak>0 AND COALESCE(excluded.last_success,0)>=COALESCE(last_failure,0))`,
+        ).bind(states),
+      );
+      statements.push(
+        this.env.DB.prepare(
+          `UPDATE credentials SET last_used=MAX(COALESCE(last_used,0),(SELECT json_extract(value,'$.last_used') FROM json_each(?) WHERE json_extract(value,'$.credential_id')=credentials.id))
+        WHERE id IN(SELECT json_extract(value,'$.credential_id') FROM json_each(?) WHERE COALESCE(json_extract(value,'$.last_used'),0)>0)
+        AND COALESCE(last_used,0)<(SELECT json_extract(value,'$.last_used')-300000 FROM json_each(?) WHERE json_extract(value,'$.credential_id')=credentials.id)`,
+        ).bind(states, states, states),
+      );
       await this.env.DB.batch(statements);
+    }
+    for (const row of rows) {
       // A request arriving during the D1 await changes version and remains dirty for the next flush.
       this.sql.exec(
         'UPDATE buckets SET dirty=0 WHERE bucket_key=? AND version=?',

@@ -154,6 +154,7 @@ async function loadStats(fresh = false, sync = false) {
       : '统计已刷新；自动加载可复用 1 分钟内存 / 边缘缓存或最多 5 分钟 KV 快照。刷新统计绕过这些缓存，历史每小时按需同步。') +
       (value.groups_truncated ? '模型、账号或密钥分组超过 200 项，请缩小筛选范围。' : ''),
   );
+  return value;
 }
 el('statsApiKey').onchange = () =>
   run(async () => {

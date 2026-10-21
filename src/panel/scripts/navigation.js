@@ -136,7 +136,12 @@ async function loadPage(id) {
   const parent = parentPage(id);
   status('正在加载页面…');
   if (parent === 'overview') {
-    await Promise.all([refresh(), loadStats()]);
+    const [, totals] = await Promise.all([refresh({ live: false }), loadStats()]);
+    if (!el('workspace').hidden && Array.isArray(totals?.health))
+      mergeCredentialHealth(
+        { credentials: credentialsSnapshot, oauth_clients: oauthClientModes },
+        { health: totals.health, queried_at: totals.health_queried_at },
+      );
   } else if (parent === 'credentials') {
     if (!loadedPages.has('credentials')) {
       await refresh();

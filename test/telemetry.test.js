@@ -1,3 +1,4 @@
+import { archiveUsage, archivedEntries } from '../src/telemetry/archive.js';
 import { attachTimings } from '../src/core/timing.js';
 import { DailyStatsIndex, dayStart } from '../src/telemetry/preaggregate.js';
 import { credentialHealth } from '../src/telemetry/health.js';
@@ -370,7 +371,7 @@ test('concurrent flush keeps newer versions pending and retries the cumulative b
   }
 });
 
-test('production entrypoint uses aggregate binding; 128 successes flush within 16 D1 rows written including read indexes', async () => {
+test('production entrypoint uses aggregate binding; 128 successes flush within 20 D1 rows written including change indexes', async () => {
   const mf = await runtime();
   try {
     const env = await setup(mf);
@@ -398,8 +399,8 @@ test('production entrypoint uses aggregate binding; 128 successes flush within 1
         'https://test/test/status',
       )
     ).json();
-    // Maintaining the aggregate key/time and latest-success indexes adds four writes per two-bucket flush.
-    assert.ok(cost.writes <= 16, JSON.stringify(cost));
+    // Change tracking adds one shared revision write and an index entry per aggregate.
+    assert.ok(cost.writes <= 20, JSON.stringify(cost));
     assert.equal((await stats(env)).summary.requests, 128);
     assert.equal(
       (await mf.dispatchFetch('https://test/admin/telemetry/flush', { method: 'POST' })).status,
@@ -730,6 +731,20 @@ test('child buffers model usage, live statistics merge it immediately, duplicate
     assert.equal(
       raw.buckets.reduce((n, b) => n + b.value.requests, 0),
       2,
+    );
+    const unchanged = await (
+      await remote.dispatchFetch('https://node/telemetry/snapshot', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          known_versions: Object.fromEntries(raw.buckets.map((b) => [b.key, b.version])),
+        }),
+      })
+    ).json();
+    assert.deepEqual(
+      unchanged.buckets,
+      [],
+      'known versions skip unchanged payloads without hiding later versions',
     );
     let usage = await (await remote.dispatchFetch('https://node/usage', { headers })).json();
     assert.equal(usage.telemetry.today_requests, 2);
@@ -1141,5 +1156,151 @@ test('slow request diagnostics contain stage timings without query strings or ar
     assert.ok(!response.headers.get('server-timing').includes('fixture-private'));
   } finally {
     console.warn = original;
+  }
+});
+
+test('incremental history reads only changed buckets after 1200 historical rows', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      at = Math.floor(Date.now() / 300000) * 300000;
+    await env.DB.exec(
+      `INSERT INTO usage_aggregates(bucket_key,version,created_at,payload,members)
+   WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<1200)
+   SELECT printf('%013d',${at})||':seed:'||x,1,${at},json_object('created_at',${at},'mode','antigravity','model','seed','status',200,'outcome','success','requests',1,'successes',1,'failures',0,'cancellations',0,'total_duration_ms',10,'total_tokens',5,'token_reports',1),'[]' FROM n`.replaceAll(
+        '\n',
+        ' ',
+      ),
+    );
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const control = (path = 'status') =>
+      stub.fetch('https://test/test/' + path).then((r) => r.json());
+    const query = () => usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+    assert.equal((await query()).summary.requests, 1200);
+    await recordTelemetry(env, record({ model: 'new' }));
+    await flush(env);
+    const before = await control();
+    await control('expire-history');
+    const latest = await query(),
+      after = await control();
+    assert.equal(latest.summary.requests, 1201);
+    assert.ok(after.queryReads - before.queryReads < 80, JSON.stringify({ before, after }));
+    assert.equal(
+      (await stats(env)).summary.requests,
+      1201,
+      'full rebuild agrees with incremental data',
+    );
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('one flush merges twenty model buckets into five SQL statements and one health update per credential', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      started = Date.now() - 20;
+    for (let i = 0; i < 20; i++)
+      await recordTelemetry(env, record({ started, model: 'model-' + i }));
+    assert.equal((await flush(env)).status, 200);
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const state = await (await stub.fetch('https://test/test/status')).json();
+    assert.equal(state.batches, 1);
+    assert.equal(state.statements, 5);
+    const health = await env.DB.prepare('SELECT * FROM credential_health WHERE credential_id=?')
+      .bind(id)
+      .first();
+    assert.ok(health.last_success >= started);
+    assert.equal(health.failure_streak, 0);
+    assert.equal((await stats(env)).summary.requests, 20);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('daily archive keeps exact times, survives cold rebuild, deduplicates late cumulative versions and D1-only reads', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      started = dayStart(Date.now() - 8 * 86400000) + 13 * 3600000;
+    await recordTelemetry(env, record({ started, model: 'old-a' }));
+    await recordTelemetry(
+      env,
+      record({ started: started + 600000, model: 'old-b', usage: { totalTokenCount: 0 } }),
+    );
+    const live = (await snapshot(env)).buckets;
+    assert.equal((await flush(env)).status, 200);
+    const result = await archiveUsage(env.DB);
+    assert.equal(result.archived, 2);
+    assert.equal(await count(env, 'usage_aggregates'), 0);
+    assert.equal(await count(env, 'usage_daily_archive'), 1);
+    const stored = await archivedEntries(env.DB);
+    assert.equal(stored.size, 2);
+    assert.equal(
+      (await stats(env)).summary.requests,
+      2,
+      'cold history restores compressed daily archive',
+    );
+    assert.equal(
+      (await stats(env, 'from=' + started + '&to=' + (started + 1))).summary.requests,
+      1,
+      'exact time filter after daily compression',
+    );
+    let direct = await usageStats(env.DB, new URLSearchParams('fresh=1'), {
+      USAGE_STORAGE_MODE: 'detailed',
+    });
+    assert.equal(direct.summary.requests, 2, 'D1-only fallback includes archived totals');
+    const previous = live[0],
+      value = { ...previous.value, requests: 2, successes: 2, total_tokens: 10 };
+    await env.DB.batch([
+      env.DB.prepare('UPDATE telemetry_revision SET value=value+1 WHERE id=1'),
+      env.DB.prepare(
+        'INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,api_key_id,payload,members,change_seq)VALUES(?,?,?,?,?,?,?,(SELECT value FROM telemetry_revision WHERE id=1))',
+      ).bind(
+        previous.key,
+        2,
+        value.created_at,
+        id,
+        null,
+        JSON.stringify(value),
+        JSON.stringify([...previous.members, 'late-member']),
+      ),
+    ]);
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    await stub.fetch('https://test/test/expire-history');
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams('fresh=1'), env)).summary.requests,
+      3,
+      'late newer cumulative bucket replaces archived version',
+    );
+    direct = await usageStats(env.DB, new URLSearchParams('fresh=1'), {
+      USAGE_STORAGE_MODE: 'detailed',
+    });
+    assert.equal(direct.summary.requests, 3);
+    assert.equal((await archiveUsage(env.DB)).archived, 1);
+    assert.equal((await stats(env)).summary.requests, 3, 'repeated archive does not double count');
+    await env.DB.prepare(
+      'INSERT INTO usage_aggregates(bucket_key,version,created_at,credential_id,api_key_id,payload,members)VALUES(?,?,?,?,?,?,?)',
+    )
+      .bind(
+        previous.key,
+        previous.version,
+        previous.value.created_at,
+        id,
+        null,
+        JSON.stringify(previous.value),
+        JSON.stringify(previous.members),
+      )
+      .run();
+    const stale = await usageStats(env.DB, new URLSearchParams('fresh=1'), {
+      USAGE_STORAGE_MODE: 'detailed',
+    });
+    assert.equal(
+      stale.summary.requests,
+      3,
+      'stale hot retransmission cannot replace newer archived cumulative totals',
+    );
+  } finally {
+    await mf.dispose();
   }
 });

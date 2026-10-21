@@ -150,7 +150,15 @@ export const storageNodeSource = String.raw`export class StorageNode {
       return Response.json({success:true,node_id:this.env.NODE_ID,records});
     }
     if(path==='/telemetry/snapshot'&&request.method==='POST'){
-      const buckets=this.telemetrySnapshot(1001);
+      const text=await request.text();
+      const body=text.trim()?JSON.parse(text):{};
+      const known=body?.known_versions&&typeof body.known_versions==='object'?body.known_versions:{};
+      const rows=this.ctx.storage.sql.exec('SELECT key,version FROM telemetry_buckets WHERE dirty=1 ORDER BY key LIMIT 1001').toArray();
+      if(rows.length>1000)return Response.json({error:'telemetry backlog'},{status:503});
+      const buckets=rows.filter(row=>!Number.isSafeInteger(known[row.key])||known[row.key]<row.version).map(row=>{
+        const value=this.ctx.storage.sql.exec('SELECT * FROM telemetry_buckets WHERE key=?',row.key).toArray()[0];
+        return {key:value.key,version:value.version,value:JSON.parse(value.payload),members:JSON.parse(value.members)};
+      });
       if(buckets.length>1000)return Response.json({error:'telemetry backlog'},{status:503});
       return Response.json({success:true,node_id:this.env.NODE_ID,buckets});
     }

@@ -9,11 +9,17 @@ export async function pendingTelemetry(env = {}) {
   if (env.INTERNAL_DO_STATS) return { buckets: [] };
   const stub = telemetryStub(env);
   if (!stub) return { buckets: [] };
-  await timed(env, 'nodes', () => syncNodeTelemetry(env));
-  const response = await timed(env, 'buffer', () => stub.fetch('https://telemetry/snapshot'));
-  if (!response.ok)
-    throw new HttpError(503, '用量持久缓冲暂时不可读，未返回不完整统计；请稍后重试或手动落盘');
-  return response.json();
+  if (env.PENDING_TELEMETRY) return env.PENDING_TELEMETRY;
+  const flight = (async () => {
+    await timed(env, 'nodes', () => syncNodeTelemetry(env));
+    const response = await timed(env, 'buffer', () => stub.fetch('https://telemetry/snapshot'));
+    if (!response.ok)
+      throw new HttpError(503, '用量持久缓冲暂时不可读，未返回不完整统计；请稍后重试或手动落盘');
+    return response.json();
+  })();
+  // Only request-scoped environments may retain this Promise; shared test/caller envs stay live.
+  if (env.REQUEST_TIMINGS) env.PENDING_TELEMETRY = flight;
+  return flight;
 }
 export async function flushTelemetry(env) {
   const stub = telemetryStub(env);

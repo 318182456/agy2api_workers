@@ -9,6 +9,11 @@ export async function pruneTelemetry(db) {
         WHERE a.bucket_key=request_usage.aggregate_key AND m.value=request_usage.request_id)`,
       )
       .bind(Date.now() - LOG_RETENTION_DAYS * 86400000),
+    db
+      .prepare(
+        'DELETE FROM request_usage WHERE created_at<? AND id IN(SELECT m.value FROM usage_daily_archive a,json_each(a.detail_ids) m)',
+      )
+      .bind(Date.now() - LOG_RETENTION_DAYS * 86400000),
     // Historical detailed rows still supply statistics; erase only their packed diagnostics.
     db
       .prepare(
@@ -26,6 +31,9 @@ export async function pruneTelemetry(db) {
     ),
     db.prepare('DELETE FROM request_usage WHERE created_at<?').bind(Date.now() - 30 * 86400000),
     db.prepare('DELETE FROM usage_aggregates WHERE created_at<?').bind(Date.now() - 30 * 86400000),
+    db
+      .prepare('DELETE FROM usage_daily_archive WHERE day<?')
+      .bind(Math.floor((Date.now() - 30 * 86400000 + 28800000) / 86400000) * 86400000 - 28800000),
   ]);
 }
 export async function maybePrune(db, result) {

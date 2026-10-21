@@ -1,3 +1,6 @@
+import { bufferedHealth } from './live-health.js';
+import { aggregateEntry, decodeArchive, archiveUsage, archivedEntries, DAY } from './archive.js';
+import { dayStart } from './preaggregate.js';
 import { DailyStatsIndex } from './preaggregate.js';
 import { HttpError } from '../core/common.js';
 import { filters } from './filters.js';
@@ -53,6 +56,7 @@ export class StatsHistory {
   constructor(owner) {
     this.owner = owner;
     this.sql = owner.sql;
+    this.states = new Map();
     this.sql.exec(
       'CREATE TABLE IF NOT EXISTS stats_state(key TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID',
     );
@@ -61,7 +65,12 @@ export class StatsHistory {
     );
   }
   state(key) {
-    return this.sql.exec('SELECT value FROM stats_state WHERE key=?', key).toArray()[0]?.value;
+    if (!this.states.has(key))
+      this.states.set(
+        key,
+        this.sql.exec('SELECT value FROM stats_state WHERE key=?', key).toArray()[0]?.value,
+      );
+    return this.states.get(key);
   }
   putState(key, value) {
     this.sql.exec(
@@ -69,6 +78,7 @@ export class StatsHistory {
       key,
       String(value),
     );
+    this.states.set(key, String(value));
   }
   syncedAt() {
     return Number(this.state('synced_at') || 0);
@@ -137,7 +147,7 @@ export class StatsHistory {
     const flight = (async () => {
       await this.load();
       if (!force && this.data && this.syncedAt() > Date.now() - HOUR) return;
-      await this.sync();
+      await this.sync(force);
     })();
     this.owner.statsSyncing = flight;
     try {
@@ -158,46 +168,78 @@ export class StatsHistory {
     const keys = (await db.prepare('SELECT id,name FROM api_keys').all()).results;
     return { accounts, keys };
   }
-  async sync() {
+  async sync(force = false) {
     const db = this.owner.env.DB;
     if (!db) throw new HttpError(503, '未绑定 D1 数据库，无法初始化统计历史');
-    const cutoff = Date.now() - 30 * 86400000;
-    const aggregates = [];
+    const cutoff = Date.now() - 30 * DAY;
+    const incremental = !force && this.data && Number.isSafeInteger(this.data.revision);
+    // Read the upper bound before paging. Changes committed during the scan belong
+    // to the next revision and cannot fall between snapshots.
+    const revision = await db
+      .prepare('SELECT value FROM telemetry_revision WHERE id=1')
+      .first('value');
+    const previous = incremental ? this.data.revision : -1;
+    const entries = new Map(
+      incremental
+        ? this.data.aggregates.filter((e) => e.value.created_at >= cutoff).map((e) => [e.key, e])
+        : [],
+    );
     let cursor = '';
+    let sequence = previous;
     for (;;) {
       const rows = (
         await db
           .prepare(
-            'SELECT bucket_key,version,created_at,credential_id,api_key_id,payload FROM usage_aggregates WHERE bucket_key>? AND created_at>=? ORDER BY bucket_key LIMIT ' +
+            'SELECT bucket_key,version,created_at,credential_id,api_key_id,payload,members,change_seq FROM usage_aggregates INDEXED BY usage_aggregates_changes WHERE change_seq>? AND (change_seq,bucket_key)>(?,?) AND change_seq<=? AND created_at>=? ORDER BY change_seq,bucket_key LIMIT ' +
               PAGE,
           )
-          .bind(cursor, cutoff)
+          .bind(previous, sequence, cursor, revision, cutoff)
+          .all()
+      ).results;
+      for (const row of rows) {
+        const entry = aggregateEntry(row);
+        if ((entries.get(entry.key)?.version || 0) <= entry.version) entries.set(entry.key, entry);
+      }
+      if (rows.length < PAGE) break;
+      cursor = rows.at(-1).bucket_key;
+      sequence = rows.at(-1).change_seq;
+    }
+    let archiveCursor = '';
+    let archiveSequence = previous;
+    for (;;) {
+      const rows = (
+        await db
+          .prepare(
+            'SELECT archive_key,payload,change_seq FROM usage_daily_archive INDEXED BY usage_daily_archive_changes WHERE change_seq>? AND (change_seq,archive_key)>(?,?) AND change_seq<=? AND day>=? ORDER BY change_seq,archive_key LIMIT 100',
+          )
+          .bind(previous, archiveSequence, archiveCursor, revision, dayStart(cutoff))
           .all()
       ).results;
       for (const row of rows)
-        aggregates.push({
-          key: row.bucket_key,
-          version: row.version,
-          value: {
-            ...JSON.parse(row.payload),
-            created_at: row.created_at,
-            credential_id: row.credential_id,
-            api_key_id: row.api_key_id,
-          },
-        });
-      if (rows.length < PAGE) break;
-      cursor = rows.at(-1).bucket_key;
+        for (const entry of (await decodeArchive(row.payload)).entries)
+          if (
+            entry.value.created_at >= cutoff &&
+            (entries.get(entry.key)?.version || 0) <= entry.version
+          )
+            entries.set(entry.key, entry);
+      if (rows.length < 100) break;
+      archiveCursor = rows.at(-1).archive_key;
+      archiveSequence = rows.at(-1).change_seq;
     }
-    const details = [];
-    let detailCursor = 0;
+    const details = incremental ? this.data.details.filter((row) => row.created_at >= cutoff) : [];
+    let detailCursor = incremental ? this.data.detail_cursor || 0 : 0;
     const maximum = (await db.prepare('SELECT COALESCE(MAX(id),0) AS id FROM request_usage').all())
       .results[0].id;
     for (;;) {
       const rows = (
         await db
           .prepare(
-            `SELECT ${detailColumns.map((column) => 'r.' + column).join(',')} FROM request_usage r WHERE r.id>? AND r.id<=? AND r.created_at>=?
-        AND (r.aggregate_key IS NULL OR NOT EXISTS(SELECT 1 FROM usage_aggregates a,json_each(a.members) m WHERE a.bucket_key=r.aggregate_key AND m.value=r.request_id)) ORDER BY r.id LIMIT ${PAGE}`,
+            'SELECT ' +
+              detailColumns.map((c) => 'r.' + c).join(',') +
+              ` FROM request_usage r WHERE r.id>? AND r.id<=? AND r.created_at>=?
+               AND (r.aggregate_key IS NULL OR NOT EXISTS(SELECT 1 FROM usage_aggregates a,json_each(a.members) m WHERE a.bucket_key=r.aggregate_key AND m.value=r.request_id))
+               ORDER BY r.id LIMIT ` +
+              PAGE,
           )
           .bind(detailCursor, maximum, cutoff)
           .all()
@@ -206,17 +248,46 @@ export class StatsHistory {
       if (rows.length < PAGE) break;
       detailCursor = rows.at(-1).id;
     }
+    // Archived and live aggregate membership both suppress fallback details.
+    const members = new Set([...entries.values()].flatMap((e) => e.members || []));
+    if (incremental) {
+      const days = new Set(
+        details
+          .filter(
+            (row) =>
+              row.aggregate_key &&
+              row.created_at < dayStart(Date.now() - 2 * DAY) &&
+              !members.has(row.request_id),
+          )
+          .map((row) => dayStart(row.created_at)),
+      );
+      for (const day of days)
+        for (const entry of (await archivedEntries(db, day, day + DAY - 1)).values())
+          for (const id of entry.members) members.add(id);
+    }
+    const aggregates = [...entries.values()].map(({ members, ...entry }) => entry);
     const data = {
       version: 3,
       synced_at: Date.now(),
       aggregates,
-      details,
+      details: details.filter((row) => !members.has(row.request_id)),
+      revision,
+      sync_mode: incremental ? 'incremental' : 'full',
+      detail_cursor: Math.max(maximum, incremental ? this.data.detail_cursor || 0 : 0),
       ...(await this.metadata()),
     };
     const bytes = await pack(data);
     if (bytes.byteLength > MAX_BYTES)
       throw new HttpError(503, '统计快照超过缓存容量，请缩短历史保留范围');
     this.persist(data, bytes);
+    if (Number(this.state('archive_at') || 0) < Date.now() - HOUR) {
+      try {
+        await archiveUsage(db);
+        this.putState('archive_at', Date.now());
+      } catch {
+        console.warn(JSON.stringify({ event: 'usage_archive_deferred' }));
+      }
+    }
     // One historical KV publication at most per hour, even after eviction or repeated manual sync.
     if (
       this.owner.env.CACHE?.put &&
@@ -313,6 +384,9 @@ export class StatsHistory {
     const selected = this.index.query(from, to, !!safe.get('request_id'));
     for (const row of selected.rows) accept(row);
     const value = summarizeRows(rows, keys, { TELEMETRY: true }, pending);
+    value.health = [...bufferedHealth([...this.index.liveVersions.values()]).values()];
+    value.health_queried_at = Date.now();
+    value.history_sync_mode = this.data.sync_mode || 'full';
     value.timings = {
       history_sync_ms: historyMs,
       aggregate_ms: performance.now() - calculationStart,

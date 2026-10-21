@@ -69,7 +69,10 @@ async function syncNodes(env, selected) {
   for (let start = 0; start < nodes.length; start += 5)
     await Promise.all(
       nodes.slice(start, start + 5).map(async (node) => {
-        const response = await rpc(env, node, '/telemetry/snapshot', {});
+        const cache = dbCache(env.DB);
+        cache.nodeTelemetryVersions ||= new Map();
+        const known = cache.nodeTelemetryVersions.get(node.id) || {};
+        const response = await rpc(env, node, '/telemetry/snapshot', { known_versions: known });
         if (response.status === 404) {
           await response.body?.cancel();
           return;
@@ -78,7 +81,19 @@ async function syncNodes(env, selected) {
         const value = await response.json();
         if (value.node_id !== node.id || !Array.isArray(value.buckets))
           throw new HttpError(503, '子节点用量响应无效');
-        if (value.buckets.length) await importNodeBuckets(env, node.id, value.buckets);
+        const changed = value.buckets.filter(
+          (row) => !Number.isSafeInteger(row.version) || (known[row.key] || 0) < row.version,
+        );
+        if (changed.length) {
+          await importNodeBuckets(env, node.id, changed);
+          const next = { ...known };
+          for (const row of changed) next[row.key] = row.version;
+          // Bound isolate memory; forgetting versions only causes a safe re-import.
+          cache.nodeTelemetryVersions.set(
+            node.id,
+            Object.fromEntries(Object.entries(next).slice(-1000)),
+          );
+        }
       }),
     );
 }

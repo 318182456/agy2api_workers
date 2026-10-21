@@ -1,3 +1,4 @@
+import { archivedEntries } from './archive.js';
 import { storageNodes, readNodeCache, writeNodeCache } from '../storage/client.js';
 import { readKvStatsSnapshot, statsCacheKey } from './stats-cache.js';
 import { summarizeRows } from './rollup.js';
@@ -153,7 +154,26 @@ export async function usageStats(db, params, env = {}) {
       values.push(JSON.stringify(apiKeyIds));
     }
     values.push(Date.now() - 30 * 86400000);
-    const snapshot = await pendingTelemetry(env);
+    const snapshot = structuredClone(await pendingTelemetry(env));
+    const pendingRequests = snapshot.buckets.reduce(
+      (sum, bucket) => sum + bucket.value.requests,
+      0,
+    );
+    const archived = await archivedEntries(db);
+    if (archived.size) {
+      const hot = (
+        await db
+          .prepare(
+            'SELECT bucket_key,version FROM usage_aggregates WHERE bucket_key IN(SELECT value FROM json_each(?))',
+          )
+          .bind(JSON.stringify([...archived.keys()]))
+          .all()
+      ).results;
+      for (const row of hot)
+        if (row.version >= archived.get(row.bucket_key).version) archived.delete(row.bucket_key);
+      for (const row of snapshot.buckets) archived.delete(row.key);
+      snapshot.buckets.push(...archived.values());
+    }
     const pendingKeys = snapshot.buckets.map((bucket) => bucket.key),
       pendingIds = snapshot.buckets.flatMap((bucket) => bucket.members);
     // Push indexed time/key/account predicates into BOTH union branches before JSON expansion
@@ -274,12 +294,7 @@ export async function usageStats(db, params, env = {}) {
         ).results
       : [];
     const keyLookup = new Map(keyNames.map((row) => [row.id, row.name]));
-    const value = summarizeRows(
-      rows,
-      keyLookup,
-      env,
-      snapshot.buckets.reduce((sum, bucket) => sum + bucket.value.requests, 0),
-    );
+    const value = summarizeRows(rows, keyLookup, env, pendingRequests);
     if (cache.stats.size >= 20) cache.stats.delete(cache.stats.keys().next().value);
     cache.stats.set(key, {
       until: Date.now() + STATS_CACHE_SECONDS * 1000,

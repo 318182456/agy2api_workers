@@ -62,6 +62,7 @@ export class TelemetryBuffer extends Buffer {
               statements.map((statement) => statement.raw || statement),
             );
             control.batches++;
+            control.statements = (control.statements || 0) + statements.length;
             for (const result of results) {
               control.writes += result.meta.rows_written || 0;
               control.reads += result.meta.rows_read || 0;
@@ -84,7 +85,7 @@ export class TelemetryBuffer extends Buffer {
       this.control.release();
       this.control.gate = null;
     } else if (path === '/test/expire-history') {
-      this.sql.exec("UPDATE stats_state SET value='0' WHERE key='synced_at'");
+      this.history.putState('synced_at', 0);
     } else if (path === '/test/expire-query-kv') this.history.putState('query_kv_at', 0);
     else if (path === '/test/forget-history') {
       this.sql.exec('DELETE FROM stats_snapshot_chunks');
@@ -100,6 +101,7 @@ export class TelemetryBuffer extends Buffer {
       writes: this.control.writes,
       reads: this.control.reads,
       batches: this.control.batches,
+      statements: this.control.statements || 0,
       queries: this.control.queries || 0,
       queryReads: this.control.queryReads || 0,
       sqlReads: this.control.sqlReads || 0,

@@ -158,11 +158,11 @@ test('D1 reads: settings TTL and scoped invalidation; stats aggregate once and c
     const before = DB.totals.queries;
     let value = await usageStats(DB, new URLSearchParams());
     assert.equal(value.summary.requests, 1);
-    assert.equal(DB.totals.queries, before + 1);
+    assert.equal(DB.totals.queries, before + 2);
     value.summary.requests = 999;
     value = await usageStats(DB, new URLSearchParams());
     assert.equal(value.summary.requests, 1);
-    assert.equal(DB.totals.queries, before + 1);
+    assert.equal(DB.totals.queries, before + 2);
     await recordUsage(raw, {
       requestId: 'stats-2',
       mode: 'antigravity',
@@ -176,7 +176,7 @@ test('D1 reads: settings TTL and scoped invalidation; stats aggregate once and c
     value = await usageStats(DB, new URLSearchParams('fresh=1'));
     assert.equal(value.summary.requests, 2);
     assert.equal(value.summary.total_tokens, 12);
-    assert.equal(DB.totals.queries, before + 2);
+    assert.equal(DB.totals.queries, before + 4);
   }));
 
 test('7-day logs: hide expired entries immediately, hourly Cron deletes old events while retaining 30-day usage; union cursors and deletion preserve statistics', () =>
@@ -342,7 +342,7 @@ test('D1 reads: statistics share bounded snapshots across isolates, coalesce con
         DB = metered(raw),
         env = { PANEL_PASSWORD: 'local-fixture' };
       const first = await usageStats(DB, params, env);
-      assert.equal(DB.totals.queries, 1);
+      assert.equal(DB.totals.queries, 2);
       const secondDB = metered(raw);
       const shared = await usageStats(secondDB, params, env);
       assert.equal(shared.cached_at, first.cached_at);
@@ -350,19 +350,19 @@ test('D1 reads: statistics share bounded snapshots across isolates, coalesce con
       assert.equal(secondDB.totals.queries, 0);
       const isolated = metered(raw);
       await usageStats(isolated, params, { PANEL_PASSWORD: 'different-scope' });
-      assert.equal(isolated.totals.queries, 1);
+      assert.equal(isolated.totals.queries, 2);
       await usageStats(secondDB, new URLSearchParams('fresh=1'), env);
-      assert.equal(secondDB.totals.queries, 1);
+      assert.equal(secondDB.totals.queries, 2);
       const third = metered(raw);
       await Promise.all(
         Array.from({ length: 12 }, () => usageStats(third, new URLSearchParams('fresh=1'), env)),
       );
-      assert.equal(third.totals.queries, 1);
+      assert.equal(third.totals.queries, 2);
       const expired = { ...first, cached_at: Date.now() - 61000 };
       for (const key of entries.keys()) entries.set(key, Response.json(expired));
       const afterExpiry = metered(raw);
       await usageStats(afterExpiry, params, env);
-      assert.equal(afterExpiry.totals.queries, 1);
+      assert.equal(afterExpiry.totals.queries, 2);
       globalThis.caches = {
         default: {
           match: async () => {

@@ -36,6 +36,7 @@ test('Workers runtime: incoming request signal, real D1, quota and OAuth failure
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
       '0009_api_keys.sql',
+      '0014_telemetry_incremental.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
@@ -180,6 +181,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
       '0009_api_keys.sql',
+      '0014_telemetry_incremental.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const id = '11111111-1111-4111-8111-111111111111';
@@ -391,6 +393,7 @@ test('production Worker: credential failover, model cooldown, trace records and 
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
       '0009_api_keys.sql',
+      '0014_telemetry_incremental.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const a = '11111111-1111-4111-8111-111111111111';
@@ -613,6 +616,7 @@ test('production Worker: web settings take effect, backups restore state, duplic
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
       '0009_api_keys.sql',
+      '0014_telemetry_incremental.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     const admin = (path, method = 'GET', body) =>
@@ -799,6 +803,7 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
       '0007_packed_diagnostics.sql',
       '0008_usage_aggregates.sql',
       '0009_api_keys.sql',
+      '0014_telemetry_incremental.sql',
     ])
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     for (const [id, mode, token] of [
