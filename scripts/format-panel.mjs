@@ -1,7 +1,7 @@
 import { readFile, readdir, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { format, resolveConfig } from 'prettier';
-const directory = new URL('../src/panel-scripts/', import.meta.url);
+const directory = new URL('../src/panel/scripts/', import.meta.url);
 const options = await resolveConfig(fileURLToPath(new URL('../.prettierrc.json', import.meta.url)));
 let invalid = false;
 for (const file of await readdir(directory)) {

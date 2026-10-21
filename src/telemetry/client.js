@@ -1,5 +1,5 @@
 import { readNodeCache, writeNodeCache, invalidateNodeCaches } from '../storage/client.js';
-import { HttpError } from '../common.js';
+import { HttpError } from '../core/common.js';
 export function telemetryStub(env) {
   return env.TELEMETRY?.get(env.TELEMETRY.idFromName('gcli2api'));
 }

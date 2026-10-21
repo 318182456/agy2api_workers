@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import { panel } from '../src/panel.js';
+import { panel } from '../src/panel/index.js';
 
 // Run the actual embedded management script with a minimal DOM and mocked HTTP.
 // This exercises batch failures and backup round trips, not Google or production data.
@@ -661,7 +661,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
 });
 
 test('API key list renders unused keys, later used keys and pagination even when usage rows are absent', async () => {
-  const { keysScript } = await import('../src/panel-scripts/keys.js');
+  const { keysScript } = await import('../src/panel/scripts/keys.js');
   class Element {
     constructor() {
       this.children = [];

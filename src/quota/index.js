@@ -1,0 +1,135 @@
+import { cachedQuota, saveQuotaCache } from '../telemetry/client.js';
+import { effectiveEnv } from '../config/settings.js';
+import { HttpError, googleFetch, operation } from '../core/common.js';
+import { accessToken, parseCredentialData } from '../credentials/index.js';
+import { modelCatalog } from '../models/names.js';
+import { upstreamOrigin } from '../upstream/index.js';
+
+export function normalizeQuota(value) {
+  const source = value?.models;
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new HttpError(502, 'Google 未返回有效的模型额度信息');
+  }
+  const names = modelCatalog(Object.entries(source));
+  const publicIds = new Map(Object.entries(names.routes).map(([name, raw]) => [raw, name]));
+  return Object.entries(source).map(([rawId, model]) => {
+    const id = publicIds.get(rawId) || rawId;
+    const quota = model?.quotaInfo;
+    const fraction = quota?.remainingFraction;
+    // Missing, null and malformed values do not imply a zero balance.
+    const remaining =
+      typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+        ? fraction
+        : null;
+    const reset = quota?.resetTime;
+    const resetTime =
+      typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? reset : null;
+    return { id, remaining, resetTime };
+  });
+}
+
+// Gemini CLI reports quota buckets rather than Antigravity's model map.
+// Keep missing fractions/counts unknown; do not derive a total allowance from them.
+export function normalizeGeminiCliQuota(value) {
+  if (!Array.isArray(value?.buckets))
+    throw new HttpError(502, 'Google 未返回有效的 GeminiCLI 配额信息');
+  return value.buckets.map((bucket, index) => {
+    const fraction = bucket?.remainingFraction,
+      reset = bucket?.resetTime;
+    const amount = bucket?.remainingAmount;
+    return {
+      id:
+        typeof bucket?.modelId === 'string' && bucket.modelId.trim()
+          ? bucket.modelId.slice(0, 200)
+          : '共享配额',
+      remaining:
+        typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
+          ? fraction
+          : null,
+      resetTime: typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? reset : null,
+      remainingAmount:
+        typeof amount === 'string' && /^\d{1,30}$/.test(amount)
+          ? amount
+          : Number.isSafeInteger(amount) && amount >= 0
+            ? String(amount)
+            : null,
+      tokenType: typeof bucket?.tokenType === 'string' ? bucket.tokenType.slice(0, 100) : null,
+      bucketIndex: index,
+    };
+  });
+}
+
+export async function credentialQuota(env, id, fetcher = fetch, options = {}) {
+  if (!options.fresh) {
+    const cached = await cachedQuota(env, id);
+    if (cached) return cached;
+  }
+  const value = await fetchCredentialQuota(env, id, fetcher);
+  await saveQuotaCache(env, id, value);
+  return { ...value, cached: false, cacheSeconds: env.TELEMETRY ? 600 : 0 };
+}
+async function fetchCredentialQuota(env, id, fetcher) {
+  const row = await operation('credential_read', () =>
+    env.DB.prepare('SELECT * FROM credentials WHERE id=?').bind(id).first(),
+  );
+  if (!row) throw new HttpError(404, '凭证不存在');
+  if (!['antigravity', 'geminicli'].includes(row.mode)) throw new HttpError(400, '未知凭证渠道');
+  row.data = parseCredentialData(row.data);
+  env = await effectiveEnv(env);
+  const origin = upstreamOrigin(env, row.mode);
+  const cli = row.mode === 'geminicli';
+  if (cli && (typeof row.data.project_id !== 'string' || !row.data.project_id.trim()))
+    throw new HttpError(400, 'GeminiCLI 凭证缺少 project_id，请先校验项目');
+  let token = await operation('oauth_refresh', () => accessToken(env.DB, row, fetcher, false, env));
+  const signal = AbortSignal.timeout(30000);
+  const send = () =>
+    googleFetch(
+      fetcher,
+      `${origin}/v1internal:${cli ? 'retrieveUserQuota' : 'fetchAvailableModels'}`,
+      {
+        method: 'POST',
+        redirect: 'manual',
+        signal,
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json',
+          'user-agent': cli ? 'GeminiCLI' : 'antigravity/hub/2.23.1 darwin/arm64',
+        },
+        body: cli ? JSON.stringify({ project: row.data.project_id }) : '{}',
+      },
+      'quota_fetch',
+    );
+  let response;
+  try {
+    response = await send();
+    if (response.status === 401 && row.data.refresh_token) {
+      await response.body?.cancel();
+      token = await accessToken(env.DB, row, fetcher, true, env);
+      response = await send();
+    }
+  } catch (error) {
+    if (error instanceof HttpError) throw error;
+    throw new HttpError(502, 'Google 额度查询连接失败或超时，请稍后重试');
+  }
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new HttpError(
+      response.status >= 400 && response.status < 600 ? response.status : 502,
+      `Google 额度查询失败 (HTTP ${response.status})，请检查账号资格、凭证和地区限制`,
+    );
+  }
+  let value;
+  try {
+    value = await response.json();
+  } catch {
+    throw new HttpError(502, 'Google 额度接口返回了无效 JSON');
+  }
+  if (value?.error) throw new HttpError(502, 'Google 额度接口返回了错误');
+  return {
+    success: true,
+    credentialId: id,
+    mode: row.mode,
+    queriedAt: new Date().toISOString(),
+    models: cli ? normalizeGeminiCliQuota(value) : normalizeQuota(value),
+  };
+}

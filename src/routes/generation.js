@@ -1,24 +1,24 @@
-import { prepareClientTools, restoreToolNames } from '../tool-compat.js';
-import { fakeStream } from '../fake-stream.js';
-import { collectContinuations } from '../continuation.js';
-import { boundedSeconds, clientAborted } from '../timeouts.js';
-import { HttpError, json, readJson } from '../common.js';
-import { authenticateApi } from '../api-keys.js';
-import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../convert.js';
-import { collectGoogleResponse } from '../stream-collect.js';
-import { callUpstream } from '../upstream.js';
-import { discoverModels } from '../model-list.js';
-import { callUnifiedUpstream, discoverUnifiedModels } from '../unified.js';
-import { recordAttempt } from '../reliability.js';
-import { recordTelemetry } from '../metrics.js';
-import { effectiveEnv } from '../settings.js';
+import { prepareClientTools, restoreToolNames } from '../protocols/tool-compat.js';
+import { fakeStream } from '../upstream/fake-stream.js';
+import { collectContinuations } from '../upstream/continuation.js';
+import { boundedSeconds, clientAborted } from '../upstream/timeouts.js';
+import { HttpError, json, readJson } from '../core/common.js';
+import { authenticateApi } from '../auth/api-keys.js';
+import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../protocols/openai.js';
+import { collectGoogleResponse } from '../upstream/stream-collect.js';
+import { callUpstream } from '../upstream/index.js';
+import { discoverModels } from '../models/list.js';
+import { callUnifiedUpstream, discoverUnifiedModels } from '../upstream/unified.js';
+import { recordAttempt } from '../upstream/reliability.js';
+import { recordTelemetry } from '../telemetry/index.js';
+import { effectiveEnv } from '../config/settings.js';
 import {
   anthropicToGemini,
   geminiToAnthropic,
   anthropicStream,
   estimateTokens,
   anthropicErrorType,
-} from '../anthropic.js';
+} from '../protocols/anthropic.js';
 
 function validateModel(model) {
   if (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(model)) {

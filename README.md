@@ -304,14 +304,20 @@ npm run check
 
 ## 代码结构与维护
 
-- `src/index.js`：Worker 入口、页面分发、公共错误和 CORS；版本统一在 `src/version.js`。
-- `src/routes/`：登录会话、管理接口、生成协议路由，避免所有接口堆在入口。
-- `src/telemetry/`：请求记录、持久缓冲、统计查询和账号健康；`src/metrics.js` 只导出统一接口。
-- `src/panel.js`：组装管理页；`panel-pages/` 放各页 HTML，`panel-scripts/` 放对应交互脚本，样式和图表独立管理。页面仍以同源单文件提供，无前端构建依赖。
-- `src/shared-cache.js` / `src/db-cache.js`：共享 KV 与实例内元数据缓存。
-- `scripts/prepare-kv.mjs`：部署时准备命名资源；`scripts/format-panel.mjs`：格式化嵌入式管理页脚本。
-- `migrations/`：已发布 SQL 保持不可变，新增结构用新的迁移文件。
-- `test/`：协议、真实运行时、页面、持久聚合及 D1 成本回归；fixture 不包含真实账号。
+- `src/index.js`：Worker 唯一入口，保持 Wrangler 入口和 DO 导出不变。
+- `src/routes/`：登录会话、管理接口和生成协议的 HTTP 路由。
+- `src/auth/`：API 密钥和管理台会话鉴权。
+- `src/credentials/`：Google 凭证、OAuth、账号校验、导入导出及去重。
+- `src/models/`、`src/quota/`：模型发现与名称映射、Google 额度及共享额度分组。
+- `src/protocols/`：OpenAI、Anthropic、Gemini 请求转换和工具兼容。
+- `src/upstream/`：上游请求、统一渠道调度、超时重试、流式汇总及续写。
+- `src/telemetry/`：请求记录、持久缓冲、历史统计、账号健康、日志保留和查询筛选；`index.js` 统一导出统计接口。
+- `src/storage/`：跨账号 Pages / DO 节点创建、持久缓存、轮换与故障回退。
+- `src/cache/`、`src/config/`：共享 KV、实例内元数据缓存与运行配置。
+- `src/panel/`：管理页组装、样式、图表与图标；`pages/` 放页面 HTML，`scripts/` 放对应交互脚本。页面仍以同源单文件提供，无前端构建依赖。
+- `src/core/`：公共响应与错误处理、地区探测、ZIP 工具；版本统一在 `version.js`。
+
+新增模块放入对应业务目录；跨模块使用显式相对路径。`scripts/format-panel.mjs` 同时校验管理页字符串中的 JavaScript 格式，测试直接引用各业务模块。
 
 修改代码后运行 `npm run format`、`npm test`、`npm run format:check` 和 `npm run check`。最后一项只打包，不创建资源、不迁移远程数据库、不发布。
 

@@ -4,11 +4,11 @@ import { readFile, readdir } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 import worker, { handleRequest } from '../src/index.js';
-import { effectiveEnv, readSettings, saveSettings } from '../src/settings.js';
-import { recordUsage, usageStats } from '../src/metrics.js';
-import { queryCallLogs, clearCallLogs } from '../src/reliability.js';
-import { dbCache } from '../src/db-cache.js';
-import { listCredentials } from '../src/credentials.js';
+import { effectiveEnv, readSettings, saveSettings } from '../src/config/settings.js';
+import { recordUsage, usageStats } from '../src/telemetry/index.js';
+import { queryCallLogs, clearCallLogs } from '../src/upstream/reliability.js';
+import { dbCache } from '../src/cache/db.js';
+import { listCredentials } from '../src/credentials/index.js';
 import { credentialHealth } from '../src/telemetry/health.js';
 globalThis.crypto ||= webcrypto;
 async function database(run) {

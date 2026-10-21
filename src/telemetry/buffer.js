@@ -1,5 +1,5 @@
 import { StatsHistory } from './history.js';
-import { HttpError } from '../common.js';
+import { HttpError } from '../core/common.js';
 const WINDOW = 300000;
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {

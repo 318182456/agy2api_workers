@@ -1,5 +1,5 @@
 import { telemetryStub, telemetryPayload } from './client.js';
-import { maybePrune } from '../maintenance.js';
+import { maybePrune } from './maintenance.js';
 
 export function reportedUsage(meta) {
   const number = (key) => (Number.isSafeInteger(meta?.[key]) && meta[key] >= 0 ? meta[key] : null);

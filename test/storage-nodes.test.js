@@ -1,5 +1,5 @@
 import { usageStats } from '../src/telemetry/stats.js';
-import { dbCache } from '../src/db-cache.js';
+import { dbCache } from '../src/cache/db.js';
 import {
   readNodeCache,
   writeNodeCache,

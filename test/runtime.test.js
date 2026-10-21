@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { pruneTelemetry } from '../src/maintenance.js';
+import { pruneTelemetry } from '../src/telemetry/maintenance.js';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
 

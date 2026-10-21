@@ -1,5 +1,5 @@
 import { nodeSchedule } from './client.js';
-import { HttpError, json, readJson } from '../common.js';
+import { HttpError, json, readJson } from '../core/common.js';
 import { storageNodeSource, storagePagesSource } from './node-worker.js';
 
 const publicFields =

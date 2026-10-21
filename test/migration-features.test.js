@@ -4,10 +4,10 @@ import { readFile, readdir } from 'node:fs/promises';
 import { webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, Response as UpstreamResponse, Log, LogLevel } from 'miniflare';
-import { prepareClientTools, normalizeToolHistory } from '../src/tool-compat.js';
-import { readZip, writeZip, crc32 } from '../src/zip.js';
-import { fakeStream } from '../src/fake-stream.js';
-import { readSettings, validateSetting } from '../src/settings.js';
+import { prepareClientTools, normalizeToolHistory } from '../src/protocols/tool-compat.js';
+import { readZip, writeZip, crc32 } from '../src/core/zip.js';
+import { fakeStream } from '../src/upstream/fake-stream.js';
+import { readSettings, validateSetting } from '../src/config/settings.js';
 globalThis.crypto ||= webcrypto;
 const a = '11111111-1111-4111-8111-111111111111',
   b = '22222222-2222-4222-8222-222222222222',

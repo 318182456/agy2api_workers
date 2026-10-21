@@ -1,4 +1,4 @@
-import { dbCache } from '../db-cache.js';
+import { dbCache } from '../cache/db.js';
 
 const HOUR = 3600000;
 const CONFIG_TTL = 300000;

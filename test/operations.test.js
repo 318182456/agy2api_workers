@@ -4,12 +4,12 @@ import { readFile } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflare';
 import { webcrypto } from 'node:crypto';
-import { weightedChoice, selectCredential } from '../src/credentials.js';
-import { filters } from '../src/filters.js';
-import { pruneTelemetry } from '../src/maintenance.js';
-import { reportedUsage, recordUsage } from '../src/metrics.js';
+import { weightedChoice, selectCredential } from '../src/credentials/index.js';
+import { filters } from '../src/telemetry/filters.js';
+import { pruneTelemetry } from '../src/telemetry/maintenance.js';
+import { reportedUsage, recordUsage } from '../src/telemetry/index.js';
 import { handleRequest } from '../src/index.js';
-import { validateSetting } from '../src/settings.js';
+import { validateSetting } from '../src/config/settings.js';
 globalThis.crypto ||= webcrypto;
 const a = '11111111-1111-4111-8111-111111111111',
   b = '22222222-2222-4222-8222-222222222222';

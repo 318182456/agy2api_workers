@@ -3,9 +3,9 @@ import { readKvStatsSnapshot, statsCacheKey } from './stats-cache.js';
 import { summarizeRows } from './rollup.js';
 import { readStatsSnapshot, writeStatsSnapshot, STATS_CACHE_SECONDS } from './stats-cache.js';
 import { pendingTelemetry, queryTelemetryStats } from './client.js';
-import { HttpError } from '../common.js';
-import { dbCache } from '../db-cache.js';
-import { filters, credentialJoin, displayName } from '../filters.js';
+import { HttpError } from '../core/common.js';
+import { dbCache } from '../cache/db.js';
+import { filters, credentialJoin, displayName } from './filters.js';
 
 const metricKeys = [
   'requests',

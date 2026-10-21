@@ -1,11 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanToolSchema } from '../src/schema.js';
-import { normalizeRequest } from '../src/normalize.js';
-import { openaiToGemini } from '../src/convert.js';
-import { anthropicToGemini } from '../src/anthropic.js';
-import { collectGoogleStream } from '../src/stream-collect.js';
-import { validateSetting } from '../src/settings.js';
+import { cleanToolSchema } from '../src/protocols/schema.js';
+import { normalizeRequest } from '../src/protocols/gemini.js';
+import { openaiToGemini } from '../src/protocols/openai.js';
+import { anthropicToGemini } from '../src/protocols/anthropic.js';
+import { collectGoogleStream } from '../src/upstream/stream-collect.js';
+import { validateSetting } from '../src/config/settings.js';
 const message = { contents: [{ role: 'user', parts: [{ text: 'hi' }] }] };
 const stream = (values) =>
   new Response(

@@ -1,5 +1,5 @@
-import { equalSecret, HttpError, json, readJson } from '../common.js';
-import { checkOrigin, createSession, clearSession, hasSession } from '../session.js';
+import { equalSecret, HttpError, json, readJson } from '../core/common.js';
+import { checkOrigin, createSession, clearSession, hasSession } from '../auth/session.js';
 
 export async function sessionRoute(request, env) {
   const url = new URL(request.url);

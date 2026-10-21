@@ -1,12 +1,17 @@
 import test from 'node:test';
-import { dbCache as probeCache } from '../src/db-cache.js';
+import { dbCache as probeCache } from '../src/cache/db.js';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
 import { handleRequest } from '../src/index.js';
-import { accessToken, importCredential } from '../src/credentials.js';
-import { convertedStream, geminiToOpenai, openaiToGemini, sseEvents } from '../src/convert.js';
-import { upstreamPayload } from '../src/upstream.js';
-import { readJson } from '../src/common.js';
+import { accessToken, importCredential } from '../src/credentials/index.js';
+import {
+  convertedStream,
+  geminiToOpenai,
+  openaiToGemini,
+  sseEvents,
+} from '../src/protocols/openai.js';
+import { upstreamPayload } from '../src/upstream/index.js';
+import { readJson } from '../src/core/common.js';
 globalThis.crypto ||= webcrypto;
 const env = {
   API_PASSWORD: 'api-secret',
@@ -399,7 +404,7 @@ function quotaDB(mode = 'antigravity', data = rowData(), exists = true) {
 }
 
 test('quota normalization distinguishes zero, missing, invalid and full quota', async () => {
-  const { normalizeQuota } = await import('../src/quota.js');
+  const { normalizeQuota } = await import('../src/quota/index.js');
   const result = normalizeQuota({
     models: {
       empty: { quotaInfo: { remainingFraction: 0, resetTime: '2026-10-15T03:08:36Z' } },
@@ -547,7 +552,7 @@ test('quota errors preserve region status and distinguish invalid responses', as
 });
 
 test('management page embeds valid JavaScript with quota controls and fixed timezone', async () => {
-  const { panel } = await import('../src/panel.js');
+  const { panel } = await import('../src/panel/index.js');
   const script = panel.match(/<script>([\s\S]*?)<\/script>/)[1];
   assert.doesNotThrow(() => new Function(script));
   assert.match(script, /查看额度/);
@@ -576,7 +581,7 @@ test('known OAuth client prevents import into the wrong channel', async () => {
 });
 
 test('credential metadata reports detected mode without exposing stored tokens', async () => {
-  const { listCredentials } = await import('../src/credentials.js');
+  const { listCredentials } = await import('../src/credentials/index.js');
   const data = { ...rowData(), client_id: 'test-antigravity-client' };
   const db = {
     prepare() {
@@ -620,7 +625,7 @@ test('repair mode via admin endpoint preserves enabled state without changing to
 });
 
 test('mode repair rejects known incompatible target, missing row, and duplicate name', async () => {
-  const { updateCredential } = await import('../src/credentials.js');
+  const { updateCredential } = await import('../src/credentials/index.js');
   const data = { ...rowData(), client_id: 'test-antigravity-client' };
   await assert.rejects(
     updateCredential(quotaDB('antigravity', data), quotaId, { mode: 'geminicli' }, env),
@@ -647,7 +652,7 @@ test('mode repair rejects known incompatible target, missing row, and duplicate 
 });
 
 test('disabled PATCH still works for incorrectly categorized old credentials', async () => {
-  const { updateCredential } = await import('../src/credentials.js');
+  const { updateCredential } = await import('../src/credentials/index.js');
   const db = quotaDB('geminicli', { ...rowData(), client_id: 'test-antigravity-client' });
   await updateCredential(db, quotaId, { disabled: false });
   assert.deepEqual(db.calls.find((call) => call.sql.startsWith('UPDATE')).args, [
@@ -782,7 +787,7 @@ test('signed session survives new page requests without sending the management p
 });
 
 test('session signature, expiration, password rotation and origin binding are enforced', async () => {
-  const { createSession, hasSession, SESSION_SECONDS } = await import('../src/session.js');
+  const { createSession, hasSession, SESSION_SECONDS } = await import('../src/auth/session.js');
   const base = new Request('https://example.com/');
   const cookie = (await createSession(base, 'password')).split(';')[0];
   const withCookie = (origin = 'https://example.com', value = cookie) =>
@@ -845,7 +850,7 @@ test('logout expires cookie and cross-origin login is rejected', async () => {
 });
 
 test('Google redirects are not followed and are classified separately from network failure', async () => {
-  const { googleFetch } = await import('../src/common.js');
+  const { googleFetch } = await import('../src/core/common.js');
   let calls = 0;
   await assert.rejects(
     googleFetch(
@@ -872,7 +877,7 @@ test('OAuth endpoints reject unauthenticated callers, forged and malformed callb
     (await handleRequest(request('/admin/oauth/start', { mode: 'antigravity' }), local)).status,
     401,
   );
-  const { completeOAuth } = await import('../src/oauth.js');
+  const { completeOAuth } = await import('../src/credentials/oauth.js');
   for (const url of [
     'https://evil.example/?code=x&state=s',
     'http://localhost:11451/?code=x',
@@ -893,7 +898,7 @@ test('OAuth endpoints reject unauthenticated callers, forged and malformed callb
 });
 
 test('GeminiCLI verifies its managed project through Code Assist rather than unrelated Cloud projects', async () => {
-  const { verifyProject } = await import('../src/account.js');
+  const { verifyProject } = await import('../src/credentials/account.js');
   const db = fakeDB();
   const row = {
     id: '1',
@@ -920,7 +925,7 @@ test('GeminiCLI verifies its managed project through Code Assist rather than unr
 });
 
 test('GeminiCLI onboarding keeps free requests projectless and resumes a pending operation', async () => {
-  const { verifyProject } = await import('../src/account.js');
+  const { verifyProject } = await import('../src/credentials/account.js');
   const db = fakeDB();
   const row = {
     id: '1',
@@ -953,7 +958,7 @@ test('GeminiCLI onboarding keeps free requests projectless and resumes a pending
 });
 
 test('GeminiCLI never claims verification success without a project or ignores account verification', async () => {
-  const { verifyProject } = await import('../src/account.js');
+  const { verifyProject } = await import('../src/credentials/account.js');
   for (const value of [
     { currentTier: { id: 'standard-tier' } },
     { ineligibleTiers: [{ reasonCode: 'VALIDATION_REQUIRED' }] },
@@ -1078,7 +1083,7 @@ test('dynamic discovery refreshes an expired credential and retries an upstream 
 });
 
 test('known Gemini thinking profiles translate effort, budget and suffixes without mutating inputs', async () => {
-  const { normalizeRequest } = await import('../src/normalize.js');
+  const { normalizeRequest } = await import('../src/protocols/gemini.js');
   const original = {
     contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
     generationConfig: {
@@ -1107,7 +1112,7 @@ test('known Gemini thinking profiles translate effort, budget and suffixes witho
 });
 
 test('message cleanup preserves tool signatures and drops only model-specific trailing prefill', async () => {
-  const { normalizeRequest } = await import('../src/normalize.js');
+  const { normalizeRequest } = await import('../src/protocols/gemini.js');
   const input = {
     contents: [
       { role: 'user', parts: [{ text: '' }, { text: 'hi' }] },
@@ -1127,7 +1132,7 @@ test('message cleanup preserves tool signatures and drops only model-specific tr
 });
 
 test('Retry-After seconds and HTTP dates determine bounded cooldowns', async () => {
-  const { cooldownSeconds } = await import('../src/reliability.js');
+  const { cooldownSeconds } = await import('../src/upstream/reliability.js');
   assert.equal(
     cooldownSeconds(new Response('', { status: 429, headers: { 'retry-after': '90' } })),
     90,
@@ -1164,7 +1169,7 @@ test('call log API is management-only and rejects invalid pagination', async () 
 });
 
 test('native Gemini role omission is accepted and Antigravity tool schema fields do not conflict', async () => {
-  const { normalizeRequest } = await import('../src/normalize.js');
+  const { normalizeRequest } = await import('../src/protocols/gemini.js');
   const result = normalizeRequest(
     {
       contents: [{ parts: [{ text: 'hello' }] }],
@@ -1192,7 +1197,7 @@ test('native Gemini role omission is accepted and Antigravity tool schema fields
 });
 
 test('rename accepts trimmed display names and rejects empty, long or control-character names', async () => {
-  const { updateCredential } = await import('../src/credentials.js');
+  const { updateCredential } = await import('../src/credentials/index.js');
   for (const name of ['', '   ', 'x'.repeat(201), 'bad\nname', 123]) {
     await assert.rejects(
       updateCredential(fakeDB(), quotaId, { name }),
@@ -1211,7 +1216,7 @@ test('rename accepts trimmed display names and rejects empty, long or control-ch
 });
 
 test('settings validate allowed keys, attempt bounds and model IDs', async () => {
-  const { validateSetting } = await import('../src/settings.js');
+  const { validateSetting } = await import('../src/config/settings.js');
   assert.throws(() => validateSetting('GEMINICLI_MODELS', 'a'), /不支持/);
   assert.throws(() => validateSetting('ANTIGRAVITY_MODELS', ''), /不支持/);
   assert.equal(validateSetting('MAX_CREDENTIAL_ATTEMPTS', null), null);
@@ -1222,7 +1227,7 @@ test('settings validate allowed keys, attempt bounds and model IDs', async () =>
 });
 
 test('Anthropic conversion preserves system, images, tool IDs/results and real thinking signatures', async () => {
-  const { anthropicToGemini, geminiToAnthropic } = await import('../src/anthropic.js');
+  const { anthropicToGemini, geminiToAnthropic } = await import('../src/protocols/anthropic.js');
   const converted = anthropicToGemini({
     model: 'gemini-2.5-flash',
     max_tokens: 1000,
@@ -1305,7 +1310,7 @@ test('Anthropic conversion preserves system, images, tool IDs/results and real t
 });
 
 test('Anthropic unsupported content/tools and unmatched tool results fail clearly', async () => {
-  const { anthropicToGemini } = await import('../src/anthropic.js');
+  const { anthropicToGemini } = await import('../src/protocols/anthropic.js');
   const base = { model: 'm', max_tokens: 100, messages: [{ role: 'user', content: 'hello' }] };
   assert.throws(() => anthropicToGemini({ ...base, max_tokens: 0 }), /正整数/);
   assert.throws(
@@ -1330,7 +1335,7 @@ test('Anthropic unsupported content/tools and unmatched tool results fail clearl
 });
 
 test('Anthropic SSE uses ordered content blocks and tool JSON/signature events without DONE', async () => {
-  const { anthropicStream } = await import('../src/anthropic.js');
+  const { anthropicStream } = await import('../src/protocols/anthropic.js');
   const data = [
     {
       candidates: [
@@ -1384,7 +1389,7 @@ test('Anthropic SSE uses ordered content blocks and tool JSON/signature events w
 });
 
 test('Anthropic truncated stream produces an error event without message_stop and cancels pending reads', async () => {
-  const { anthropicStream } = await import('../src/anthropic.js');
+  const { anthropicStream } = await import('../src/protocols/anthropic.js');
   let logged = 0;
   const data = 'data: {"response":{"candidates":[{"content":{"parts":[{"text":"partial"}]}}]}}\n\n';
   const text = await new Response(
@@ -1412,7 +1417,7 @@ test('Anthropic truncated stream produces an error event without message_stop an
 });
 
 test('Messages and Gemini token counting is local, estimated and ignores base64 payload size', async () => {
-  const { estimateTokens } = await import('../src/anthropic.js');
+  const { estimateTokens } = await import('../src/protocols/anthropic.js');
   const count = (size) =>
     estimateTokens({
       contents: [
@@ -1488,8 +1493,8 @@ test('management page deep links survive refresh and unknown paths remain 404', 
 });
 
 test('OAuth configuration is isolated by environment and missing configuration fails before DB writes', async () => {
-  const { startOAuth } = await import('../src/oauth.js');
-  const { detectedMode } = await import('../src/credentials.js');
+  const { startOAuth } = await import('../src/credentials/oauth.js');
+  const { detectedMode } = await import('../src/credentials/index.js');
   const db = fakeDB();
   await assert.rejects(
     startOAuth(request('/admin/oauth/start', {}), { DB: db }, { mode: 'antigravity' }),
@@ -1567,7 +1572,7 @@ test('GeminiCLI quota uses official retrieveUserQuota request without generation
 });
 
 test('model names derive future versions automatically while preserving variants and collisions', async () => {
-  const { modelCatalog } = await import('../src/model-names.js');
+  const { modelCatalog } = await import('../src/models/names.js');
   const catalog = modelCatalog([
     ['gemini-future-agent', { displayName: 'Gemini 97.4 Pro' }],
     ['gemini-97.4-flash-preview-0821', { displayName: 'Gemini Flash' }],
@@ -1593,8 +1598,8 @@ test('model names derive future versions automatically while preserving variants
 });
 
 test('automatic model name survives a cold database scope via KV and sends the real channel ID', async () => {
-  const { discoverModels } = await import('../src/model-list.js');
-  const { callUpstream } = await import('../src/upstream.js');
+  const { discoverModels } = await import('../src/models/list.js');
+  const { callUpstream } = await import('../src/upstream/index.js');
   const entries = new Map();
   let writes = 0;
   const CACHE = {
@@ -1634,7 +1639,7 @@ test('automatic model name survives a cold database scope via KV and sends the r
   assert.equal(response.status, 200);
   assert.equal(sends, 1);
   assert.equal(writes, before, 'generation does not write KV');
-  const { normalizeQuota } = await import('../src/quota.js');
+  const { normalizeQuota } = await import('../src/quota/index.js');
   assert.equal(
     normalizeQuota({ models: { 'gemini-new-agent': { displayName: 'Gemini 97.4 Flash' } } })[0].id,
     'gemini-97.4-flash',
@@ -1643,7 +1648,7 @@ test('automatic model name survives a cold database scope via KV and sends the r
 
 test('official model reference extracts future codes, refreshes only for newly discovered models and keeps prior data on failure', async () => {
   const { officialModelIds, refreshOfficialModels, OFFICIAL_MODELS_URL } =
-    await import('../src/official-models.js');
+    await import('../src/models/official.js');
   assert.deepEqual(
     officialModelIds(
       '<code>gemini-97.4-flash</code><code>models/gemini-98-pro-preview</code><code>gemini-97.4-flash</code><code>made-up-agent</code>',
@@ -1709,7 +1714,7 @@ test('official model reference extracts future codes, refreshes only for newly d
 });
 
 test('GeminiCLI project requirements follow Google tier metadata rather than non-free ID guesses', async () => {
-  const { verifyProject } = await import('../src/account.js');
+  const { verifyProject } = await import('../src/credentials/account.js');
   for (const requirement of [false, undefined]) {
     const db = fakeDB();
     const row = {
@@ -1789,7 +1794,7 @@ test('GeminiCLI project requirements follow Google tier metadata rather than non
 });
 
 test('GeminiCLI validation-required response blocks onboarding even if a default tier is also returned', async () => {
-  const { verifyProject } = await import('../src/account.js');
+  const { verifyProject } = await import('../src/credentials/account.js');
   await assert.rejects(
     verifyProject(
       { DB: fakeDB() },
@@ -1881,7 +1886,7 @@ test('project-required response has a structured reason for the inline setup for
 });
 
 test('generation header timeout aborts stalled fetches but never times out an already received body', async (t) => {
-  const { fetchGeneration, clientAborted } = await import('../src/timeouts.js');
+  const { fetchGeneration, clientAborted } = await import('../src/upstream/timeouts.js');
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const hanging = fetchGeneration(
     async (url, options) =>
@@ -1961,7 +1966,7 @@ test('nonstream total timeout aborts a stalled response body and records 504 fai
 });
 
 test('generation timeout settings enforce bounded seconds and preserve defaults', async () => {
-  const { readSettings, validateSetting } = await import('../src/settings.js');
+  const { readSettings, validateSetting } = await import('../src/config/settings.js');
   const { defaults } = await readSettings({});
   assert.equal(defaults.UPSTREAM_TIMEOUT_SECONDS, 45);
   assert.equal(defaults.REQUEST_TIMEOUT_SECONDS, 100);
@@ -2014,7 +2019,7 @@ test('healthy streaming responses outlive the initial generation deadline withou
 });
 
 test('stream collection preserves a completed candidate when later metadata has an empty finish reason', async () => {
-  const { collectGoogleStream } = await import('../src/stream-collect.js');
+  const { collectGoogleStream } = await import('../src/upstream/stream-collect.js');
   const frames = [
     candidate('complete'),
     { candidates: [{ index: 0, finishReason: null }], usageMetadata: { totalTokenCount: 9 } },
@@ -2028,7 +2033,7 @@ test('stream collection preserves a completed candidate when later metadata has 
 });
 
 test('stream collection accepts complete JSON objects, JSON batches and mislabeled SSE without losing tool signatures', async () => {
-  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const { collectGoogleResponse } = await import('../src/upstream/stream-collect.js');
   const value = {
     response: {
       candidates: [
@@ -2061,7 +2066,7 @@ test('stream collection accepts complete JSON objects, JSON batches and mislabel
 });
 
 test('collection failures expose stable distinct reasons and never accept truncated or HTML responses as success', async () => {
-  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const { collectGoogleResponse } = await import('../src/upstream/stream-collect.js');
   for (const [body, type, code, status] of [
     ['<html>private body must not echo</html>', 'text/html', 'UPSTREAM_NOT_SSE', 502],
     ['broken JSON', 'application/json', 'UPSTREAM_STREAM_JSON_INVALID', 502],
@@ -2133,7 +2138,7 @@ test('malformed OpenAI messages and tools fail as 400 before contacting upstream
 });
 
 test('Flash-Lite thinking budgets preserve disable/dynamic and clamp the supported range', async () => {
-  const { normalizeRequest } = await import('../src/normalize.js');
+  const { normalizeRequest } = await import('../src/protocols/gemini.js');
   for (const [budget, expected] of [
     [0, 0],
     [-1, -1],
@@ -2196,9 +2201,9 @@ test('split SSE usage agrees with telemetry and does not reset prompt tokens', a
 });
 
 test('partial CLI model lists do not exclude explicitly requested Gemini models', async () => {
-  const { dbCache } = await import('../src/db-cache.js');
-  const { unifiedRouting } = await import('../src/unified.js');
-  const { knownModelId, publicModelId } = await import('../src/model-names.js');
+  const { dbCache } = await import('../src/cache/db.js');
+  const { unifiedRouting } = await import('../src/upstream/unified.js');
+  const { knownModelId, publicModelId } = await import('../src/models/names.js');
   const DB = fakeDB();
   const scope = dbCache(DB);
   scope.cliModels = { value: { ids: ['gemini-2.5-pro'], queriedAt: new Date().toISOString() } };
@@ -2251,7 +2256,7 @@ test('cancelling a request aborts OAuth refresh without persisting tokens', asyn
 });
 
 test('shared quota families count once per account and keep unknown windows unknown', async () => {
-  const { groupQuotaModels } = await import('../src/quota-groups.js');
+  const { groupQuotaModels } = await import('../src/quota/groups.js');
   const groups = groupQuotaModels([
     { id: 'gemini-2.5-flash', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
     { id: 'gemini-2.5-pro', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
@@ -2279,7 +2284,7 @@ test('shared quota families count once per account and keep unknown windows unkn
 });
 
 test('incomplete streams report safe shape diagnostics and retain reported token counts', async () => {
-  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const { collectGoogleResponse } = await import('../src/upstream/stream-collect.js');
   const privateText = 'PRIVATE_RESPONSE_TEXT';
   const privateArgs = 'PRIVATE_TOOL_ARGUMENT';
   const frames = [
@@ -2439,7 +2444,7 @@ test('OpenAI Gemini tool history preserves real signatures and supplies the docu
 });
 
 test('quota cooldown reads structured weekly resets without consuming the original error response', async () => {
-  const { cooldownSeconds, quotaCooldown } = await import('../src/reliability.js');
+  const { cooldownSeconds, quotaCooldown } = await import('../src/upstream/reliability.js');
   const now = Date.parse('2026-10-20T00:00:00Z');
   const body = {
     error: {
@@ -2482,7 +2487,7 @@ test('quota cooldown reads structured weekly resets without consuming the origin
 });
 
 test('quota error inspection is bounded when a JSON response body stalls', async (t) => {
-  const { quotaCooldown } = await import('../src/reliability.js');
+  const { quotaCooldown } = await import('../src/upstream/reliability.js');
   t.mock.timers.enable({ apis: ['setTimeout'] });
   let original;
   const response = new Response(
@@ -2501,7 +2506,7 @@ test('quota error inspection is bounded when a JSON response body stalls', async
 });
 
 test('OpenAI usage reports cached and reasoning token details without subtracting them twice', async () => {
-  const { usage } = await import('../src/convert.js');
+  const { usage } = await import('../src/protocols/openai.js');
   assert.deepEqual(
     usage({
       usageMetadata: {
@@ -2523,7 +2528,7 @@ test('OpenAI usage reports cached and reasoning token details without subtractin
 });
 
 test('single-frame text EOF compatibility is explicit and never accepts tools, broken streams or fabricated completion', async () => {
-  const { collectGoogleResponse } = await import('../src/stream-collect.js');
+  const { collectGoogleResponse } = await import('../src/upstream/stream-collect.js');
   const value = { response: { candidates: [{ content: { parts: [{ text: 'existing text' }] } }] } };
   const event = (raw) => 'data: ' + JSON.stringify(raw) + '\n\n';
   const response = (text) =>
@@ -2582,7 +2587,7 @@ test('single-frame text EOF compatibility is explicit and never accepts tools, b
 });
 
 test('active runtime probe uses a fixed endpoint without credentials or D1, caches and coalesces concurrent requests', async () => {
-  const { runtimeLocation } = await import('../src/runtime-location.js');
+  const { runtimeLocation } = await import('../src/core/runtime-location.js');
   const env = {
     DB: {
       prepare() {
@@ -2631,7 +2636,7 @@ test('active runtime probe uses a fixed endpoint without credentials or D1, cach
 });
 
 test('active runtime probe rejects unavailable, malformed and oversized trace without caching failure', async () => {
-  const { runtimeLocation } = await import('../src/runtime-location.js');
+  const { runtimeLocation } = await import('../src/core/runtime-location.js');
   const request = new Request('https://test/admin/runtime-location');
   for (const fetcher of [
     async () => new Response('loc=JP\ncolo=NRT', { status: 503 }),

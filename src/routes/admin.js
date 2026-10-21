@@ -1,28 +1,34 @@
 import { resetStorageNodes } from '../storage/client.js';
 import { storageNodesRoute } from '../storage/admin.js';
 import { invalidateTelemetryMetadata } from '../telemetry/client.js';
-import { dbCache } from '../db-cache.js';
-import { runtimeLocation } from '../runtime-location.js';
-import { importArchive, exportArchive } from '../credential-archive.js';
-import { configurePreview } from '../preview.js';
-import { HttpError, json, readJson, operation } from '../common.js';
+import { dbCache } from '../cache/db.js';
+import { runtimeLocation } from '../core/runtime-location.js';
+import { importArchive, exportArchive } from '../credentials/archive.js';
+import { configurePreview } from '../credentials/preview.js';
+import { HttpError, json, readJson, operation } from '../core/common.js';
 import {
   oauthClients,
   importCredential,
   listCredentials,
   updateCredential,
-} from '../credentials.js';
-import { startOAuth, completeOAuth } from '../oauth.js';
-import { credentialById, fetchEmail, verifyProject, testCredential, saveData } from '../account.js';
-import { credentialQuota } from '../quota.js';
-import { discoverModels } from '../model-list.js';
-import { queryCallLogs, clearCallLogs } from '../reliability.js';
-import { usageStats, credentialHealth } from '../metrics.js';
-import { effectiveEnv, readSettings, saveSettings } from '../settings.js';
-import { duplicateCredentials } from '../duplicates.js';
-import { authenticatePanel } from '../session.js';
+} from '../credentials/index.js';
+import { startOAuth, completeOAuth } from '../credentials/oauth.js';
+import {
+  credentialById,
+  fetchEmail,
+  verifyProject,
+  testCredential,
+  saveData,
+} from '../credentials/account.js';
+import { credentialQuota } from '../quota/index.js';
+import { discoverModels } from '../models/list.js';
+import { queryCallLogs, clearCallLogs } from '../upstream/reliability.js';
+import { usageStats, credentialHealth } from '../telemetry/index.js';
+import { effectiveEnv, readSettings, saveSettings } from '../config/settings.js';
+import { duplicateCredentials } from '../credentials/duplicates.js';
+import { authenticatePanel } from '../auth/session.js';
 import { flushTelemetry } from '../telemetry/client.js';
-import { apiKeysRoute } from '../api-keys.js';
+import { apiKeysRoute } from '../auth/api-keys.js';
 
 export async function adminRoute(request, env, fetcher) {
   let response;

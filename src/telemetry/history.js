@@ -1,5 +1,5 @@
-import { HttpError } from '../common.js';
-import { filters } from '../filters.js';
+import { HttpError } from '../core/common.js';
+import { filters } from './filters.js';
 import { summarizeRows } from './rollup.js';
 import { statsCacheKey, writeKvStatsSnapshot } from './stats-cache.js';
 

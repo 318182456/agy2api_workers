@@ -4,9 +4,9 @@ import { readFile, readdir } from 'node:fs/promises';
 import { randomUUID, webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflare';
-import { authenticateApi, parseKeyImport, keyHash, MASTER_KEY_ID } from '../src/api-keys.js';
-import { recordTelemetry, recordUsage, usageStats } from '../src/metrics.js';
-import { queryCallLogs, clearCallLogs } from '../src/reliability.js';
+import { authenticateApi, parseKeyImport, keyHash, MASTER_KEY_ID } from '../src/auth/api-keys.js';
+import { recordTelemetry, recordUsage, usageStats } from '../src/telemetry/index.js';
+import { queryCallLogs, clearCallLogs } from '../src/upstream/reliability.js';
 
 globalThis.crypto ||= webcrypto;
 let bundle;
@@ -526,7 +526,7 @@ test('problem events and exports identify managed/master keys, use renamed names
 });
 
 test('default Antigravity settings collect upstream SSE into ordinary OpenAI JSON for MoviePilot-compatible requests', async () => {
-  const { readSettings } = await import('../src/settings.js');
+  const { readSettings } = await import('../src/config/settings.js');
   const { defaults } = await readSettings({});
   let scenario = 'sse',
     calls = 0;

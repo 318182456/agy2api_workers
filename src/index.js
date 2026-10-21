@@ -1,13 +1,13 @@
-import { iconResponse } from './project-icon.js';
-import { VERSION } from './version.js';
-import { json, publicFailure } from './common.js';
-import { panel, isPanelPath } from './panel.js';
-import { anthropicErrorType } from './anthropic.js';
+import { iconResponse } from './panel/icon.js';
+import { VERSION } from './core/version.js';
+import { json, publicFailure } from './core/common.js';
+import { panel, isPanelPath } from './panel/index.js';
+import { anthropicErrorType } from './protocols/anthropic.js';
 import { adminRoute } from './routes/admin.js';
 import { sessionRoute } from './routes/session.js';
 import { generationRoute } from './routes/generation.js';
-import { pruneTelemetry } from './maintenance.js';
-import { warmSharedSettings } from './settings.js';
+import { pruneTelemetry } from './telemetry/maintenance.js';
+import { warmSharedSettings } from './config/settings.js';
 import { flushTelemetry } from './telemetry/client.js';
 export { TelemetryBuffer } from './telemetry/buffer.js';
 
