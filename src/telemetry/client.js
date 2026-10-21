@@ -1,3 +1,4 @@
+import { syncNodeTelemetry } from '../storage/telemetry.js';
 import { readNodeCache, writeNodeCache, invalidateNodeCaches } from '../storage/client.js';
 import { HttpError } from '../core/common.js';
 export function telemetryStub(env) {
@@ -7,6 +8,7 @@ export async function pendingTelemetry(env = {}) {
   if (env.INTERNAL_DO_STATS) return { buckets: [] };
   const stub = telemetryStub(env);
   if (!stub) return { buckets: [] };
+  await syncNodeTelemetry(env);
   const response = await stub.fetch('https://telemetry/snapshot');
   if (!response.ok)
     throw new HttpError(503, '用量持久缓冲暂时不可读，未返回不完整统计；请稍后重试或手动落盘');
@@ -15,6 +17,7 @@ export async function pendingTelemetry(env = {}) {
 export async function flushTelemetry(env) {
   const stub = telemetryStub(env);
   if (!stub) return { buckets_flushed: 0, pending: false };
+  await syncNodeTelemetry(env);
   const response = await stub.fetch('https://telemetry/flush', { method: 'POST' });
   if (!response.ok) throw new HttpError(503, '用量落盘失败，缓冲已保留，请稍后重试');
   return response.json();
@@ -58,6 +61,7 @@ export async function telemetryPayload(record) {
 }
 
 export async function queryTelemetryStats(env, params) {
+  await syncNodeTelemetry(env);
   const response = await telemetryStub(env).fetch('https://telemetry/stats?' + params);
   const value = await response.json();
   if (!response.ok)

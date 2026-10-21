@@ -1,3 +1,4 @@
+import { bufferedHealth, combineHealth } from './live-health.js';
 import { pendingTelemetry } from './client.js';
 
 export async function credentialHealth(db, id, env = {}) {
@@ -42,5 +43,6 @@ export async function credentialHealth(db, id, env = {}) {
     health.last_success = Math.max(health.last_success || 0, observed);
     if (health.last_success >= (health.last_failure || 0)) health.failure_streak = 0;
   }
+  health = combineHealth(health, bufferedHealth(snapshot.buckets).get(id), id);
   return { health, cooldowns: cooldowns.results };
 }

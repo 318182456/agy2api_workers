@@ -39,7 +39,7 @@ export async function callUnifiedUpstream(env, model, request, stream, signal, f
   const used = [];
   const select = () =>
     operation('credential_select', () =>
-      selectCredential(env.DB, 'auto', model, used, env.CREDENTIAL_SELECTION, routing),
+      selectCredential(env.DB, 'auto', model, used, env.CREDENTIAL_SELECTION, routing, env),
     );
   let row = await select();
   for (let attempt = 0; attempt < limit; attempt++) {

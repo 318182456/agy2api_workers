@@ -90,12 +90,13 @@ async function dispatchAdmin(request, env, fetcher) {
   if (url.pathname === '/admin/stats' && request.method === 'GET')
     return json(await usageStats(env.DB, url.searchParams, await effectiveEnv(env)));
   if (url.pathname === '/admin/calls') {
-    if (request.method === 'GET') return json(await queryCallLogs(env.DB, url.searchParams));
+    if (request.method === 'GET')
+      return json(await queryCallLogs(env.DB, url.searchParams, false, env));
     if (request.method === 'DELETE')
-      return json(await clearCallLogs(env.DB, url.searchParams, await readJson(request)));
+      return json(await clearCallLogs(env.DB, url.searchParams, await readJson(request), env));
   }
   if (url.pathname === '/admin/calls/export' && request.method === 'GET') {
-    const response = json(await queryCallLogs(env.DB, url.searchParams, true));
+    const response = json(await queryCallLogs(env.DB, url.searchParams, true, env));
     response.headers.set('content-disposition', 'attachment; filename="call-logs.json"');
     return response;
   }

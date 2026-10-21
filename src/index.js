@@ -1,3 +1,4 @@
+import { receiveNodeTelemetry } from './storage/telemetry.js';
 import { iconResponse } from './panel/icon.js';
 import { VERSION } from './core/version.js';
 import { json, publicFailure } from './core/common.js';
@@ -13,6 +14,7 @@ export { TelemetryBuffer } from './telemetry/buffer.js';
 
 async function route(request, env, fetcher, context) {
   const url = new URL(request.url);
+  if (url.pathname === '/internal/storage-telemetry') return receiveNodeTelemetry(request, env);
   if (['GET', 'HEAD'].includes(request.method)) {
     if (url.pathname === '/favicon.svg') return iconResponse(request);
     if (url.pathname === '/favicon.ico')

@@ -4,7 +4,11 @@ const HOUR = 3600000;
 const CONFIG_TTL = 300000;
 const failures = new WeakMap();
 export function resetStorageNodes(env) {
-  if (env.DB) delete dbCache(env.DB).storageNodes;
+  if (env.DB) {
+    delete dbCache(env.DB).storageNodes;
+    delete dbCache(env.DB).nodeTelemetryBackoff;
+    delete dbCache(env.DB).telemetryNodeAuth;
+  }
 }
 export async function storageNodes(env) {
   if (!env.DB || env.INTERNAL_DO_STATS) return [];

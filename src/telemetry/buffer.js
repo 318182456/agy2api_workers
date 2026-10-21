@@ -141,6 +141,72 @@ export class TelemetryBuffer {
         );
       }
     }
+    if (path === '/import' && request.method === 'POST') {
+      const { node_id, buckets } = await request.json();
+      const metrics = [
+        'requests',
+        'successes',
+        'failures',
+        'cancellations',
+        'total_duration_ms',
+        'token_reports',
+      ];
+      if (
+        !/^[a-f0-9-]{36}$/.test(node_id || '') ||
+        !Array.isArray(buckets) ||
+        buckets.length > 1000 ||
+        buckets.some(
+          (row) =>
+            typeof row.key !== 'string' ||
+            !new RegExp('^\\d{13}:[a-f0-9]{32}:' + node_id + '$').test(row.key) ||
+            !Number.isSafeInteger(row.version) ||
+            row.version < 1 ||
+            row.version > 2000 ||
+            !Array.isArray(row.members) ||
+            row.members.length !== row.version ||
+            new Set(row.members).size !== row.members.length ||
+            row.members.some((id) => typeof id !== 'string' || id.length > 100) ||
+            !row.value ||
+            row.value.created_at !== Number(row.key.slice(0, 13)) ||
+            row.value.requests !== row.version ||
+            !['success', 'failed', 'cancelled'].includes(row.value.outcome) ||
+            metrics.some((key) => !Number.isSafeInteger(row.value[key]) || row.value[key] < 0) ||
+            ['input_tokens', 'output_tokens', 'thought_tokens', 'total_tokens'].some(
+              (key) =>
+                row.value[key] != null &&
+                (!Number.isSafeInteger(row.value[key]) || row.value[key] < 0),
+            ),
+        )
+      )
+        return json({ error: 'invalid node telemetry' }, 400);
+      this.ctx.storage.transactionSync(() => {
+        for (const row of buckets) {
+          const previous = this.sql
+            .exec('SELECT version FROM buckets WHERE bucket_key=?', row.key)
+            .toArray()[0];
+          if (previous?.version >= row.version) continue;
+          this.sql.exec(
+            'INSERT INTO buckets(bucket_key,version,created_at,payload,members,dirty)VALUES(?,?,?,?,?,1) ON CONFLICT(bucket_key)DO UPDATE SET version=excluded.version,payload=excluded.payload,members=excluded.members,dirty=1',
+            row.key,
+            row.version,
+            row.value.created_at,
+            JSON.stringify(row.value),
+            JSON.stringify(row.members),
+          );
+          if (this.liveStatsBuckets)
+            this.liveStatsBuckets.set(row.key, {
+              bucket_key: row.key,
+              version: row.version,
+              created_at: row.value.created_at,
+              payload: JSON.stringify(row.value),
+              members: JSON.stringify(row.members),
+              dirty: 1,
+            });
+        }
+      });
+      if (buckets.length) await this.schedule();
+      return json({ success: true });
+    }
     if (path === '/record' && request.method === 'POST') {
       const value = await request.json();
       if (
@@ -312,6 +378,31 @@ export class TelemetryBuffer {
           this.env.DB.prepare(
             `INSERT INTO credential_health(credential_id,last_success,failure_streak)SELECT id,?,0 FROM credentials WHERE id=? ON CONFLICT(credential_id)DO UPDATE SET last_success=MAX(COALESCE(last_success,0),excluded.last_success),failure_streak=CASE WHEN COALESCE(last_failure,0)<=excluded.last_success THEN 0 ELSE failure_streak END WHERE last_success IS NULL OR last_success<excluded.last_success-300000 OR failure_streak>0`,
           ).bind(payload.last_success, payload.credential_id),
+        );
+      if (payload.credential_id && payload.last_used)
+        statements.push(
+          this.env.DB.prepare(
+            'UPDATE credentials SET last_used=MAX(COALESCE(last_used,0),?) WHERE id=? AND COALESCE(last_used,0)<?',
+          ).bind(payload.last_used, payload.credential_id, payload.last_used - 300000),
+        );
+      const failures = { ...(payload.attempt_health || {}) };
+      if (
+        payload.credential_id &&
+        payload.last_failure &&
+        payload.last_failure >= (failures[payload.credential_id]?.last_failure || 0)
+      )
+        failures[payload.credential_id] = payload;
+      for (const [id, failure] of Object.entries(failures))
+        statements.push(
+          this.env.DB.prepare(
+            `INSERT INTO credential_health(credential_id,last_failure,last_status,last_stage,last_code,failure_streak) SELECT id,?,?,?,?,1 FROM credentials WHERE id=? ON CONFLICT(credential_id)DO UPDATE SET last_failure=excluded.last_failure,last_status=excluded.last_status,last_stage=excluded.last_stage,last_code=excluded.last_code,failure_streak=CASE WHEN COALESCE(last_success,0)>=excluded.last_failure THEN 0 ELSE failure_streak+1 END WHERE COALESCE(last_failure,0)<excluded.last_failure`,
+          ).bind(
+            failure.last_failure,
+            failure.last_status,
+            failure.last_stage || 'request_failed',
+            failure.last_code || null,
+            id,
+          ),
         );
       await this.env.DB.batch(statements);
       // A request arriving during the D1 await changes version and remains dirty for the next flush.

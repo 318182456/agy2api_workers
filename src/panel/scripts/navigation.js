@@ -132,7 +132,7 @@ function showPage(id, historyMode = 'push', params) {
   applyTargetFilters(params || new URLSearchParams(location.search || ''));
 }
 async function loadPage(id) {
-  if (loadedPages.has(id) && id !== 'storage') return;
+  if (loadedPages.has(id) && !['storage', 'overview', 'keys'].includes(id)) return;
   const parent = parentPage(id);
   status('正在加载页面…');
   if (parent === 'overview') {

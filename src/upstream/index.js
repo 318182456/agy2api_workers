@@ -73,7 +73,7 @@ export async function callUpstream(
   let row =
     initialRow ||
     (await operation('credential_select', () =>
-      selectCredential(env.DB, mode, model, [], env.CREDENTIAL_SELECTION),
+      selectCredential(env.DB, mode, model, [], env.CREDENTIAL_SELECTION, null, env),
     ));
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     used.push(row.id);
@@ -188,7 +188,7 @@ export async function callUpstream(
       let next;
       try {
         next = await operation('credential_select', () =>
-          selectCredential(env.DB, mode, model, used, env.CREDENTIAL_SELECTION),
+          selectCredential(env.DB, mode, model, used, env.CREDENTIAL_SELECTION, null, env),
         );
       } catch (error) {
         if (error instanceof HttpError && [429, 503].includes(error.status)) return response;
@@ -224,7 +224,7 @@ export async function callUpstream(
         let next;
         try {
           next = await operation('credential_select', () =>
-            selectCredential(env.DB, mode, model, used, env.CREDENTIAL_SELECTION),
+            selectCredential(env.DB, mode, model, used, env.CREDENTIAL_SELECTION, null, env),
           );
         } catch (selectionError) {
           if (!(selectionError instanceof HttpError) || ![429, 503].includes(selectionError.status))

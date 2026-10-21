@@ -59,6 +59,17 @@ export async function nodeUsage(env, row, fetcher = fetch, fresh = false) {
         started_at: data.started_at,
         sampled_at: data.sampled_at,
         approximate: true,
+        telemetry:
+          data.telemetry?.supported === true
+            ? {
+                supported: true,
+                today_requests: count(data.telemetry.today_requests),
+                pending_requests: count(data.telemetry.pending_requests),
+                pending_buckets: count(data.telemetry.pending_buckets),
+                interval_seconds: 300,
+                events: count(data.telemetry.events),
+              }
+            : { supported: false },
       };
     }
   } catch {

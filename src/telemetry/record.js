@@ -1,3 +1,5 @@
+import { diagnosticEvents } from '../storage/events.js';
+import { recordNodeTelemetry } from '../storage/telemetry.js';
 import { telemetryStub, telemetryPayload } from './client.js';
 import { maybePrune } from './maintenance.js';
 
@@ -81,6 +83,14 @@ export async function recordTelemetry(env, record) {
   const stub = telemetryStub(env);
   if (!stub || env.USAGE_STORAGE_MODE === 'detailed') return recordUsage(env.DB, record);
   const payload = await telemetryPayload(record);
+  const node = await recordNodeTelemetry(env, {
+    ...payload,
+    diagnostics: await diagnosticEvents(record),
+  });
+  if (node) {
+    if (node.accepted) return;
+    return recordUsage(env.DB, { ...record, aggregateKey: node.key });
+  }
   let accepted = false,
     uncertain = false;
   for (let attempt = 0; attempt < 2; attempt++) {

@@ -51,6 +51,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
     internal?.apiKey ||
     (await authenticateApi(request, env, !!nativeMatch || path === '/v1beta/models'));
   env = internal?.env || { ...(await effectiveEnv(env)), SESSION_SCOPE: apiKey.id };
+  env = { ...env, TELEMETRY_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher };
   if (isModelList) {
     const result = fixed
       ? await discoverModels(env, mode, fetcher)

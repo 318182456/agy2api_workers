@@ -1,4 +1,4 @@
-import { readNodeCache, writeNodeCache } from '../storage/client.js';
+import { storageNodes, readNodeCache, writeNodeCache } from '../storage/client.js';
 import { readKvStatsSnapshot, statsCacheKey } from './stats-cache.js';
 import { summarizeRows } from './rollup.js';
 import { readStatsSnapshot, writeStatsSnapshot, STATS_CACHE_SECONDS } from './stats-cache.js';
@@ -33,6 +33,15 @@ const source = (detailWhere, aggregateWhere) => `WITH usage_source AS (
 )`;
 const aggregates = metricKeys.map((key) => 'SUM(u.' + key + ') AS ' + key).join(',');
 export async function usageStats(db, params, env = {}) {
+  const liveNodes =
+    !env.INTERNAL_DO_STATS &&
+    env.TELEMETRY &&
+    env.USAGE_STORAGE_MODE !== 'detailed' &&
+    (await storageNodes(env)).length > 0;
+  if (liveNodes) {
+    params = new URLSearchParams(params);
+    params.set('fresh', '1');
+  }
   const safe = new URLSearchParams(params);
   safe.delete('stage');
   safe.delete('before');
@@ -113,13 +122,22 @@ export async function usageStats(db, params, env = {}) {
       const query = new URLSearchParams(params);
       query.set('cache_key', await statsCacheKey(env, key));
       const value = await queryTelemetryStats(env, query);
+      value.live_nodes = liveNodes;
       if (cache.stats.size >= 20) cache.stats.delete(cache.stats.keys().next().value);
       cache.stats.set(key, {
         until: Date.now() + STATS_CACHE_SECONDS * 1000,
         value: structuredClone(value),
       });
-      await writeStatsSnapshot(env, key, value);
-      await writeNodeCache(env, 'stats', key, value, value.cached_at + STATS_CACHE_SECONDS * 1000);
+      if (!liveNodes) {
+        await writeStatsSnapshot(env, key, value);
+        await writeNodeCache(
+          env,
+          'stats',
+          key,
+          value,
+          value.cached_at + STATS_CACHE_SECONDS * 1000,
+        );
+      }
       return value;
     }
     if (!safe.has('from')) safe.set('from', String(Date.now() - 30 * 86400000));

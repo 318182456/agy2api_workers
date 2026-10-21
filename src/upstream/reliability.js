@@ -1,3 +1,4 @@
+import { nodeEvents, mergeEvents } from '../storage/events.js';
 import { HttpError } from '../core/common.js';
 import { maybePrune, LOG_RETENTION_DAYS } from '../telemetry/maintenance.js';
 import { filters, credentialJoin } from '../telemetry/filters.js';
@@ -185,7 +186,7 @@ function eventFilters(params, cursor = true) {
     result.where += (result.where ? ' AND ' : ' WHERE ') + '(l.status>=400 OR l.retried=1)';
   const before = params.get('before');
   if (cursor && before) {
-    const match = before.match(/^(\d+):([012]):(\d+)$/);
+    const match = before.match(/^(\d+):([0123]):(\d+)$/);
     if (!match || ![match[1], match[3]].every((n) => Number.isSafeInteger(Number(n))))
       throw new HttpError(400, '分页游标已更新，请重新加载最新记录');
     const [time, source, id] = match.slice(1).map(Number);
@@ -196,7 +197,7 @@ function eventFilters(params, cursor = true) {
   }
   return result;
 }
-export async function queryCallLogs(db, params, exporting = false) {
+export async function queryCallLogs(db, params, exporting = false, env = {}) {
   const { where, values } = eventFilters(params);
   const limit = exporting ? 2000 : 50;
   const sql =
@@ -213,21 +214,24 @@ export async function queryCallLogs(db, params, exporting = false) {
     .prepare(sql)
     .bind(...values)
     .all();
-  const rows = result.results.slice(0, limit).map(logRow);
-  const last = rows.at(-1);
+  const combined = mergeEvents(
+    result.results.map(logRow),
+    await nodeEvents(env, params, { limit: limit + 1 }),
+    limit,
+  );
   return {
-    records: rows,
-    next:
-      result.results.length > limit ? `${last.created_at}:${last.event_source}:${last.id}` : null,
-    ...(exporting ? { truncated: result.results.length > limit } : {}),
+    records: combined.records,
+    next: combined.next,
+    ...(exporting ? { truncated: combined.truncated } : {}),
   };
 }
-export async function clearCallLogs(db, params, body) {
+export async function clearCallLogs(db, params, body, env = {}) {
   if (body.confirm !== 'delete-matching-logs')
     throw new HttpError(400, '需明确确认删除筛选匹配的日志');
   const { where, values } = eventFilters(params, false);
   const matching =
     events + ', matching AS (SELECT l.* FROM events l' + credentialJoin('l') + where + ') ';
+  const remoteDeleted = await nodeEvents(env, params, { deleting: true });
   const results = await db.batch([
     db.prepare(matching + 'SELECT COUNT(*) AS count FROM matching').bind(...values),
     db
@@ -252,5 +256,5 @@ export async function clearCallLogs(db, params, body) {
       )
       .bind(...values),
   ]);
-  return { success: true, deleted: results[0].results[0].count };
+  return { success: true, deleted: results[0].results[0].count + remoteDeleted };
 }

@@ -1,3 +1,5 @@
+import { storageNodes } from '../storage/client.js';
+import { bufferedHealth } from '../telemetry/live-health.js';
 import { pendingTelemetry } from '../telemetry/client.js';
 import { dbCache } from '../cache/db.js';
 import { HttpError, modeValue, googleFetch, operation } from '../core/common.js';
@@ -203,6 +205,7 @@ export async function listCredentials(db, env = {}) {
     .all();
   const latest = new Map();
   const snapshot = await pendingTelemetry(env);
+  const liveHealth = bufferedHealth(snapshot.buckets);
   for (const bucket of snapshot.buckets)
     latest.set(
       bucket.value.credential_id,
@@ -212,6 +215,13 @@ export async function listCredentials(db, env = {}) {
     const credential = parseCredentialData(data);
     return {
       ...row,
+      last_used: Math.max(row.last_used || 0, liveHealth.get(row.id)?.last_used || 0),
+      last_failure:
+        Math.max(row.last_failure || 0, liveHealth.get(row.id)?.last_failure || 0) || null,
+      last_failure_status:
+        (liveHealth.get(row.id)?.last_failure || 0) > (row.last_failure || 0)
+          ? liveHealth.get(row.id).last_status
+          : row.last_failure_status,
       last_success:
         Math.max(
           row.last_success || 0,
@@ -238,6 +248,7 @@ export async function selectCredential(
   excluded = [],
   strategy = 'round_robin',
   routing = null,
+  env = {},
 ) {
   const exclusions = excluded.length
     ? ` AND c.id NOT IN (${excluded.map(() => '?').join(',')})`
@@ -314,7 +325,7 @@ export async function selectCredential(
     used: Math.max(now, (recent?.used || 0) + 1),
     saved: shouldSave ? now : Math.max(row.last_used || 0, recent?.saved || 0),
   });
-  if (shouldSave) {
+  if (shouldSave && !(env.TELEMETRY && (await storageNodes(env)).length)) {
     try {
       await db
         .prepare('UPDATE credentials SET last_used=? WHERE id=? AND last_used<?')

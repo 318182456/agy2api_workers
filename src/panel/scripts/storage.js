@@ -47,7 +47,7 @@ function renderPrimaryStorageNode(row) {
         : (n / 1048576).toFixed(2) + ' MB';
   if (data?.available) {
     const lines = [
-      '今日接收用量 ' + data.today_requests.toLocaleString() + ' 次',
+      '今日已汇总用量 ' + data.today_requests.toLocaleString() + ' 次',
       '待落盘 ' + data.pending_requests.toLocaleString() + ' 次 / ' + data.pending_buckets + ' 桶',
       '用量缓冲 ' + data.buffer_buckets + ' 桶 · ' + bytes(data.buffer_bytes),
       '额度缓存 ' +
@@ -86,7 +86,7 @@ function renderPrimaryStorageNode(row) {
     name,
     entry,
     text('主账号配置'),
-    text('固定主节点 · 用量计数 / D1 落盘'),
+    text('固定主节点 · 汇总 / D1 落盘'),
     usage,
     text(formatReset(data?.sampled_at)),
     actions,
@@ -98,7 +98,7 @@ async function loadStorageNodes(fresh = false) {
   const nextNode = value.nodes.find((node) => node.id === value.next_node_id);
   el('storageSchedule').textContent = value.active_node_id
     ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
-    : '当前没有可用缓存节点，使用主号缓存。';
+    : '当前没有可用子节点，回退主节点。';
   el('storageNodes').replaceChildren();
   if (value.primary_node) el('storageNodes').append(renderPrimaryStorageNode(value.primary_node));
   for (const row of value.nodes) {
@@ -132,9 +132,7 @@ async function loadStorageNodes(fresh = false) {
       ({
         ready:
           row.id === value.active_node_id
-            ? row.usage?.available && row.usage.today.requests === 0
-              ? '当前值班 · 尚无缓存流量'
-              : '当前值班 · 缓存调度目标'
+            ? '当前值班 · 用量 / 日志 / 缓存'
             : row.activated_at > Math.floor(Date.now() / 3600000) * 3600000
               ? '已接入 · 下个整点参与'
               : '已接入 · 等待轮换',
@@ -169,13 +167,28 @@ async function loadStorageNodes(fresh = false) {
           today.writes.toLocaleString() +
           ' · 错误 ' +
           today.errors.toLocaleString() +
-          ' · 预热进/出 ' +
+          ' · 缓存迁入/出 ' +
           today.imports +
           '/' +
           today.exports,
         '有效缓存 ' + data.cache_entries + ' 条 · ' + size,
         '最近使用：' + formatReset(data.last_activity),
       ];
+      if (data.telemetry?.supported)
+        lines.unshift(
+          '模型用量 ' +
+            data.telemetry.today_requests.toLocaleString() +
+            ' 次 · 待汇总 ' +
+            data.telemetry.pending_requests.toLocaleString() +
+            ' 次 / ' +
+            data.telemetry.pending_buckets +
+            ' 桶',
+        );
+      else lines.unshift('仅缓存功能 · 需重新部署以接收模型用量');
+      if (data.telemetry?.supported)
+        lines.push(
+          '本节点问题记录 ' + (data.telemetry.events || 0).toLocaleString() + ' 条 · 保留 7 天',
+        );
       for (const text of lines) {
         const line = document.createElement('div');
         line.textContent = text;

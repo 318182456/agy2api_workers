@@ -1,3 +1,8 @@
+import { credentialHealth } from '../src/telemetry/health.js';
+import { selectCredential } from '../src/credentials/index.js';
+import { storageNodeSource } from '../src/storage/node-worker.js';
+import { syncNodeTelemetry } from '../src/storage/telemetry.js';
+import { handleRequest } from '../src/index.js';
 import { pruneTelemetry } from '../src/telemetry/maintenance.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -644,6 +649,290 @@ test('primary node usage reads existing buffers without D1 I/O or extra SQL writ
     assert.equal(usage.pending_requests, 0);
     assert.equal(usage.pending_buckets, 0);
   } finally {
+    await mf.dispose();
+  }
+});
+
+test('child buffers model usage, live statistics merge it immediately, duplicate delivery and lost acknowledgement do not double count', async () => {
+  const mf = await runtime();
+  let remote;
+  try {
+    const env = await setup(mf),
+      nodeId = '33333333-3333-4333-8333-333333333333',
+      secret = 'c'.repeat(64),
+      worker = 'gcli2api-storage-333333333333';
+    await env.DB.prepare(
+      "INSERT INTO storage_nodes(id,email,account_id,worker_name,node_secret,url,status,deployed,created_at,updated_at)VALUES(?,?,?,?,?,?,'ready',1,1,1)",
+    )
+      .bind(
+        nodeId,
+        'child@example.test',
+        'c'.repeat(32),
+        worker,
+        secret,
+        'https://' + worker + '.pages.dev',
+      )
+      .run();
+    env.TELEMETRY_ORIGIN = 'https://main.test';
+    let callbacks = 0;
+    remote = new Miniflare({
+      modules: true,
+      script: storageNodeSource,
+      compatibilityDate: '2025-09-01',
+      bindings: { NODE_ID: nodeId, NODE_SECRET: secret },
+      durableObjects: { STORAGE: { className: 'StorageNode', useSQLite: true } },
+      log: quiet,
+      outboundService: async (request) => {
+        callbacks++;
+        const response = await handleRequest(
+          new Request(request.url, {
+            method: request.method,
+            headers: request.headers,
+            body: await request.text(),
+          }),
+          env,
+        );
+        return new OutboundResponse(await response.arrayBuffer(), {
+          status: response.status,
+          headers: response.headers,
+        });
+      },
+    });
+    env.STORAGE_NODE_FETCH = (url, init) => remote.dispatchFetch(url, init);
+    const a = record(),
+      b = record();
+    await recordTelemetry(env, a);
+    await recordTelemetry(env, a);
+    await recordTelemetry(env, b);
+    assert.equal((await snapshot(env)).buckets.length, 0, 'no per-request primary DO writes');
+    assert.equal(await count(env, 'request_usage'), 0, 'successful requests have no D1 details');
+    const headers = { authorization: 'Bearer ' + secret, 'content-type': 'application/json' };
+    const raw = await (
+      await remote.dispatchFetch('https://node/telemetry/snapshot', { method: 'POST', headers })
+    ).json();
+    assert.equal(
+      raw.buckets.reduce((n, b) => n + b.value.requests, 0),
+      2,
+    );
+    let usage = await (await remote.dispatchFetch('https://node/usage', { headers })).json();
+    assert.equal(usage.telemetry.today_requests, 2);
+    assert.equal(usage.telemetry.interval_seconds, 300);
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams(), env)).summary.requests,
+      2,
+      'ordinary query reads current child buffers',
+    );
+    assert.equal(
+      await count(env, 'usage_aggregates'),
+      0,
+      'live query does not force D1 aggregate writes',
+    );
+    const c = record();
+    await recordTelemetry(env, c);
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams(), env)).summary.requests,
+      3,
+      'previous statistics cache cannot hide fresh child usage',
+    );
+    // A lost acknowledgement leaves a D1 fallback detail linked to the same child bucket.
+    env.STORAGE_NODE_FETCH = async (url, init) => {
+      const response = await remote.dispatchFetch(url, init);
+      if (url.endsWith('/telemetry/record')) throw new Error('lost ack');
+      return response;
+    };
+    await recordTelemetry(env, record());
+    assert.equal(await count(env, 'request_usage'), 1);
+    assert.equal(
+      (await stats(env)).summary.requests,
+      4,
+      'fallback detail and child membership count once',
+    );
+    const flushed = await remote.dispatchFetch('https://node/telemetry/flush', {
+      method: 'POST',
+      headers,
+    });
+    assert.equal(flushed.status, 200);
+    assert.equal(callbacks, 1);
+    await syncNodeTelemetry(env);
+    assert.equal((await stats(env)).summary.requests, 4);
+    assert.equal((await flush(env)).status, 200);
+    assert.equal(
+      await count(env, 'request_usage'),
+      0,
+      'confirmed successful fallback detail is pruned at aggregate commit',
+    );
+    const before = await stats(env);
+    // An old snapshot cannot replace a newer imported version.
+    const replay = await handleRequest(
+      new Request('https://main.test/internal/storage-telemetry', {
+        method: 'POST',
+        headers: { ...headers, 'x-storage-node-id': nodeId },
+        body: JSON.stringify({ buckets: raw.buckets }),
+      }),
+      env,
+    );
+    assert.equal(replay.status, 200);
+    assert.equal((await stats(env)).summary.requests, before.summary.requests);
+    usage = await (await remote.dispatchFetch('https://node/usage', { headers })).json();
+    assert.equal(usage.telemetry.pending_buckets, 0);
+    assert.equal(
+      (
+        await handleRequest(
+          new Request('https://main.test/internal/storage-telemetry', {
+            method: 'POST',
+            body: '{}',
+          }),
+          env,
+        )
+      ).status,
+      401,
+    );
+  } finally {
+    await remote?.dispose();
+    await mf.dispose();
+  }
+});
+
+test('child keeps issue diagnostics and health, merged issue pagination and filtered cleanup preserve usage totals', async () => {
+  const mf = await runtime();
+  let remote;
+  try {
+    const env = await setup(mf),
+      nodeId = '44444444-4444-4444-8444-444444444444',
+      secret = 'e'.repeat(64),
+      worker = 'gcli2api-storage-444444444444';
+    await env.DB.prepare(
+      "INSERT INTO storage_nodes(id,email,account_id,worker_name,node_secret,url,status,deployed,created_at,updated_at)VALUES(?,?,?,?,?,?,'ready',1,1,1)",
+    )
+      .bind(
+        nodeId,
+        'logs@example.test',
+        'e'.repeat(32),
+        worker,
+        secret,
+        'https://' + worker + '.pages.dev',
+      )
+      .run();
+    const other = '55555555-5555-4555-8555-555555555555';
+    await env.DB.prepare(
+      "INSERT INTO credentials(id,mode,name,data,created_at)VALUES(?,'antigravity','other','{}',1)",
+    )
+      .bind(other)
+      .run();
+    env.TELEMETRY_ORIGIN = 'https://main.test';
+    remote = new Miniflare({
+      modules: true,
+      script: storageNodeSource,
+      compatibilityDate: '2025-09-01',
+      bindings: { NODE_ID: nodeId, NODE_SECRET: secret },
+      durableObjects: { STORAGE: { className: 'StorageNode', useSQLite: true } },
+      log: quiet,
+    });
+    env.STORAGE_NODE_FETCH = (url, init) => remote.dispatchFetch(url, init);
+    await selectCredential(env.DB, 'antigravity', 'm', [], 'round_robin', null, env);
+    assert.equal(
+      await env.DB.prepare('SELECT last_used FROM credentials WHERE id=?')
+        .bind(id)
+        .first('last_used'),
+      0,
+      'rotation snapshot skips per-request D1 persistence',
+    );
+    for (let n = 0; n < 27; n++)
+      await recordTelemetry(
+        env,
+        record({
+          status: 502,
+          outcome: 'failed',
+          apiKey: { id: '66666666-6666-4666-8666-666666666666', name: 'client-fixture' },
+          attempts: [
+            {
+              credential_id: other,
+              credential_name: 'other@example.test',
+              mode: 'antigravity',
+              model: 'm',
+              status: 429,
+              stage: 'response_headers',
+              duration_ms: 1,
+              created_at: Date.now(),
+              detail_code: 'HTTP_429',
+              detail_message: 'safe diagnostic',
+            },
+          ],
+        }),
+      );
+    assert.equal(await count(env, 'request_usage'), 0, 'issue diagnostics stay in child SQLite');
+    assert.equal(await count(env, 'credential_health'), 0, 'health changes are buffered');
+    const params = new URLSearchParams('issues=1');
+    const first = await queryCallLogs(env.DB, params, false, env);
+    assert.equal(first.records.length, 50);
+    assert.ok(first.next);
+    assert.equal(first.records[0].api_key_name, 'client-fixture');
+    params.set('before', first.next);
+    const next = await queryCallLogs(env.DB, params, false, env);
+    assert.equal(next.records.length, 4);
+    assert.equal(new Set([...first.records, ...next.records].map((row) => row.id)).size, 54);
+    const filtered = await queryCallLogs(
+      env.DB,
+      new URLSearchParams('status=429&email=other@&stage=response_headers'),
+      true,
+      env,
+    );
+    assert.equal(filtered.records.length, 27);
+    assert.equal(filtered.truncated, false);
+    assert.equal((await credentialHealth(env.DB, other, env)).health.last_status, 429);
+    assert.equal(
+      (await credentialHealth(env.DB, id, env)).health.last_status,
+      502,
+      'another account retry does not replace the final account status',
+    );
+    assert.equal((await stats(env)).summary.requests, 27);
+    const cleared = await clearCallLogs(
+      env.DB,
+      new URLSearchParams('stage=response_headers'),
+      { confirm: 'delete-matching-logs' },
+      env,
+    );
+    assert.equal(cleared.deleted, 27);
+    const remaining = await queryCallLogs(env.DB, new URLSearchParams('issues=1'), true, env);
+    assert.equal(remaining.records.length, 27);
+    assert.ok(remaining.records.every((row) => row.stage === 'request_failed'));
+    assert.equal(
+      (await stats(env)).summary.requests,
+      27,
+      'clearing diagnostics cannot erase usage',
+    );
+    assert.equal((await flush(env)).status, 200);
+    assert.equal(
+      await env.DB.prepare('SELECT last_status FROM credential_health WHERE credential_id=?')
+        .bind(other)
+        .first('last_status'),
+      429,
+    );
+    assert.equal(
+      await env.DB.prepare('SELECT last_status FROM credential_health WHERE credential_id=?')
+        .bind(id)
+        .first('last_status'),
+      502,
+    );
+    assert.ok(
+      (await env.DB.prepare('SELECT last_used FROM credentials WHERE id=?')
+        .bind(id)
+        .first('last_used')) > 0,
+    );
+    await publishShared(
+      env,
+      'models:antigravity',
+      { ids: ['model-fixture'], routes: { 'model-fixture': 'model-fixture' } },
+      900,
+    );
+    const shared = await readShared({ ...env, CACHE: undefined }, 'models:antigravity');
+    assert.deepEqual(
+      shared.value.ids,
+      ['model-fixture'],
+      'model catalogs are reusable from the child without KV reads',
+    );
+  } finally {
+    await remote?.dispose();
     await mf.dispose();
   }
 });

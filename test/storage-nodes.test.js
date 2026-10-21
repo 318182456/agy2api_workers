@@ -743,7 +743,7 @@ test('node quota cache bypasses primary DO, scopes keys, invalidates and falls b
     }
   }));
 
-test('statistics cached in a child node avoid primary coordinator reads for a cold Worker instance', () =>
+test('live statistics query child buffers and bypass old result caches', () =>
   database(async (env) => {
     const id = '22222222-2222-4222-8222-222222222222',
       name = 'gcli2api-storage-222222222222',
@@ -786,11 +786,10 @@ test('statistics cached in a child node avoid primary coordinator reads for a co
       dbCache(env.DB).stats.clear();
       const second = await usageStats(env.DB, new URLSearchParams(), env);
       assert.equal(second.summary.requests, 42);
-      assert.equal(reads, 1);
-      assert.equal(second.cache_source, 'storage-node');
-      assert.equal(second.storage_node_name, 'stats@example.test');
-      await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
       assert.equal(reads, 2);
+      assert.notEqual(second.cache_source, 'storage-node');
+      await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+      assert.equal(reads, 3);
     } finally {
       await remote.dispose();
     }

@@ -1484,7 +1484,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.16\.0/);
+    assert.match(html, /v0\.17\.0/);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);

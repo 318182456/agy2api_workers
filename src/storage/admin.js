@@ -1,5 +1,6 @@
-import { nodeUsage, primaryUsage } from './usage.js';
 import { nodeSchedule } from './client.js';
+import { syncNodeTelemetry } from './telemetry.js';
+import { nodeUsage, primaryUsage } from './usage.js';
 import { HttpError, json, readJson } from '../core/common.js';
 import { storageNodeSource, storagePagesSource } from './node-worker.js';
 
@@ -538,7 +539,7 @@ export async function storageNodesRoute(request, env, url, fetcher) {
         next_node_id: schedule.next?.id || null,
         preheating: schedule.warming,
         switches_at: schedule.switches_at,
-        cache_only: true,
+        cache_only: false,
       });
     }
     if (request.method === 'POST') return create(env, await readJson(request), fetcher);
@@ -574,6 +575,7 @@ export async function storageNodesRoute(request, env, url, fetcher) {
   if (!match[2] && request.method === 'DELETE') {
     if (row.status === 'provisioning' && row.updated_at > Date.now() - 120000)
       throw failure('节点正在创建，请完成后再移除', 409);
+    await syncNodeTelemetry(env, [row]);
     await env.DB.prepare('DELETE FROM storage_nodes WHERE id=?').bind(row.id).run();
     return json({ success: true, remote_deleted: false });
   }

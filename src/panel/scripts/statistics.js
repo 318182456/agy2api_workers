@@ -135,11 +135,13 @@ async function loadStats(fresh = false, sync = false) {
   if (value.query_source === 'durable-object')
     el('statsBuffer').textContent +=
       ' · ' +
-      (value.cache_source === 'storage-node'
-        ? '子节点缓存 · ' + (value.storage_node_name || '')
-        : value.cache_source === 'kv'
-          ? 'KV 快照（最多 5 分钟）'
-          : 'DO 查询') +
+      (value.live_nodes
+        ? '主节点 + 子节点实时汇总'
+        : value.cache_source === 'storage-node'
+          ? '子节点缓存 · ' + (value.storage_node_name || '')
+          : value.cache_source === 'kv'
+            ? 'KV 快照（最多 5 分钟）'
+            : 'DO 查询') +
       ' · 统计生成于 ' +
       formatReset(value.cached_at) +
       ' · D1 历史同步于 ' +
@@ -147,7 +149,9 @@ async function loadStats(fresh = false, sync = false) {
       '（每小时按需同步）';
   renderStatsCharts(value);
   status(
-    '统计已刷新；自动加载可复用 1 分钟内存 / 边缘缓存或最多 5 分钟 KV 快照。刷新统计绕过这些缓存，历史每小时按需同步。' +
+    (value.live_nodes
+      ? '统计已实时合并主节点与子节点缓冲，无需等待批量提交；D1 历史每小时按需同步。'
+      : '统计已刷新；自动加载可复用 1 分钟内存 / 边缘缓存或最多 5 分钟 KV 快照。刷新统计绕过这些缓存，历史每小时按需同步。') +
       (value.groups_truncated ? '模型、账号或密钥分组超过 200 项，请缩小筛选范围。' : ''),
   );
 }
