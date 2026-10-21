@@ -16,7 +16,7 @@ export async function storageNodes(env) {
     try {
       rows = (
         await env.DB.prepare(
-          "SELECT id,email,worker_name,url,node_secret FROM storage_nodes WHERE status='ready' ORDER BY id",
+          "SELECT id,email,worker_name,url,node_secret,activated_at FROM storage_nodes WHERE status='ready' ORDER BY id",
         ).all()
       ).results.filter(
         (row) =>
@@ -28,7 +28,11 @@ export async function storageNodes(env) {
     } catch {
       /* Older deployments without the nodes migration retain local caches. */
     }
-    cache.storageNodes = { until: Date.now() + CONFIG_TTL, value: rows };
+    const now = Date.now(),
+      hourEnd = (Math.floor(now / HOUR) + 1) * HOUR;
+    // Refresh before preheating and at the hour boundary, even if the 5-minute TTL remains.
+    const boundary = now < hourEnd - 60000 ? hourEnd - 60000 : hourEnd;
+    cache.storageNodes = { until: Math.min(now + CONFIG_TTL, boundary), value: rows };
     return rows;
   })();
   cache.storageNodesFlight = flight;
@@ -39,12 +43,26 @@ export async function storageNodes(env) {
   }
 }
 export function nodeSchedule(nodes, now = Date.now()) {
-  if (!nodes.length) return { current: null, next: null, warming: false };
-  const index = Math.floor(now / HOUR) % nodes.length;
+  const hourStart = Math.floor(now / HOUR) * HOUR;
+  const available = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
+  const joined = (node) => node.activated_at ?? 0;
+  // Membership is frozen as of this hour's start. A new/recovered node joins next hour.
+  let eligible = available.filter((node) => joined(node) <= hourStart);
+  if (!eligible.length && available.length) {
+    // Bootstrap or total outage: use the oldest available node without waiting an hour.
+    eligible = [
+      [...available].sort((a, b) => joined(a) - joined(b) || a.id.localeCompare(b.id))[0],
+    ];
+  }
+  if (!eligible.length)
+    return { current: null, next: null, warming: false, switches_at: hourStart + HOUR };
+  const current = eligible[Math.floor(now / HOUR) % eligible.length];
+  const next = available[(Math.floor(now / HOUR) + 1) % available.length];
   return {
-    current: nodes[index],
-    next: nodes[(index + 1) % nodes.length],
-    warming: nodes.length > 1 && now % HOUR >= HOUR - 60000,
+    current,
+    next,
+    warming: next.id !== current.id && now % HOUR >= HOUR - 60000,
+    switches_at: hourStart + HOUR,
   };
 }
 async function keyFor(env, kind, key) {

@@ -24,8 +24,12 @@ function editStorageToken(row) {
   );
 }
 el('storageCancel').onclick = resetStorageForm;
-async function loadStorageNodes() {
-  const value = await api('/admin/storage-nodes');
+async function loadStorageNodes(fresh = false) {
+  const value = await api('/admin/storage-nodes' + (fresh ? '?usage_fresh=1' : ''));
+  const nextNode = value.nodes.find((node) => node.id === value.next_node_id);
+  el('storageSchedule').textContent = value.active_node_id
+    ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
+    : '当前没有可用缓存节点，使用主号缓存。';
   el('storageNodes').replaceChildren();
   for (const row of value.nodes) {
     const tr = document.createElement('tr');
@@ -56,11 +60,63 @@ async function loadStorageNodes() {
     const state = document.createElement('td');
     state.textContent =
       ({
-        ready: row.id === value.active_node_id ? '使用中 · 缓存节点' : '已接入 · 等待轮换',
+        ready:
+          row.id === value.active_node_id
+            ? '使用中 · 缓存节点'
+            : row.activated_at > Math.floor(Date.now() / 3600000) * 3600000
+              ? '已接入 · 下个整点参与'
+              : '已接入 · 等待轮换',
         provisioning: '创建中',
         pending: '等待部署完成 / 检查连接',
         error: '需处理',
       }[row.status] || row.status) + (row.last_error ? '：' + row.last_error : '');
+    const usage = document.createElement('td');
+    if (row.usage?.available) {
+      const data = row.usage,
+        today = data.today;
+      const reads = today.reads || 0;
+      const hitRate = reads ? ((100 * today.hits) / reads).toFixed(1) + '%' : '—';
+      const bytes = data.cache_bytes || 0;
+      const size =
+        bytes < 1024
+          ? bytes + ' B'
+          : bytes < 1048576
+            ? (bytes / 1024).toFixed(1) + ' KB'
+            : (bytes / 1048576).toFixed(2) + ' MB';
+      const lines = [
+        '约 ' +
+          today.requests.toLocaleString() +
+          ' 次 · 命中 ' +
+          today.hits.toLocaleString() +
+          '/' +
+          reads.toLocaleString() +
+          '（' +
+          hitRate +
+          '）',
+        '写入 ' +
+          today.writes.toLocaleString() +
+          ' · 错误 ' +
+          today.errors.toLocaleString() +
+          ' · 预热进/出 ' +
+          today.imports +
+          '/' +
+          today.exports,
+        '有效缓存 ' + data.cache_entries + ' 条 · ' + size,
+        '最近使用：' + formatReset(data.last_activity),
+      ];
+      for (const text of lines) {
+        const line = document.createElement('div');
+        line.textContent = text;
+        usage.append(line);
+      }
+      usage.title =
+        '统计日期：' +
+        data.day +
+        '；启用：' +
+        formatReset(data.started_at) +
+        '；采集：' +
+        formatReset(data.sampled_at);
+    } else usage.textContent = row.usage?.reason || '尚未采集';
     const checked = document.createElement('td');
     checked.textContent = formatReset(row.checked_at);
     const actions = document.createElement('td');
@@ -122,19 +178,19 @@ async function loadStorageNodes() {
         });
     };
     actions.append(remove);
-    tr.append(account, worker, savedToken, state, checked, actions);
+    tr.append(account, worker, savedToken, state, usage, checked, actions);
     el('storageNodes').append(tr);
   }
   if (!value.nodes.length) {
     const tr = document.createElement('tr');
     const td = document.createElement('td');
-    td.colSpan = 6;
+    td.colSpan = 7;
     td.textContent = '暂无其他账号的存储节点';
     tr.append(td);
     el('storageNodes').append(tr);
   }
 }
-el('storageRefresh').onclick = () => run(loadStorageNodes);
+el('storageRefresh').onclick = () => run(() => loadStorageNodes(true));
 el('storageForm').onsubmit = (event) => {
   event.preventDefault();
   return run(async () => {

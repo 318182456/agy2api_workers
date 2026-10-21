@@ -1,9 +1,10 @@
+import { nodeUsage } from './usage.js';
 import { nodeSchedule } from './client.js';
 import { HttpError, json, readJson } from '../core/common.js';
 import { storageNodeSource, storagePagesSource } from './node-worker.js';
 
 const publicFields =
-  'id,email,account_id,worker_name,url,status,deployed,last_error,created_at,updated_at,checked_at';
+  'id,email,account_id,worker_name,url,status,deployed,last_error,created_at,updated_at,checked_at,activated_at';
 const accountPattern = /^[a-f0-9]{32}$/;
 const publicNode = (row) => ({
   ...Object.fromEntries(publicFields.split(',').map((key) => [key, row[key] ?? null])),
@@ -405,9 +406,9 @@ async function create(env, input, fetcher) {
     }
     await check(row, fetcher);
     await env.DB.prepare(
-      "UPDATE storage_nodes SET status='ready',last_error=NULL,checked_at=?,updated_at=? WHERE id=?",
+      "UPDATE storage_nodes SET activated_at=CASE WHEN status='ready' AND activated_at IS NOT NULL THEN activated_at ELSE ? END,status='ready',last_error=NULL,checked_at=?,updated_at=? WHERE id=?",
     )
-      .bind(Date.now(), Date.now(), row.id)
+      .bind(Date.now(), Date.now(), Date.now(), row.id)
       .run();
   } catch (error) {
     const message =
@@ -434,13 +435,27 @@ async function create(env, input, fetcher) {
 export async function storageNodesRoute(request, env, url, fetcher) {
   if (url.pathname === '/admin/storage-nodes') {
     if (request.method === 'GET') {
-      const nodes = (
+      const rows = (
         await env.DB.prepare(
           'SELECT ' +
             publicFields +
-            ',(api_token IS NOT NULL AND length(api_token)>0) AS has_token FROM storage_nodes ORDER BY created_at',
+            ',node_secret,(api_token IS NOT NULL AND length(api_token)>0) AS has_token FROM storage_nodes ORDER BY created_at',
         ).all()
-      ).results.map(publicNode);
+      ).results;
+      const nodes = rows.map(publicNode);
+      // Keep concurrency bounded; refreshing a page never records metrics in D1.
+      for (let offset = 0; offset < rows.length; offset += 5) {
+        await Promise.all(
+          rows.slice(offset, offset + 5).map(async (row, index) => {
+            nodes[offset + index].usage = await nodeUsage(
+              env,
+              row,
+              fetcher,
+              url.searchParams.get('usage_fresh') === '1',
+            );
+          }),
+        );
+      }
       const eligible = nodes
         .filter(
           (row) =>
@@ -454,6 +469,7 @@ export async function storageNodesRoute(request, env, url, fetcher) {
         active_node_id: schedule.current?.id || null,
         next_node_id: schedule.next?.id || null,
         preheating: schedule.warming,
+        switches_at: schedule.switches_at,
         cache_only: true,
       });
     }
@@ -473,9 +489,9 @@ export async function storageNodesRoute(request, env, url, fetcher) {
     try {
       await check(row, fetcher);
       await env.DB.prepare(
-        "UPDATE storage_nodes SET status='ready',last_error=NULL,checked_at=?,updated_at=? WHERE id=?",
+        "UPDATE storage_nodes SET activated_at=CASE WHEN status='ready' AND activated_at IS NOT NULL THEN activated_at ELSE ? END,status='ready',last_error=NULL,checked_at=?,updated_at=? WHERE id=?",
       )
-        .bind(Date.now(), Date.now(), row.id)
+        .bind(Date.now(), Date.now(), Date.now(), row.id)
         .run();
     } catch (error) {
       await env.DB.prepare(

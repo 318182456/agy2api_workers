@@ -1,9 +1,11 @@
+import { nodeUsage } from '../src/storage/usage.js';
 import { usageStats } from '../src/telemetry/stats.js';
 import { dbCache } from '../src/cache/db.js';
 import {
   readNodeCache,
   writeNodeCache,
   nodeSchedule,
+  storageNodes,
   resetStorageNodes,
   invalidateNodeCaches,
 } from '../src/storage/client.js';
@@ -785,3 +787,233 @@ test('statistics cached in a child node avoid primary coordinator reads for a co
       await remote.dispose();
     }
   }));
+
+test('adding nodes mid-hour never changes selection, including a cold instance and lower sorted IDs', () => {
+  const hour = 3600000,
+    start = hour * 3;
+  const old = [
+    { id: 'b', activated_at: 0 },
+    { id: 'c', activated_at: 0 },
+  ];
+  const added = { id: 'a', activated_at: start + 1000 };
+  const before = nodeSchedule(old, start + 2000);
+  const after = nodeSchedule([added, ...old], start + 2000);
+  assert.equal(after.current.id, before.current.id);
+  assert.equal(
+    nodeSchedule(structuredClone([added, ...old]), start + 2500).current.id,
+    before.current.id,
+  );
+  const warming = nodeSchedule([added, ...old], start + hour - 60000);
+  const boundary = nodeSchedule([added, ...old], start + hour);
+  assert.equal(warming.current.id, before.current.id);
+  assert.equal(warming.next.id, boundary.current.id);
+  assert.equal(warming.switches_at, start + hour);
+  assert.equal(nodeSchedule([added], start + 2000).current.id, added.id);
+  assert.equal(
+    nodeSchedule([added, { id: '0', activated_at: start + 1500 }], start + 3000).current.id,
+    added.id,
+  );
+});
+
+test('node directory refreshes at preheat and hour boundaries instead of retaining a five-minute old roster', async () => {
+  const original = Date.now;
+  let now = 3600000 * 3 + 3539000,
+    reads = 0;
+  const row = {
+    id: '11111111-1111-4111-8111-111111111111',
+    worker_name: 'gcli2api-storage-111111111111',
+    node_secret: 'a'.repeat(64),
+    url: 'https://gcli2api-storage-111111111111.pages.dev',
+  };
+  const env = {
+    DB: {
+      prepare: () => ({
+        all: async () => {
+          reads++;
+          return { results: [row] };
+        },
+      }),
+    },
+  };
+  try {
+    Date.now = () => now;
+    await storageNodes(env);
+    await storageNodes(env);
+    assert.equal(reads, 1);
+    now = 3600000 * 4 - 60000;
+    await storageNodes(env);
+    assert.equal(reads, 2);
+    now = 3600000 * 4;
+    await storageNodes(env);
+    assert.equal(reads, 3);
+  } finally {
+    Date.now = original;
+  }
+});
+
+test('healthy checks preserve node activation while recovery waits for the next hour', () =>
+  database(async (env) => {
+    const mock = cloudMock();
+    const response = await handleRequest(
+      request('', 'POST', { email: 'cf@example.test', token }),
+      env,
+      mock.fetcher,
+    );
+    assert.equal(response.status, 201);
+    const node = (await response.json()).node;
+    const old = Date.now() - 7200000;
+    await env.DB.prepare('UPDATE storage_nodes SET activated_at=? WHERE id=?')
+      .bind(old, node.id)
+      .run();
+    let check = await handleRequest(request('/' + node.id + '/check', 'POST'), env, mock.fetcher);
+    assert.equal(check.status, 200);
+    assert.equal(
+      (
+        await env.DB.prepare('SELECT activated_at FROM storage_nodes WHERE id=?')
+          .bind(node.id)
+          .first()
+      ).activated_at,
+      old,
+    );
+    await env.DB.prepare("UPDATE storage_nodes SET status='error' WHERE id=?").bind(node.id).run();
+    const started = Date.now();
+    check = await handleRequest(request('/' + node.id + '/check', 'POST'), env, mock.fetcher);
+    assert.equal(check.status, 200);
+    assert.ok(
+      (
+        await env.DB.prepare('SELECT activated_at FROM storage_nodes WHERE id=?')
+          .bind(node.id)
+          .first()
+      ).activated_at >= started,
+    );
+    const listed = await (await handleRequest(request(), env, mock.fetcher)).json();
+    assert.ok(listed.switches_at > Date.now());
+    assert.equal(listed.active_node_id, node.id);
+  }));
+
+test('node usage records cache hits, misses and writes without counting probes or usage reads', async () => {
+  const mf = new Miniflare({
+    modules: true,
+    script: storageNodeSource,
+    compatibilityDate: '2025-09-01',
+    bindings: { NODE_ID: 'usage-node', NODE_SECRET: 'usage-secret' },
+    durableObjects: { STORAGE: { className: 'StorageNode', useSQLite: true } },
+    log: new Log(LogLevel.NONE),
+  });
+  const headers = { authorization: 'Bearer usage-secret', 'content-type': 'application/json' },
+    key = 'f'.repeat(64);
+  const get = (path) => mf.dispatchFetch('https://node' + path, { headers });
+  try {
+    assert.equal((await mf.dispatchFetch('https://node/usage')).status, 401);
+    const empty = await (await get('/usage')).json();
+    assert.equal(empty.today.requests, 0);
+    await mf.dispatchFetch('https://node/self-test', { method: 'POST', headers });
+    await get('/cache/' + key);
+    await mf.dispatchFetch('https://node/cache/' + key, {
+      method: 'PUT',
+      headers,
+      body: JSON.stringify({ expires_at: Date.now() + 60000, value: { quota: 0.5 } }),
+    });
+    await get('/cache/' + key);
+    let metrics = await (await get('/usage')).json();
+    assert.equal(metrics.today.requests, 3);
+    assert.equal(metrics.today.reads, 2);
+    assert.equal(metrics.today.hits, 1);
+    assert.equal(metrics.today.misses, 1);
+    assert.equal(metrics.today.writes, 1);
+    assert.equal(metrics.cache_entries, 1);
+    assert.ok(metrics.cache_bytes > 0);
+    assert.ok(metrics.started_at <= metrics.sampled_at);
+    assert.equal((await (await get('/usage')).json()).today.requests, 3);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('node usage lookup caches results, sanitizes response fields, and does not mislabel failures as zero usage', () =>
+  database(async (env) => {
+    const row = {
+      id: '11111111-1111-4111-8111-111111111111',
+      worker_name: 'gcli2api-storage-111111111111',
+      url: 'https://gcli2api-storage-111111111111.pages.dev',
+      node_secret: 'private-fixture',
+    };
+    let calls = 0;
+    const fetcher = async () => {
+      calls++;
+      return Response.json({
+        success: true,
+        node_id: row.id,
+        day: '2026-10-21',
+        today: {
+          requests: 123,
+          reads: 100,
+          hits: 80,
+          misses: 20,
+          writes: 23,
+          imports: 0,
+          exports: 0,
+          errors: 0,
+          access_token: 'private-fixture',
+        },
+        sampled_at: Date.now(),
+        started_at: Date.now() - 1000,
+        cache_entries: 4,
+        cache_bytes: 200,
+        node_secret: 'private-fixture',
+      });
+    };
+    let metrics = await nodeUsage(env, row, fetcher);
+    assert.equal(metrics.available, true);
+    assert.equal(metrics.today.hits, 80);
+    assert.ok(!JSON.stringify(metrics).includes('private-fixture'));
+    await nodeUsage(env, row, fetcher);
+    assert.equal(calls, 1);
+    await nodeUsage(env, row, fetcher, true);
+    assert.equal(calls, 2);
+    metrics = await nodeUsage(
+      env,
+      row,
+      async () => new Response('old node', { status: 404 }),
+      true,
+    );
+    assert.equal(metrics.available, false);
+    assert.match(metrics.reason, /重新部署/);
+    assert.equal(metrics.today, undefined);
+    metrics = await nodeUsage(
+      env,
+      row,
+      async () => Response.json({ success: true, node_id: 'wrong' }),
+      true,
+    );
+    assert.equal(metrics.available, false);
+  }));
+
+test('node usage checkpoints survive a Durable Object restart without counting twice', async () => {
+  const script = storageNodeSource.replace(
+    "if(path==='/usage' && request.method==='GET'){",
+    "if(path==='/usage' && request.method==='POST'){this.flushUsage();return Response.json({success:true});} if(path==='/usage' && request.method==='GET'){",
+  );
+  assert.notEqual(script, storageNodeSource);
+  const options = {
+    modules: true,
+    script,
+    compatibilityDate: '2025-09-01',
+    bindings: { NODE_ID: 'checkpoint', NODE_SECRET: 'checkpoint-secret' },
+    durableObjects: { STORAGE: { className: 'StorageNode', useSQLite: true } },
+    log: new Log(LogLevel.NONE),
+  };
+  const mf = new Miniflare(options),
+    headers = { authorization: 'Bearer checkpoint-secret' };
+  try {
+    await mf.dispatchFetch('https://node/cache/' + 'a'.repeat(64), { headers });
+    await mf.dispatchFetch('https://node/usage', { method: 'POST', headers });
+    await mf.dispatchFetch('https://node/usage', { method: 'POST', headers });
+    await mf.setOptions({ ...options, bindings: { ...options.bindings, RESTART: 'yes' } });
+    const usage = await (await mf.dispatchFetch('https://node/usage', { headers })).json();
+    assert.equal(usage.today.requests, 1);
+    assert.equal(usage.today.misses, 1);
+  } finally {
+    await mf.dispose();
+  }
+});

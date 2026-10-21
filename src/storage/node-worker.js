@@ -9,8 +9,70 @@ export const storageNodeSource = String.raw`export class StorageNode {
     );
     ctx.storage.sql.exec('CREATE INDEX IF NOT EXISTS cache_expiry ON cache(expires)');
     this.cleanupAt = 0;
+    ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS node_usage(day TEXT PRIMARY KEY,value TEXT NOT NULL) WITHOUT ROWID');
+    ctx.storage.sql.exec('CREATE TABLE IF NOT EXISTS node_usage_meta(id INTEGER PRIMARY KEY,started_at INTEGER NOT NULL)');
+    ctx.storage.sql.exec('INSERT OR IGNORE INTO node_usage_meta(id,started_at)VALUES(1,?)',Date.now());
+    this.usagePending = new Map();
+    this.usageAlarmAt = 0;
+    ctx.blockConcurrencyWhile(async()=>{this.usageAlarmAt=(await ctx.storage.getAlarm())||0;});
   }
+  usageDay(now=Date.now()) {return new Date(now+8*3600000).toISOString().slice(0,10);}
+  usageFields() {return ['requests','reads','hits','misses','writes','imports','exports','errors'];}
+  flushUsage() {
+    const sql=this.ctx.storage.sql;
+    this.ctx.storage.transactionSync(()=>{
+      for(const [day,delta] of this.usagePending){
+        const stored=sql.exec('SELECT value FROM node_usage WHERE day=?',day).toArray()[0];
+        const value=stored?JSON.parse(stored.value):{};
+        for(const key of this.usageFields())value[key]=(value[key]||0)+(delta[key]||0);
+        value.last_activity=Math.max(value.last_activity||0,delta.last_activity||0);
+        sql.exec('INSERT INTO node_usage(day,value)VALUES(?,?) ON CONFLICT(day)DO UPDATE SET value=excluded.value',day,JSON.stringify(value));
+      }
+      sql.exec('DELETE FROM node_usage WHERE day<?',this.usageDay(Date.now()-7*86400000));
+    });
+    this.usagePending.clear();
+  }
+  async alarm() {this.usageAlarmAt=0;this.flushUsage();}
   async fetch(request) {
+    const path=new URL(request.url).pathname;
+    if(path==='/usage' && request.method==='GET'){
+      const sql=this.ctx.storage.sql,day=this.usageDay();
+      const stored=sql.exec('SELECT value FROM node_usage WHERE day=?',day).toArray()[0];
+      const today=stored?JSON.parse(stored.value):{};
+      const delta=this.usagePending.get(day)||{};
+      for(const key of this.usageFields())today[key]=(today[key]||0)+(delta[key]||0);
+      today.last_activity=Math.max(today.last_activity||0,delta.last_activity||0)||null;
+      const inventory=sql.exec('SELECT COUNT(*) AS entries,COALESCE(SUM(length(CAST(body AS BLOB))),0) AS bytes FROM cache WHERE expires>?',Date.now()).toArray()[0];
+      return Response.json({success:true,node_id:this.env.NODE_ID,day,timezone:'Asia/Shanghai',today,
+        cache_entries:inventory.entries,cache_bytes:inventory.bytes,
+        started_at:sql.exec('SELECT started_at FROM node_usage_meta WHERE id=1').toArray()[0].started_at,
+        sampled_at:Date.now(),checkpoint_seconds:60,approximate:true},
+        {headers:{'cache-control':'no-store'}});
+    }
+    let response;
+    try {response=await this.handle(request);return response;}
+    finally {
+      if(path==='/cache-transfer'||/^\/cache\/[a-f0-9]{64}$/.test(path)){
+        const day=this.usageDay(),delta=this.usagePending.get(day)||{};
+        const increment=(key)=>{delta[key]=(delta[key]||0)+1;};
+        increment('requests');delta.last_activity=Date.now();
+        if(path.startsWith('/cache/')&&request.method==='GET'){
+          increment('reads');if(response?.status===200)increment('hits');else if(response?.status===404)increment('misses');
+        }
+        if(response?.ok){
+          if(request.method==='PUT')increment('writes');
+          if(path==='/cache-transfer'&&request.method==='POST')increment('imports');
+          if(path==='/cache-transfer'&&request.method==='GET')increment('exports');
+        }else if(!response||response.status!==404)increment('errors');
+        this.usagePending.set(day,delta);
+        if(!this.usageAlarmAt){
+          this.usageAlarmAt=Date.now()+60000;
+          try{await this.ctx.storage.setAlarm(this.usageAlarmAt);}catch{this.usageAlarmAt=0;}
+        }
+      }
+    }
+  }
+  async handle(request) {
     const path = new URL(request.url).pathname;
     const cacheKey = path.match(/^\/cache\/([a-f0-9]{64})$/)?.[1];
     const sql = this.ctx.storage.sql;
@@ -80,7 +142,7 @@ export const storageNodeSource = String.raw`export class StorageNode {
         protocol: 1,
         storage: 'sqlite-do',
         mode: 'cache',
-        capabilities: ['cache-v1'],
+        capabilities: ['cache-v1','usage-v1'],
       });
     }
     if (path === '/health' && request.method === 'GET')
@@ -90,7 +152,7 @@ export const storageNodeSource = String.raw`export class StorageNode {
         protocol: 1,
         storage: 'sqlite-do',
         mode: 'cache',
-        capabilities: ['cache-v1'],
+        capabilities: ['cache-v1','usage-v1'],
       });
     return new Response('Not found', { status: 404 });
   }
@@ -104,7 +166,7 @@ export default {fetch:async function storageFetch(request, env) {
     let diff=0;for(let i=0;i<a.length;i++) diff|=a[i]^b[i];
     if(!env.NODE_SECRET || diff) return new Response('Unauthorized',{status:401});
     const path=new URL(request.url).pathname;
-    if(!['/health','/self-test','/cache-transfer'].includes(path) && !/^\/cache\/[a-f0-9]{64}$/.test(path)) return new Response('Not found',{status:404});
+    if(!['/health','/self-test','/cache-transfer','/usage'].includes(path) && !/^\/cache\/[a-f0-9]{64}$/.test(path)) return new Response('Not found',{status:404});
     phase='binding';
     if(!env.STORAGE || typeof env.STORAGE.get!=='function') throw new TypeError('Missing STORAGE binding');
     const stub=env.STORAGE.get(env.STORAGE.idFromName('gcli2api'));
