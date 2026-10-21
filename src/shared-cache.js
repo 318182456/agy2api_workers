@@ -1,4 +1,5 @@
-// KV contains only settings and public model metadata. Telemetry/tokens are never written here.
+// Shared settings/catalog cache. Admin statistics use separately scoped, rate-limited snapshot keys.
+// OAuth tokens and API key values are never written to either cache.
 async function cacheKey(env, name) {
   const scope = JSON.stringify([
     env.CACHE_SCOPE || '',

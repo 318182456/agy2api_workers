@@ -494,25 +494,29 @@ async function verifyCredentialProject(credential, body = {}) {
     throw error;
   }
 }
-async function showQuota(credential) {
+async function showQuota(credential, fresh = false) {
   const details = el('quota-' + credential.id);
   const cell = details.firstChild;
   details.hidden = false;
   cell.textContent = '正在查询额度…';
   status('正在查询 ' + credential.name + ' 的 ' + credential.mode + ' 额度…');
   try {
-    const value = await api('/admin/credentials/' + credential.id + '/quota');
+    const value = await api(
+      '/admin/credentials/' + credential.id + '/quota' + (fresh ? '?fresh=1' : ''),
+    );
     cell.replaceChildren();
     const heading = document.createElement('p');
     heading.textContent =
       '查询时间：' +
       formatReset(value.queriedAt) +
-      '（北京时间）。剩余比例由 Google 返回，不等同于剩余调用次数。';
+      '（北京时间）' +
+      (value.cached ? ' · DO 缓存（最多 10 分钟）' : ' · 本次查询 Google') +
+      '。剩余比例由 Google 返回，不等同于剩余调用次数。';
     cell.append(heading);
     const controls = document.createElement('div');
     const reload = document.createElement('button');
-    reload.textContent = '刷新额度';
-    reload.onclick = () => run(() => showQuota(credential));
+    reload.textContent = '重新查询 Google';
+    reload.onclick = () => run(() => showQuota(credential, true));
     const hide = document.createElement('button');
     hide.className = 'secondary';
     hide.textContent = '收起';

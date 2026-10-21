@@ -1,3 +1,5 @@
+import { StatsHistory } from './history.js';
+import { HttpError } from '../common.js';
 const WINDOW = 300000;
 function json(value, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -22,6 +24,10 @@ export class TelemetryBuffer {
       this.sql.exec(
         'CREATE INDEX IF NOT EXISTS buckets_dirty ON buckets(bucket_key) WHERE dirty=1',
       );
+      this.sql.exec(
+        'CREATE TABLE IF NOT EXISTS quota_cache(id TEXT PRIMARY KEY,expires_at INTEGER NOT NULL,value TEXT NOT NULL) WITHOUT ROWID',
+      );
+      this.history = new StatsHistory(this);
       this.alarmAt = (await ctx.storage.getAlarm()) || 0;
     });
   }
@@ -37,6 +43,80 @@ export class TelemetryBuffer {
   }
   async fetch(request) {
     const path = new URL(request.url).pathname;
+    const quotaId = path.match(/^\/quota\/([a-f0-9-]{36})$/)?.[1];
+    if (quotaId) {
+      if (request.method === 'GET') {
+        const cached = this.sql
+          .exec('SELECT value FROM quota_cache WHERE id=? AND expires_at>?', quotaId, Date.now())
+          .toArray()[0];
+        return cached
+          ? json({ ...JSON.parse(cached.value), cached: true, cacheSeconds: 600 })
+          : json({ cached: false }, 404);
+      }
+      if (request.method === 'POST') {
+        const value = await request.json();
+        if (
+          value.credentialId !== quotaId ||
+          !['geminicli', 'antigravity'].includes(value.mode) ||
+          !Number.isFinite(Date.parse(value.queriedAt)) ||
+          !Array.isArray(value.models) ||
+          value.models.length > 2000
+        )
+          return json({ error: 'invalid quota cache' }, 400);
+        const safe = {
+          success: true,
+          credentialId: quotaId,
+          mode: value.mode,
+          queriedAt: value.queriedAt,
+          models: value.models.map((model) =>
+            Object.fromEntries(
+              ['id', 'remaining', 'resetTime', 'remainingAmount', 'tokenType', 'bucketIndex']
+                .filter((key) => model[key] !== undefined)
+                .map((key) => [key, model[key]]),
+            ),
+          ),
+        };
+        this.sql.exec(
+          'INSERT INTO quota_cache(id,expires_at,value)VALUES(?,?,?) ON CONFLICT(id)DO UPDATE SET expires_at=excluded.expires_at,value=excluded.value',
+          quotaId,
+          Date.now() + 600000,
+          JSON.stringify(safe),
+        );
+        this.sql.exec('DELETE FROM quota_cache WHERE expires_at<?', Date.now());
+        return json({ success: true });
+      }
+      return json({ error: 'method not allowed' }, 405);
+    }
+    if (path === '/invalidate-metadata' && request.method === 'POST') {
+      const value = await request.json();
+      if (value.credentialId)
+        this.sql.exec('DELETE FROM quota_cache WHERE id=?', value.credentialId);
+      else this.sql.exec('DELETE FROM quota_cache');
+      try {
+        await this.history.refreshMetadata();
+        return json({ success: true });
+      } catch {
+        return json({ error: 'metadata synchronization unavailable' }, 503);
+      }
+    }
+    if (path === '/stats' && request.method === 'GET') {
+      try {
+        return json(await this.history.query(new URL(request.url).searchParams));
+      } catch (error) {
+        return json(
+          {
+            error: {
+              message:
+                error instanceof HttpError
+                  ? error.message
+                  : '统计历史同步或查询失败，未返回不完整统计，请稍后重试',
+              code: error instanceof HttpError ? error.status : 503,
+            },
+          },
+          error instanceof HttpError ? error.status : 503,
+        );
+      }
+    }
     if (path === '/record' && request.method === 'POST') {
       const value = await request.json();
       if (
@@ -129,6 +209,15 @@ export class TelemetryBuffer {
             JSON.stringify(row),
             JSON.stringify(members),
           );
+        if (this.liveStatsBuckets)
+          this.liveStatsBuckets.set(value.key, {
+            bucket_key: value.key,
+            version,
+            created_at: value.created_at,
+            payload: JSON.stringify(row),
+            members: JSON.stringify(members),
+            dirty: 1,
+          });
         result = { ok: true };
       });
       if (result.ok) await this.schedule();
@@ -207,6 +296,8 @@ export class TelemetryBuffer {
         row.bucket_key,
         row.version,
       );
+      const live = this.liveStatsBuckets?.get(row.bucket_key);
+      if (live && live.version === row.version) live.dirty = 0;
       written++;
     }
     const pending = !!this.sql
@@ -216,6 +307,9 @@ export class TelemetryBuffer {
       'DELETE FROM buckets WHERE dirty=0 AND bucket_key<?',
       String(Date.now() - 86400000).padStart(13, '0') + ':',
     );
+    if (this.liveStatsBuckets)
+      for (const [key, row] of this.liveStatsBuckets)
+        if (!row.dirty && row.created_at < Date.now() - 86400000) this.liveStatsBuckets.delete(key);
     if (pending) await this.schedule(60000);
     return { buckets_flushed: written, pending };
   }

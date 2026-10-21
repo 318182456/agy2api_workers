@@ -1,3 +1,7 @@
+import { resetStorageNodes } from '../storage/client.js';
+import { storageNodesRoute } from '../storage/admin.js';
+import { invalidateTelemetryMetadata } from '../telemetry/client.js';
+import { dbCache } from '../db-cache.js';
 import { runtimeLocation } from '../runtime-location.js';
 import { importArchive, exportArchive } from '../credential-archive.js';
 import { configurePreview } from '../preview.js';
@@ -21,9 +25,35 @@ import { flushTelemetry } from '../telemetry/client.js';
 import { apiKeysRoute } from '../api-keys.js';
 
 export async function adminRoute(request, env, fetcher) {
+  let response;
+  try {
+    response = await dispatchAdmin(request, env, fetcher);
+  } finally {
+    if (
+      new URL(request.url).pathname.startsWith('/admin/storage-nodes') &&
+      request.method !== 'GET'
+    )
+      resetStorageNodes(env);
+  }
+  const path = new URL(request.url).pathname;
+  if (
+    response.ok &&
+    ['POST', 'PATCH', 'DELETE'].includes(request.method) &&
+    (/^\/admin\/credentials(?:$|\/import\.zip$|\/[a-f0-9-]{36}(?:$|\/(?:verify|email|preview|credits)$))/.test(
+      path,
+    ) ||
+      /^\/admin\/api-keys(?:$|\/import$|\/[a-f0-9-]{36}$)/.test(path))
+  ) {
+    dbCache(env.DB).stats?.clear();
+    const id = path.match(/^\/admin\/credentials\/([a-f0-9-]{36})/)?.[1];
+    await invalidateTelemetryMetadata(env, id);
+  }
+  return response;
+}
+async function dispatchAdmin(request, env, fetcher) {
   const url = new URL(request.url);
   await authenticatePanel(request, env.PANEL_PASSWORD);
-  env = { ...env, STATS_CACHE_ORIGIN: url.origin };
+  env = { ...env, STATS_CACHE_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher };
   if (url.pathname === '/admin/runtime-location') {
     if (request.method !== 'GET') throw new HttpError(405, '请求方法不支持');
     return json(await runtimeLocation(request, env, fetcher));
@@ -38,6 +68,8 @@ export async function adminRoute(request, env, fetcher) {
       ),
     );
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
+  if (url.pathname === '/admin/storage-nodes' || url.pathname.startsWith('/admin/storage-nodes/'))
+    return storageNodesRoute(request, env, url, fetcher);
   if (url.pathname === '/admin/api-keys' || url.pathname.startsWith('/admin/api-keys/'))
     return apiKeysRoute(request, env, url);
   if (url.pathname === '/admin/telemetry/flush' && request.method === 'POST')
@@ -144,7 +176,11 @@ export async function adminRoute(request, env, fetcher) {
   const quotaMatch = url.pathname.match(/^\/admin\/credentials\/([a-f0-9-]{36})\/quota$/);
   if (quotaMatch) {
     if (request.method !== 'GET') throw new HttpError(405, '请求方法不支持');
-    return json(await credentialQuota(env, quotaMatch[1], fetcher));
+    return json(
+      await credentialQuota(env, quotaMatch[1], fetcher, {
+        fresh: url.searchParams.get('fresh') === '1',
+      }),
+    );
   }
   const match = url.pathname.match(/^\/admin\/credentials\/([a-f0-9-]{36})$/);
   if (match) {

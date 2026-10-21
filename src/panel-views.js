@@ -1,3 +1,4 @@
+import { storagePage } from './panel-pages/storage.js';
 import { projectIcon } from './project-icon.js';
 import { VERSION } from './version.js';
 import { overviewPage } from './panel-pages/overview.js';
@@ -54,6 +55,7 @@ export const panelTabs = {
     { id: 'settings', title: '运行参数' },
     { id: 'models', title: '模型列表' },
     { id: 'api', title: '接口接入' },
+    { id: 'storage', title: '存储节点' },
   ],
 };
 const pageContent = {
@@ -65,6 +67,7 @@ const pageContent = {
   oauth: oauthPage,
   models: modelsPage,
   settings: settingsPage,
+  storage: storagePage,
   api: apiPage,
   keys: keysPage,
 };

@@ -22,7 +22,7 @@
     "ANTIGRAVITY_CLIENT_ID": "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
     "ANTIGRAVITY_CLIENT_SECRET": "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"
   },
-  "compatibility_flags": ["enable_request_signal"],
+  "compatibility_flags": ["enable_request_signal", "global_fetch_strictly_public"],
   "observability": {
     "enabled": true,
     "head_sampling_rate": 1

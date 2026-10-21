@@ -16,6 +16,8 @@ el('logout').onclick = () =>
     el('credential').value = '';
     el('file').value = '';
     resetKeys();
+    resetStorageForm();
+    el('storageNodes').replaceChildren();
     runtimeProbe = null;
     updateRuntimeRegion({});
     selectedCredentials.clear();

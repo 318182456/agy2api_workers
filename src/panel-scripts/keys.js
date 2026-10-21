@@ -72,7 +72,7 @@ async function loadKeys() {
       const totals = await api('/admin/stats?' + params);
       usage = new Map(totals.api_keys.map((row) => [row.api_key_id, row]));
       el('keysUsageNote').textContent =
-        '消耗统计：最近 30 天，上游报告总 Token，包含 DO 待落盘用量；缓存最多 60 秒。未报告部分不估算，非 Google 账号剩余额度。';
+        '消耗统计：最近 30 天，上游报告总 Token，包含 DO 待落盘用量；内存 / 边缘缓存 1 分钟，KV 快照最多 5 分钟，D1 历史每小时按需同步。未报告部分不估算，非 Google 账号剩余额度。';
     } catch {
       el('keysUsageNote').textContent = '用量暂不可用，可刷新列表重试；密钥管理仍可使用。';
     }

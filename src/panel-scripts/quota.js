@@ -32,7 +32,12 @@ el('quotaOverviewRefresh').onclick = () =>
         try {
           quotaOverviewResults.push({
             credential,
-            value: await api('/admin/credentials/' + credential.id + '/quota'),
+            value: await api(
+              '/admin/credentials/' +
+                credential.id +
+                '/quota' +
+                (el('quotaForceRefresh').checked ? '?fresh=1' : ''),
+            ),
           });
         } catch (error) {
           quotaOverviewResults.push({ credential, error: error.message });

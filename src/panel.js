@@ -1,3 +1,4 @@
+import { storageScript } from './panel-scripts/storage.js';
 import { panelStyle } from './panel-style.js';
 import { panelFrame } from './panel-views.js';
 export { isPanelPath } from './panel-views.js';
@@ -33,5 +34,6 @@ ${oauthScript}
 ${importScript}
 ${keysScript}
 ${endpointsScript}
+${storageScript}
 ${bootstrapScript}
 </script></body></html>`;

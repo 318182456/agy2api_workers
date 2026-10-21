@@ -151,7 +151,8 @@ async function loadPage(id) {
   else if (id === 'settings') {
     fillSettings(await api('/admin/settings'));
     status('设置已加载。');
-  } else if (id === 'api') {
+  } else if (id === 'storage') await loadStorageNodes();
+  else if (id === 'api') {
     if (!credentialsLoaded) await refresh();
     renderEndpoints();
     status('接口可用状态已加载。');

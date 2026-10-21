@@ -317,7 +317,7 @@ test('Worker protocols accept managed keys and telemetry isolates per-key totals
         status: 400,
       });
     }
-    const overview = () => usageStats(env.DB, new URLSearchParams('fresh=1'), env);
+    const overview = () => usageStats(env.DB, new URLSearchParams('fresh=1&sync=1'), env);
     const assertKeyOverview = (value) => {
       assert.equal(value.summary.requests, 4);
       assert.equal(value.summary.total_tokens, 20);

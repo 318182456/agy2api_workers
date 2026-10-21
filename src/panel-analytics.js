@@ -182,7 +182,7 @@ function renderQuotaOverview() {
     card.append(title);
     if (entry.error) card.append(ui('p','error-message',entry.error));
     else {
-      card.append(ui('small','','查询于 '+formatReset(entry.value.queriedAt)+'（北京时间）'));
+      card.append(ui('small','','查询于 '+formatReset(entry.value.queriedAt)+'（北京时间）'+(entry.value.cached?' · DO 缓存（最多 10 分钟）':'')));
       if (!entry.value.models.length) card.append(ui('p','','上游未返回模型，额度未知。'));
       for (const model of accountQuota(entry)) { const row = ui('div','account-model-line'); row.append(ui('strong','',model.id),ui('span',quotaTone(model.remaining),quotaPercent(model.remaining)),meter(model.remaining, model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'当前报告重置 '+formatReset(model.resetTime),quotaWindows(model)].filter(Boolean).join(' · '))); card.append(row); }
     }

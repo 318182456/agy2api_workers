@@ -1,3 +1,4 @@
+import { cachedQuota, saveQuotaCache } from './telemetry/client.js';
 import { effectiveEnv } from './settings.js';
 import { HttpError, googleFetch, operation } from './common.js';
 import { accessToken, parseCredentialData } from './credentials.js';
@@ -58,7 +59,16 @@ export function normalizeGeminiCliQuota(value) {
   });
 }
 
-export async function credentialQuota(env, id, fetcher = fetch) {
+export async function credentialQuota(env, id, fetcher = fetch, options = {}) {
+  if (!options.fresh) {
+    const cached = await cachedQuota(env, id);
+    if (cached) return cached;
+  }
+  const value = await fetchCredentialQuota(env, id, fetcher);
+  await saveQuotaCache(env, id, value);
+  return { ...value, cached: false, cacheSeconds: env.TELEMETRY ? 600 : 0 };
+}
+async function fetchCredentialQuota(env, id, fetcher) {
   const row = await operation('credential_read', () =>
     env.DB.prepare('SELECT * FROM credentials WHERE id=?').bind(id).first(),
   );

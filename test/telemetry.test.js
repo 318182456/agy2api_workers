@@ -1,7 +1,9 @@
 import { pruneTelemetry } from '../src/maintenance.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile, readdir, mkdir, writeFile } from 'node:fs/promises';
+import { readFile, readdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { randomUUID, webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflare';
@@ -42,6 +44,7 @@ async function runtime(persist) {
     script: bundle,
     compatibilityDate: '2025-09-01',
     d1Databases: { DB: 'telemetry-test' },
+    kvNamespaces: ['CACHE'],
     compatibilityFlags: ['enable_request_signal'],
     bindings: { API_PASSWORD: 'api', PANEL_PASSWORD: 'panel', ANTIGRAVITY_STREAM2NOSTREAM: false },
     outboundService: async () =>
@@ -74,6 +77,7 @@ async function setup(mf) {
     .run();
   return {
     DB,
+    CACHE: await mf.getKVNamespace('CACHE'),
     TELEMETRY: await mf.getDurableObjectNamespace('TELEMETRY'),
     USAGE_STORAGE_MODE: 'aggregate',
   };
@@ -87,7 +91,7 @@ const flush = (env) =>
     method: 'POST',
   });
 const stats = (env, params = '') =>
-  usageStats(env.DB, new URLSearchParams('fresh=1&' + params), env);
+  usageStats(env.DB, new URLSearchParams('fresh=1&sync=1&' + params), env);
 const count = (env, table) => env.DB.prepare('SELECT COUNT(*) AS n FROM ' + table).first('n');
 
 test('persistent aggregation: clean successes skip D1 details, retry diagnostics retain filters, flush is idempotent', async () => {
@@ -206,24 +210,34 @@ test('D1 unavailable during flush retains durable data; uncertain acknowledgemen
 });
 
 test('Durable Object SQLite buffer survives a full local runtime restart before D1 flush', async () => {
-  const persist = process.cwd() + '/.wrangler/telemetry-persist-' + randomUUID();
-  await mkdir(persist, { recursive: true });
+  const persist = await mkdtemp(join(tmpdir(), 'gcli-telemetry-persist-'));
   let mf = await runtime(persist);
   try {
     let env = await setup(mf);
     await recordTelemetry(env, record());
     assert.equal(await count(env, 'usage_aggregates'), 0);
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams('fresh=1'), env)).summary.requests,
+      1,
+    );
     await mf.dispose();
     mf = await runtime(persist);
     env = {
       DB: await mf.getD1Database('DB'),
       TELEMETRY: await mf.getDurableObjectNamespace('TELEMETRY'),
     };
-    assert.equal((await stats(env)).summary.requests, 1);
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams('fresh=1'), env)).summary.requests,
+      1,
+    );
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const control = await (await stub.fetch('https://test/test/status')).json();
+    assert.equal(control.queries, 0, 'persistent snapshot survives restart without D1 reread');
     assert.equal((await flush(env)).status, 200);
     assert.equal((await stats(env)).summary.requests, 1);
   } finally {
     await mf.dispose();
+    await rm(persist, { recursive: true, force: true });
   }
 });
 
@@ -285,37 +299,40 @@ test('KV cache: scoped keys, expiry, unchanged writes suppressed and failures ne
 });
 
 test('resource preparation names new KV gcli2api, reuses existing namespaces and leaves configured bindings intact', async () => {
-  const dir = process.cwd() + '/.wrangler/resource-test-' + randomUUID();
-  await mkdir(dir, { recursive: true });
-  const path = dir + '/wrangler.jsonc';
-  const config = {
-    name: 'gcli2api',
-    kv_namespaces: [{ binding: 'CACHE' }],
-    d1_databases: [{ database_id: 'preserved' }],
-  };
-  await writeFile(path, JSON.stringify(config));
-  let created = false;
-  const calls = [];
-  const run = (args) => {
-    calls.push(args);
-    if (args.includes('create')) {
-      created = true;
-      return '';
-    }
-    return JSON.stringify(created ? [{ title: 'gcli2api', id: 'a'.repeat(32) }] : []);
-  };
-  await prepareKv(run, path);
-  let saved = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(saved.kv_namespaces[0].id, 'a'.repeat(32));
-  assert.deepEqual(saved.d1_databases, config.d1_databases);
-  assert.deepEqual(calls[1], ['kv', 'namespace', 'create', 'gcli2api', '--update-config=false']);
-  await prepareKv(() => {
-    throw new Error('must not provision twice');
-  }, path);
-  await writeFile(path, JSON.stringify(config));
-  await prepareKv(() => JSON.stringify([{ title: 'gcli2api', id: 'b'.repeat(32) }]), path);
-  saved = JSON.parse(await readFile(path, 'utf8'));
-  assert.equal(saved.kv_namespaces[0].id, 'b'.repeat(32));
+  const dir = await mkdtemp(join(tmpdir(), 'gcli-resource-test-'));
+  try {
+    const path = dir + '/wrangler.jsonc';
+    const config = {
+      name: 'gcli2api',
+      kv_namespaces: [{ binding: 'CACHE' }],
+      d1_databases: [{ database_id: 'preserved' }],
+    };
+    await writeFile(path, JSON.stringify(config));
+    let created = false;
+    const calls = [];
+    const run = (args) => {
+      calls.push(args);
+      if (args.includes('create')) {
+        created = true;
+        return '';
+      }
+      return JSON.stringify(created ? [{ title: 'gcli2api', id: 'a'.repeat(32) }] : []);
+    };
+    await prepareKv(run, path);
+    let saved = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(saved.kv_namespaces[0].id, 'a'.repeat(32));
+    assert.deepEqual(saved.d1_databases, config.d1_databases);
+    assert.deepEqual(calls[1], ['kv', 'namespace', 'create', 'gcli2api', '--update-config=false']);
+    await prepareKv(() => {
+      throw new Error('must not provision twice');
+    }, path);
+    await writeFile(path, JSON.stringify(config));
+    await prepareKv(() => JSON.stringify([{ title: 'gcli2api', id: 'b'.repeat(32) }]), path);
+    saved = JSON.parse(await readFile(path, 'utf8'));
+    assert.equal(saved.kv_namespaces[0].id, 'b'.repeat(32));
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });
 
 test('concurrent flush keeps newer versions pending and retries the cumulative bucket without double counting', async () => {
@@ -417,6 +434,169 @@ test('expired packed diagnostics are physically removed after seven days while a
     );
     assert.equal((await stats(env)).summary.requests, 2);
     assert.equal((await queryCallLogs(env.DB, new URLSearchParams())).records.length, 0);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('DO statistics reuse persistent history for filters and fresh queries; explicit and hourly sync read D1', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const query = (params = '') =>
+      usageStats(env.DB, new URLSearchParams('fresh=1&' + params), env);
+    const control = (path = 'status') =>
+      stub.fetch('https://test/test/' + path).then((r) => r.json());
+    await recordTelemetry(env, record());
+    const first = await query();
+    assert.equal(first.query_source, 'durable-object');
+    assert.equal(first.summary.requests, 1);
+    const initial = await control();
+    assert.ok(initial.queries >= 5);
+    await recordTelemetry(env, record({ model: 'second' }));
+    assert.equal((await query()).summary.requests, 2);
+    assert.equal((await query('model=second')).summary.requests, 1);
+    assert.equal((await control()).queries, initial.queries);
+    await flush(env);
+    assert.equal((await query()).summary.requests, 2);
+    assert.equal((await control()).queries, initial.queries);
+    const forced = await query('sync=1');
+    assert.equal(forced.summary.requests, 2);
+    const afterForce = await control();
+    assert.ok(afterForce.queries > initial.queries);
+    await control('expire-history');
+    assert.equal((await query()).summary.requests, 2);
+    assert.ok((await control()).queries > afterForce.queries);
+    await control('fail-history');
+    // Within the hour, fresh queries still work without the unavailable historical database.
+    assert.equal((await query()).summary.requests, 2);
+    await assert.rejects(query('sync=1'), { status: 503 });
+    await control('recover-history');
+    assert.equal((await query('sync=1')).summary.requests, 2);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('DO quota cache validates records, expires, and invalidates with credential metadata', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const url = 'https://test/quota/' + id;
+    const value = {
+      success: true,
+      credentialId: id,
+      mode: 'antigravity',
+      queriedAt: new Date().toISOString(),
+      models: [{ id: 'gemini-test', remaining: 0.7 }],
+      secret: 'must-not-persist',
+    };
+    assert.equal((await stub.fetch(url)).status, 404);
+    const save = () => stub.fetch(url, { method: 'POST', body: JSON.stringify(value) });
+    assert.equal((await save()).status, 200);
+    const result = await (await stub.fetch(url)).json();
+    assert.equal(result.cached, true);
+    assert.equal(result.cacheSeconds, 600);
+    assert.equal(result.models[0].remaining, 0.7);
+    assert.equal(result.secret, undefined);
+    await stub.fetch('https://test/test/expire-quota');
+    assert.equal((await stub.fetch(url)).status, 404);
+    await save();
+    assert.equal(
+      (
+        await stub.fetch('https://test/invalidate-metadata', {
+          method: 'POST',
+          body: JSON.stringify({ credentialId: id }),
+        })
+      ).status,
+      200,
+    );
+    assert.equal((await stub.fetch(url)).status, 404);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('packed history: 5000 historical aggregates do not become 5000 DO rows; warm filtering has bounded reads', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    const at = Date.now() - 86400000;
+    await env.DB.prepare(
+      `WITH RECURSIVE n(x) AS(SELECT 1 UNION ALL SELECT x+1 FROM n WHERE x<5000)
+      INSERT INTO usage_aggregates(bucket_key,version,created_at,payload,members) SELECT printf('%013d',${at})||':'||x,1,${at},json_object('created_at',${at},'mode','antigravity','model',CASE WHEN x%2=0 THEN 'even' ELSE 'odd' END,'status',200,'outcome','success','requests',1,'successes',1,'failures',0,'cancellations',0,'total_duration_ms',10,'total_tokens',5,'token_reports',1),'[]' FROM n`,
+    ).run();
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const control = (path = 'status') =>
+      stub.fetch('https://test/test/' + path).then((r) => r.json());
+    const query = (params = '') =>
+      usageStats(env.DB, new URLSearchParams('fresh=1&' + params), env);
+    const before = await control();
+    const initial = await query();
+    assert.equal(initial.summary.requests, 5000);
+    const first = await control();
+    assert.ok(first.sqlWrites - before.sqlWrites < 30, JSON.stringify(first));
+    assert.ok(first.kvWrites <= 2, JSON.stringify(first));
+    for (let i = 0; i < 5; i++) assert.equal((await query('model=even')).summary.requests, 2500);
+    const after = await control();
+    assert.equal(after.queries, first.queries);
+    assert.equal(after.sqlWrites, first.sqlWrites);
+    assert.equal(
+      after.kvWrites,
+      first.kvWrites,
+      'filters and manual refresh do not bypass the global KV write gate',
+    );
+    assert.ok(after.sqlReads - first.sqlReads <= 25, JSON.stringify({ first, after }));
+    // KV restores a missing local baseline; no historical D1 scan is needed.
+    await control('forget-history');
+    assert.equal((await query()).summary.requests, 5000);
+    assert.equal((await control()).queries, first.queries);
+    await control('fail-kv');
+    await control('expire-query-kv');
+    assert.equal((await query('model=odd')).summary.requests, 2500);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('KV query snapshot serves a new Worker cache without calling DO and manual fresh bypasses it', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    await recordTelemetry(env, record());
+    assert.equal(
+      (await usageStats(env.DB, new URLSearchParams('fresh=1'), env)).summary.requests,
+      1,
+    );
+    let calls = 0;
+    const isolated = {
+      ...env,
+      DB: {},
+      TELEMETRY: {
+        idFromName: () => 0,
+        get: () => ({
+          fetch: () => {
+            calls++;
+            throw new Error('DO should be cached');
+          },
+        }),
+      },
+    };
+    const cached = await usageStats(isolated.DB, new URLSearchParams(), isolated);
+    assert.equal(cached.summary.requests, 1);
+    assert.equal(cached.cache_source, 'kv');
+    assert.equal(calls, 0);
+    await assert.rejects(usageStats(isolated.DB, new URLSearchParams('fresh=1'), isolated));
+    assert.equal(calls, 1);
+    const entry = (await env.CACHE.list({ prefix: 'gcli-stats:v2:' })).keys[0];
+    const value = await env.CACHE.get(entry.name, 'json');
+    value.cached_at = Date.now() - 301000;
+    await env.CACHE.put(entry.name, JSON.stringify(value));
+    const expired = { ...isolated, DB: {} };
+    await assert.rejects(usageStats(expired.DB, new URLSearchParams(), expired));
+    assert.equal(calls, 2, 'expired KV data must not hide new usage');
   } finally {
     await mf.dispose();
   }

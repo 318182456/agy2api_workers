@@ -59,11 +59,12 @@ function metricsRow(body, label, row) {
     (row.avg_duration_ms ?? 0) + ' ms',
   ]);
 }
-async function loadStats(fresh = false) {
+async function loadStats(fresh = false, sync = false) {
   const params = panelFilters('stats');
   if (!params.has('from'))
     params.set('from', String(Math.floor(Date.now() / 300000) * 300000 - 7 * 86400000));
   if (fresh) params.set('fresh', '1');
+  if (sync) params.set('sync', '1');
   const value = await api('/admin/stats?' + params);
   for (const row of value.api_keys || [])
     if (row.api_key_id) statsKeyNames.set(row.api_key_id, row.display_name);
@@ -131,9 +132,22 @@ async function loadStats(fresh = false) {
         value.pending_requests +
         '（已包含在统计中，含同时间桶已落盘部分）'
       : '明细模式 · 逐请求保存';
+  if (value.query_source === 'durable-object')
+    el('statsBuffer').textContent +=
+      ' · ' +
+      (value.cache_source === 'storage-node'
+        ? '子节点缓存 · ' + (value.storage_node_name || '')
+        : value.cache_source === 'kv'
+          ? 'KV 快照（最多 5 分钟）'
+          : 'DO 查询') +
+      ' · 统计生成于 ' +
+      formatReset(value.cached_at) +
+      ' · D1 历史同步于 ' +
+      formatReset(value.history_synced_at) +
+      '（每小时按需同步）';
   renderStatsCharts(value);
   status(
-    '统计已刷新；自动加载可复用 60 秒缓存，手动刷新直接查询。' +
+    '统计已刷新；自动加载可复用 1 分钟内存 / 边缘缓存或最多 5 分钟 KV 快照。刷新统计绕过这些缓存，历史每小时按需同步。' +
       (value.groups_truncated ? '模型、账号或密钥分组超过 200 项，请缩小筛选范围。' : ''),
   );
 }
@@ -147,6 +161,7 @@ el('statsApiKey').onchange = () =>
     await loadStats();
   });
 el('statsRefresh').onclick = () => run(() => loadStats(true));
+el('statsSync').onclick = () => run(() => loadStats(true, true));
 el('statsFlush').onclick = () =>
   run(async () => {
     const value = await api('/admin/telemetry/flush', 'POST');
