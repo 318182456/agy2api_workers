@@ -1,3 +1,4 @@
+import { DailyStatsIndex } from './preaggregate.js';
 import { HttpError } from '../core/common.js';
 import { filters } from './filters.js';
 import { summarizeRows } from './rollup.js';
@@ -26,7 +27,6 @@ const detailColumns = [
   'api_key_id',
   'api_key_name',
 ];
-const tokens = ['input_tokens', 'output_tokens', 'thought_tokens', 'total_tokens'];
 const valid = (value) =>
   value?.version === 3 &&
   Number.isFinite(value.synced_at) &&
@@ -259,27 +259,25 @@ export class StatsHistory {
     const ids = safe.has('api_key_ids') ? safe.get('api_key_ids').split(',') : null;
     if (ids && (ids.length > 51 || ids.some((id) => !/^[a-f0-9-]{36}$/.test(id))))
       throw new HttpError(400, 'API 密钥列表无效');
+    const ensureStart = performance.now();
     await this.ensure(params.get('sync') === '1');
+    const historyMs = performance.now() - ensureStart;
+    const calculationStart = performance.now();
     // Snapshot references remain immutable during a concurrent historical refresh.
     const data = this.data;
     const accounts = new Map(data.accounts.map((row) => [row.id, row]));
     const keys = new Map(data.keys.map((row) => [row.id, row.name]));
-    const aggregates = new Map(data.aggregates.map((row) => [row.key, row]));
-    const represented = new Set();
-    let pending = 0;
-    for (const bucket of this.live().values()) {
-      if (bucket.dirty) pending += JSON.parse(bucket.payload).requests;
-      for (const id of JSON.parse(bucket.members)) represented.add(id);
-      if (
-        !aggregates.has(bucket.bucket_key) ||
-        aggregates.get(bucket.bucket_key).version <= bucket.version
-      )
-        aggregates.set(bucket.bucket_key, {
-          key: bucket.bucket_key,
-          version: bucket.version,
-          value: JSON.parse(bucket.payload),
-        });
+    const live = this.live();
+    if (
+      !this.index ||
+      this.indexData !== data ||
+      [...this.index.liveVersions.keys()].some((key) => !live.has(key))
+    ) {
+      this.index = new DailyStatsIndex(data);
+      this.indexData = data;
     }
+    this.index.update(live);
+    const pending = this.index.pending;
     const date = (field) =>
       /^\d+$/.test(safe.get(field) || '') ? Number(safe.get(field)) : Date.parse(safe.get(field));
     const from = Math.max(Date.now() - 30 * 86400000, date('from') || 0);
@@ -312,20 +310,18 @@ export class StatsHistory {
         day: new Date(row.created_at + 8 * 3600000).toISOString().slice(0, 10),
       });
     };
-    for (const aggregate of aggregates.values()) accept(aggregate.value);
-    for (const row of data.details) {
-      if (row.aggregate_key && represented.has(row.request_id)) continue;
-      accept({
-        ...row,
-        requests: 1,
-        successes: Number(row.outcome === 'success'),
-        failures: Number(row.outcome === 'failed'),
-        cancellations: Number(row.outcome === 'cancelled'),
-        total_duration_ms: row.duration_ms,
-        token_reports: Number(tokens.some((key) => row[key] != null)),
-      });
-    }
+    const selected = this.index.query(from, to, !!safe.get('request_id'));
+    for (const row of selected.rows) accept(row);
     const value = summarizeRows(rows, keys, { TELEMETRY: true }, pending);
+    value.timings = {
+      history_sync_ms: historyMs,
+      aggregate_ms: performance.now() - calculationStart,
+    };
+    value.preaggregation = {
+      total_rows: selected.total_rows,
+      query_rows: selected.query_rows,
+      daily_groups: selected.daily_groups,
+    };
     value.query_source = 'durable-object';
     value.cache_source = 'durable-object';
     value.history_synced_at = this.syncedAt();

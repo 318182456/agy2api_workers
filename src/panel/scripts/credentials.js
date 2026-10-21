@@ -1,5 +1,46 @@
-export const credentialsScript = String.raw`async function refresh() {
-  const value = await api('/admin/credentials');
+export const credentialsScript = String.raw`let credentialRefreshVersion = 0;
+let credentialLiveFlight = Promise.resolve();
+async function refresh() {
+  const version = ++credentialRefreshVersion;
+  const value = await api('/admin/credentials?view=basic');
+  if (version !== credentialRefreshVersion) return;
+  applyCredentialSnapshot(value);
+  status('已加载 ' + value.credentials.length + ' 个凭证。');
+  if (currentPage !== 'overview' && currentSection !== 'credentials') {
+    credentialLiveFlight = Promise.resolve();
+    el('credentialLiveStatus').textContent = '';
+    return;
+  }
+  el('credentialLiveStatus').textContent = '账号已加载，正在补齐最新健康状态…';
+  credentialLiveFlight = (async () => {
+    try {
+      const live = await api('/admin/credentials/live');
+      if (version !== credentialRefreshVersion) return;
+      const health = new Map(live.health.map((row) => [row.credential_id, row]));
+      value.credentials = value.credentials.map((row) => {
+        const current = health.get(row.id);
+        if (!current) return row;
+        return {
+          ...row,
+          last_used: Math.max(row.last_used || 0, current.last_used || 0),
+          last_success: Math.max(row.last_success || 0, current.last_success || 0) || null,
+          last_failure: Math.max(row.last_failure || 0, current.last_failure || 0) || null,
+          last_failure_status:
+            (current.last_failure || 0) > (row.last_failure || 0)
+              ? current.last_status
+              : row.last_failure_status,
+        };
+      });
+      applyCredentialSnapshot(value);
+      el('credentialLiveStatus').textContent = '健康状态更新于 ' + formatReset(live.queried_at);
+    } catch {
+      if (version === credentialRefreshVersion)
+        el('credentialLiveStatus').textContent =
+          '最新健康状态暂不可用，当前显示已保存状态；可刷新重试。';
+    }
+  })();
+}
+function applyCredentialSnapshot(value) {
   credentialsSnapshot = value.credentials;
   credentialsLoaded = true;
   renderEndpoints();
@@ -50,7 +91,6 @@ export const credentialsScript = String.raw`async function refresh() {
       el(target).append(box);
     }
   }
-  status('已加载 ' + value.credentials.length + ' 个凭证。');
 }
 let credentialPage = 0;
 function filteredCredentials() {

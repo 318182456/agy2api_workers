@@ -6,6 +6,9 @@ const failures = new WeakMap();
 export function resetStorageNodes(env) {
   if (env.DB) {
     delete dbCache(env.DB).storageNodes;
+    delete dbCache(env.DB).storagePanel;
+    delete dbCache(env.DB).storagePanelFlight;
+    delete dbCache(env.DB).storagePanelFlightOrigin;
     delete dbCache(env.DB).nodeTelemetryBackoff;
     delete dbCache(env.DB).telemetryNodeAuth;
   }

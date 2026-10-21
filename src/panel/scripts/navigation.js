@@ -136,8 +136,7 @@ async function loadPage(id) {
   const parent = parentPage(id);
   status('正在加载页面…');
   if (parent === 'overview') {
-    await refresh();
-    await loadStats();
+    await Promise.all([refresh(), loadStats()]);
   } else if (parent === 'credentials') {
     if (!loadedPages.has('credentials')) {
       await refresh();
@@ -190,7 +189,6 @@ function bindMetricLink(node, id, params = {}, detail) {
       await loadPage(id);
       if (id === 'credentials') renderCredentials();
       if (id === 'logs' && cached) await loadCalls();
-      if (id === 'overview' && cached && query.has('api_key_id')) await loadStats();
       if (detail) {
         const target = el(detail);
         target.open = true;
@@ -353,11 +351,50 @@ el('runtimeRegionRefresh').onclick = () =>
         '，不代表 Google 出口或实际执行节点。',
     );
   });
+const panelTimings = new Map();
+function recordPanelTiming(path, start, response) {
+  if (!path.startsWith('/admin/') || el('workspace').hidden) return;
+  const route = path.split('?')[0].replace(/[a-f0-9-]{36}/g, ':id');
+  const labels = {
+    nodes: '子节点同步',
+    buffer: '用量缓冲',
+    stats_do: '主节点统计',
+    history: '历史同步',
+    rollup: '汇总计算',
+    credentials_db: '账号查询',
+    logs_d1: '主库问题记录',
+    logs_nodes: '子节点问题记录',
+    monitor_d1: '节点配置',
+    monitor_primary: '主节点监控',
+    monitor_nodes: '子节点监控',
+    total: '服务端总计',
+  };
+  const stages = (response.headers?.get?.('server-timing') || '')
+    .split(',')
+    .map((part) => {
+      const match = part.trim().match(/^([a-z_]+);dur=([0-9.]+)$/);
+      return match ? (labels[match[1]] || match[1]) + ' ' + match[2] + ' ms' : '';
+    })
+    .filter(Boolean)
+    .join(' · ');
+  panelTimings.delete(route);
+  panelTimings.set(route, { ms: Math.max(0, Date.now() - start), stages });
+  if (panelTimings.size > 12) panelTimings.delete(panelTimings.keys().next().value);
+  const target = el('performanceBody');
+  if (!target) return;
+  target.replaceChildren();
+  for (const [name, value] of panelTimings) {
+    const line = document.createElement('p');
+    line.textContent = name + ' · ' + value.ms + ' ms' + (value.stages ? ' · ' + value.stages : '');
+    target.append(line);
+  }
+}
 async function api(path, method = 'GET', body, responseType) {
   const raw = typeof Blob !== 'undefined' && body instanceof Blob;
   const headers = {};
   if (body !== undefined)
     headers['content-type'] = raw ? body.type || 'application/zip' : 'application/json';
+  const timingStart = Date.now();
   const response = await fetch(path, {
     method,
     headers,
@@ -367,8 +404,12 @@ async function api(path, method = 'GET', body, responseType) {
   updateRuntimeRegion(response);
   if (response.ok && responseType === 'blob') return response.blob();
   const value = await response.json();
+  if (method === 'GET') recordPanelTiming(path, timingStart, response);
   if (response.status === 401) {
+    credentialRefreshVersion++;
     resetKeys();
+    panelTimings.clear();
+    el('performanceBody').replaceChildren();
     loadedPages.clear();
     el('workspace').hidden = true;
     el('loginCard').hidden = false;

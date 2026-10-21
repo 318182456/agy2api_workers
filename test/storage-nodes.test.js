@@ -1130,3 +1130,56 @@ test('permanent new-worker 403 stops after two attempts and invalid-token 401 is
       1,
     );
   }));
+
+test('node monitoring coalesces concurrent reads, caches metadata and metrics, and explicit refresh bypasses the cache', () =>
+  database(async (env) => {
+    const id = '77777777-7777-4777-8777-777777777777',
+      name = 'gcli2api-storage-777777777777',
+      secret = 'f'.repeat(64);
+    await env.DB.prepare(
+      "INSERT INTO storage_nodes(id,email,account_id,worker_name,node_secret,url,status,deployed,created_at,updated_at)VALUES(?,?,?,?,?,?,'ready',1,1,1)",
+    )
+      .bind(id, 'monitor@example.test', account, name, secret, 'https://' + name + '.pages.dev')
+      .run();
+    let calls = 0,
+      release;
+    const gate = new Promise((resolve) => (release = resolve));
+    const fetcher = async () => {
+      calls++;
+      await gate;
+      return Response.json({
+        success: true,
+        node_id: id,
+        day: '2026-10-21',
+        sampled_at: Date.now(),
+        started_at: Date.now() - 1000,
+        cache_entries: 0,
+        cache_bytes: 0,
+        today: {
+          requests: 0,
+          reads: 0,
+          hits: 0,
+          misses: 0,
+          writes: 0,
+          imports: 0,
+          exports: 0,
+          errors: 0,
+        },
+      });
+    };
+    const first = handleRequest(request(), env, fetcher),
+      second = handleRequest(request(), env, fetcher);
+    for (let attempt = 0; attempt < 100 && !calls; attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    assert.equal(calls, 1);
+    release();
+    assert.equal((await first).status, 200);
+    assert.equal((await second).status, 200);
+    await handleRequest(request(), env, fetcher);
+    assert.equal(calls, 1);
+    await handleRequest(request('?usage_fresh=1'), env, fetcher);
+    assert.equal(calls, 2);
+    resetStorageNodes(env);
+    await handleRequest(request(), env, fetcher);
+    assert.equal(calls, 2, 'metadata invalidation retains the independent 30-second metric cache');
+  }));

@@ -1,3 +1,4 @@
+import { timed } from '../core/timing.js';
 import { storageNodes } from '../storage/client.js';
 import { bufferedHealth } from '../telemetry/live-health.js';
 import { pendingTelemetry } from '../telemetry/client.js';
@@ -197,14 +198,18 @@ export async function importCredential(db, body, env = {}) {
   return { success: true, name, mode };
 }
 
-export async function listCredentials(db, env = {}) {
-  const result = await db
-    .prepare(
-      `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT json_extract(payload,'$.last_success') FROM usage_aggregates WHERE credential_id=credentials.id AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1) AS aggregate_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`,
-    )
-    .all();
+export async function listCredentials(db, env = {}, { basic = false } = {}) {
+  const result = await timed(env, 'credentials_db', () =>
+    db
+      .prepare(
+        basic
+          ? `SELECT c.id,c.mode,c.name,c.disabled,c.last_used,c.created_at,c.priority,c.weight,c.data,h.last_success,h.last_failure,h.last_status AS last_failure_status,(SELECT COUNT(*) FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials c LEFT JOIN credential_health h ON h.credential_id=c.id ORDER BY c.created_at DESC`
+          : `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT json_extract(payload,'$.last_success') FROM usage_aggregates WHERE credential_id=credentials.id AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1) AS aggregate_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials ORDER BY created_at DESC`,
+      )
+      .all(),
+  );
   const latest = new Map();
-  const snapshot = await pendingTelemetry(env);
+  const snapshot = basic ? { buckets: [] } : await pendingTelemetry(env);
   const liveHealth = bufferedHealth(snapshot.buckets);
   for (const bucket of snapshot.buckets)
     latest.set(

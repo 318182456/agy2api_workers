@@ -1,3 +1,5 @@
+import { attachTimings } from '../src/core/timing.js';
+import { DailyStatsIndex, dayStart } from '../src/telemetry/preaggregate.js';
 import { credentialHealth } from '../src/telemetry/health.js';
 import { selectCredential } from '../src/credentials/index.js';
 import { storageNodeSource } from '../src/storage/node-worker.js';
@@ -13,7 +15,7 @@ import { randomUUID, webcrypto } from 'node:crypto';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflare';
 import { recordTelemetry, recordUsage, usageStats } from '../src/telemetry/index.js';
-import { telemetryPayload } from '../src/telemetry/client.js';
+import { telemetryPayload, pendingTelemetry } from '../src/telemetry/client.js';
 import { readShared, publishShared } from '../src/cache/shared.js';
 import { queryCallLogs, clearCallLogs } from '../src/upstream/reliability.js';
 import { prepareKv } from '../scripts/prepare-kv.mjs';
@@ -698,7 +700,11 @@ test('child buffers model usage, live statistics merge it immediately, duplicate
         });
       },
     });
-    env.STORAGE_NODE_FETCH = (url, init) => remote.dispatchFetch(url, init);
+    let snapshotReads = 0;
+    env.STORAGE_NODE_FETCH = (url, init) => {
+      if (url.endsWith('/telemetry/snapshot')) snapshotReads++;
+      return remote.dispatchFetch(url, init);
+    };
     const a = record(),
       b = record();
     await recordTelemetry(env, a);
@@ -706,6 +712,17 @@ test('child buffers model usage, live statistics merge it immediately, duplicate
     await recordTelemetry(env, b);
     assert.equal((await snapshot(env)).buckets.length, 0, 'no per-request primary DO writes');
     assert.equal(await count(env, 'request_usage'), 0, 'successful requests have no D1 details');
+    const basic = await handleRequest(
+      new Request('https://main.test/admin/credentials?view=basic', {
+        headers: { authorization: 'Bearer panel' },
+      }),
+      { ...env, PANEL_PASSWORD: 'panel' },
+    );
+    assert.equal(basic.status, 200);
+    assert.match(basic.headers.get('server-timing'), /credentials_db;dur=/);
+    assert.equal((await basic.json()).credentials.length, 1);
+    assert.equal(snapshotReads, 0, 'basic list must not wait for node synchronization');
+
     const headers = { authorization: 'Bearer ' + secret, 'content-type': 'application/json' };
     const raw = await (
       await remote.dispatchFetch('https://node/telemetry/snapshot', { method: 'POST', headers })
@@ -717,10 +734,19 @@ test('child buffers model usage, live statistics merge it immediately, duplicate
     let usage = await (await remote.dispatchFetch('https://node/usage', { headers })).json();
     assert.equal(usage.telemetry.today_requests, 2);
     assert.equal(usage.telemetry.interval_seconds, 300);
+    const [live, pending] = await Promise.all([
+      usageStats(env.DB, new URLSearchParams(), env),
+      pendingTelemetry(env),
+    ]);
+    assert.equal(live.summary.requests, 2, 'ordinary query reads current child buffers');
     assert.equal(
-      (await usageStats(env.DB, new URLSearchParams(), env)).summary.requests,
+      pending.buckets.reduce((n, b) => n + b.value.requests, 0),
       2,
-      'ordinary query reads current child buffers',
+    );
+    assert.equal(
+      snapshotReads,
+      1,
+      'concurrent account and statistics queries share one live node synchronization',
     );
     assert.equal(
       await count(env, 'usage_aggregates'),
@@ -863,7 +889,46 @@ test('child keeps issue diagnostics and health, merged issue pagination and filt
     assert.equal(await count(env, 'request_usage'), 0, 'issue diagnostics stay in child SQLite');
     assert.equal(await count(env, 'credential_health'), 0, 'health changes are buffered');
     const params = new URLSearchParams('issues=1');
-    const first = await queryCallLogs(env.DB, params, false, env);
+    let releaseParallel,
+      dbStarted = false,
+      nodeStarted = false;
+    const parallelGate = new Promise((resolve) => (releaseParallel = resolve)),
+      realDb = env.DB;
+    const delayedDb = {
+      prepare(sql) {
+        const raw = realDb.prepare(sql);
+        if (!sql.startsWith('WITH events')) return raw;
+        return {
+          bind(...values) {
+            const statement = raw.bind(...values);
+            return {
+              async all() {
+                dbStarted = true;
+                await parallelGate;
+                return statement.all();
+              },
+            };
+          },
+        };
+      },
+    };
+    const parallelEnv = {
+      ...env,
+      DB: delayedDb,
+      STORAGE_NODE_FETCH: async (url, init) => {
+        if (url.includes('/events/query')) {
+          nodeStarted = true;
+          await parallelGate;
+        }
+        return remote.dispatchFetch(url, init);
+      },
+    };
+    const firstFlight = queryCallLogs(delayedDb, params, false, parallelEnv);
+    for (let attempt = 0; attempt < 100 && !(dbStarted && nodeStarted); attempt++)
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    releaseParallel();
+    assert.ok(dbStarted && nodeStarted, 'D1 and node reads must start in parallel');
+    const first = await firstFlight;
     assert.equal(first.records.length, 50);
     assert.ok(first.next);
     assert.equal(first.records[0].api_key_name, 'client-fixture');
@@ -934,5 +999,147 @@ test('child keeps issue diagnostics and health, merged issue pagination and filt
   } finally {
     await remote?.dispose();
     await mf.dispose();
+  }
+});
+
+test('daily preaggregation preserves null versus zero, exact boundary times, live replacements and detail deduplication', () => {
+  const first = dayStart(Date.now()) - 2 * 86400000,
+    aggregates = [];
+  for (let day = 0; day < 2; day++)
+    for (let slot = 0; slot < 6; slot++) {
+      const created_at = first + day * 86400000 + slot * 4 * 3600000;
+      aggregates.push({
+        key: 'bucket:' + day + ':' + slot,
+        version: 1,
+        value: {
+          credential_id: id,
+          credential_name: 'account',
+          api_key_id: null,
+          mode: 'antigravity',
+          model: 'm',
+          status: 200,
+          outcome: 'success',
+          created_at,
+          requests: 1,
+          successes: 1,
+          failures: 0,
+          cancellations: 0,
+          total_duration_ms: 100,
+          input_tokens: null,
+          output_tokens: null,
+          thought_tokens: null,
+          total_tokens: day === 0 && slot === 0 ? 0 : null,
+          token_reports: day === 0 && slot === 0 ? 1 : 0,
+        },
+      });
+    }
+  const detail = {
+    request_id: 'fallback',
+    aggregate_key: 'bucket:1:0',
+    credential_id: id,
+    credential_name: 'account',
+    mode: 'antigravity',
+    model: 'm',
+    status: 502,
+    outcome: 'failed',
+    created_at: first + 86400000 + 3600000,
+    duration_ms: 200,
+    total_tokens: null,
+  };
+  const index = new DailyStatsIndex({ aggregates, details: [detail] });
+  index.update(new Map());
+  const full = index.query(first, first + 2 * 86400000 - 1);
+  assert.equal(full.total_rows, 13);
+  assert.equal(full.query_rows, 3);
+  assert.equal(
+    full.rows.reduce((n, r) => n + r.requests, 0),
+    13,
+  );
+  assert.equal(
+    full.rows.filter((r) => r.outcome === 'success').find((r) => r.created_at === first)
+      .total_tokens,
+    0,
+  );
+  assert.equal(
+    full.rows.filter((r) => r.outcome === 'success').find((r) => r.created_at === first + 86400000)
+      .total_tokens,
+    null,
+  );
+  const range = index.query(first + 5 * 3600000, first + 86400000 + 5 * 3600000);
+  assert.equal(
+    range.rows.reduce((n, r) => n + r.requests, 0),
+    7,
+  );
+  const old = aggregates.find((row) => row.key === 'bucket:1:0');
+  const live = new Map([
+    [
+      old.key,
+      {
+        version: 2,
+        dirty: 1,
+        payload: JSON.stringify({
+          ...old.value,
+          requests: 2,
+          successes: 2,
+          total_tokens: 5,
+          token_reports: 2,
+        }),
+        members: JSON.stringify(['original', 'fallback']),
+      },
+    ],
+  ]);
+  index.update(live);
+  const updated = index.query(first, Infinity);
+  assert.equal(
+    updated.rows.reduce((n, r) => n + r.requests, 0),
+    13,
+    'fallback detail becomes part of the newer live bucket',
+  );
+  assert.equal(
+    updated.rows.reduce((n, r) => n + (r.total_tokens || 0), 0),
+    5,
+  );
+  assert.equal(index.pending, 2);
+  index.update(live);
+  assert.equal(
+    index.query(first, Infinity).rows.reduce((n, r) => n + r.requests, 0),
+    13,
+    'same bucket version cannot be added twice',
+  );
+  live.get(old.key).dirty = 0;
+  index.update(live);
+  assert.equal(index.pending, 0);
+  assert.ok(
+    index.query(first, Infinity, true).query_rows > updated.query_rows,
+    'request ID filtering can retain exact original rows',
+  );
+});
+
+test('slow request diagnostics contain stage timings without query strings or arbitrary metric names', () => {
+  const original = console.warn,
+    logs = [];
+  console.warn = (value) => logs.push(value);
+  try {
+    const response = Response.json({});
+    attachTimings(
+      response,
+      {
+        REQUEST_TIMINGS: [
+          { name: 'nodes', ms: 50 },
+          { name: 'stats_do', ms: 25 },
+          { name: 'bad;secret=fixture-private', ms: 1 },
+        ],
+      },
+      performance.now() - 2000,
+      '/admin/stats?token=fixture-private',
+    );
+    assert.match(response.headers.get('server-timing'), /nodes;dur=50.0/);
+    assert.match(response.headers.get('server-timing'), /total;dur=/);
+    assert.equal(logs.length, 1);
+    assert.equal(JSON.parse(logs[0]).route, '/admin/stats');
+    assert.ok(!logs[0].includes('fixture-private'));
+    assert.ok(!response.headers.get('server-timing').includes('fixture-private'));
+  } finally {
+    console.warn = original;
   }
 });

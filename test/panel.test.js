@@ -53,11 +53,20 @@ test('management script: batch continues after one failure and exports/imports c
     querySelectorAll: () => [],
     body: new Element(),
   };
+  let releaseHealth;
+  const healthGate = new Promise((resolve) => {
+    releaseHealth = resolve;
+  });
+  let liveRequests = 0;
   const fetcher = async (path, options) => {
     const body = options.body ? JSON.parse(options.body) : undefined;
     requests.push({ path, method: options.method, body });
     if (path === '/auth/session') return Response.json({ authenticated: false });
-    if (path === '/admin/credentials' && options.method === 'GET')
+    if (path === '/admin/credentials/live')
+      return Response.json(
+        liveRequests++ === 0 ? await healthGate : { health: [], queried_at: Date.now() },
+      );
+    if (path === '/admin/credentials?view=basic' && options.method === 'GET')
       return Response.json({ credentials: rows });
     if (path === '/admin/credentials/a' && options.method === 'PATCH')
       return Response.json({ error: { message: 'expected failure' } }, { status: 500 });
@@ -105,6 +114,17 @@ test('management script: batch continues after one failure and exports/imports c
   vm.runInContext(panel.match(/<script>([\s\S]*?)<\/script>/)[1], context);
   await new Promise((resolve) => setImmediate(resolve));
   await vm.runInContext('refresh()', context);
+  assert.equal(
+    vm.runInContext('credentialsSnapshot.length', context),
+    2,
+    'account rows appear before live health completes',
+  );
+  releaseHealth({ health: [{ credential_id: 'a', last_success: 12345 }], queried_at: Date.now() });
+  await vm.runInContext('credentialLiveFlight', context);
+  assert.equal(
+    vm.runInContext("credentialsSnapshot.find(row=>row.id==='a').last_success", context),
+    12345,
+  );
   vm.runInContext(
     "selectedCredentials.add('a'); selectedCredentials.add('b'); updateSelection();",
     context,
@@ -135,6 +155,17 @@ test('management script: batch continues after one failure and exports/imports c
   assert.equal(rows[0].user_email, 'account@example.test');
   assert.match(el('batchResults').textContent, /bad.json：读取失败/);
   assert.doesNotMatch(el('batchResults').textContent, /test-refresh-secret/);
+  el('workspace').hidden = true;
+  vm.runInContext('panelTimings.clear()', context);
+  vm.runInContext(
+    "recordPanelTiming('/admin/credentials/live',Date.now(),{headers:{get:()=> 'nodes;dur=20'}})",
+    context,
+  );
+  assert.equal(
+    vm.runInContext('panelTimings.size', context),
+    0,
+    'late background responses must not restore diagnostics after logout',
+  );
 });
 
 test('management script: quota failures continue, stop works, stats/health and scoped log controls render', async () => {
@@ -228,7 +259,7 @@ test('management script: quota failures continue, stop works, stats/health and s
     requests.push({ path, method: options.method, body });
     if (path === '/auth/session') return Response.json({ authenticated: false });
     if (path === '/auth/logout') return Response.json({ success: true });
-    if (path === '/admin/credentials') return Response.json({ credentials: rows });
+    if (path === '/admin/credentials?view=basic') return Response.json({ credentials: rows });
     if (path === '/admin/credentials/a/quota') {
       if (stopOnFirst) el('quotaOverviewStop').onclick();
       return Response.json({
@@ -535,7 +566,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   const fetcher = async (path) => {
     calls.push(path);
     if (path === '/auth/session') return Response.json({ authenticated: true });
-    if (path === '/admin/credentials') return Response.json({ credentials: rows });
+    if (path === '/admin/credentials?view=basic') return Response.json({ credentials: rows });
     if (path.startsWith('/admin/calls?')) return Response.json({ records: [], next: null });
     if (path.startsWith('/admin/stats?'))
       return Response.json({ summary: aggregate, days: [], models: [], credentials: [] });
@@ -685,6 +716,8 @@ test('API key list renders unused keys, later used keys and pagination even when
       return nodes.get(id);
     };
   let unavailable = false;
+  let holdUsage = false;
+  const pendingUsage = [];
   const calls = [];
   const key = (id) => ({
     id,
@@ -723,6 +756,7 @@ test('API key list renders unused keys, later used keys and pagination even when
           has_next: page === '0',
         };
       }
+      if (holdUsage) await new Promise((resolve) => pendingUsage.push(resolve));
       if (unavailable) throw new Error('fixture usage unavailable');
       return {
         api_keys: [
@@ -740,6 +774,7 @@ test('API key list renders unused keys, later used keys and pagination even when
   });
   vm.runInContext(keysScript, context);
   await vm.runInContext('loadKeys()', context);
+  await vm.runInContext('keysUsageFlight', context);
   assert.deepEqual(
     el('keysBody').children.map((row) => row.children[0].textContent),
     ['总密钥（兼容）', 'used-before', 'unused', 'used-after'],
@@ -750,12 +785,31 @@ test('API key list renders unused keys, later used keys and pagination even when
   assert.equal(el('keysPrev').disabled, true);
   assert.equal(calls.filter((path) => path.startsWith('/admin/stats?')).length, 1);
   await el('keysNext').onclick();
+  await vm.runInContext('keysUsageFlight', context);
   assert.equal(el('keysBody').children[0].children[0].textContent, 'unused-next-page');
   assert.equal(el('keysBody').children[0].children[1].children[0].textContent, '0 Token');
   assert.equal(el('keysNext').disabled, true);
   assert.equal(el('keysPrev').disabled, false);
   unavailable = true;
   await el('keysPrev').onclick();
+  await vm.runInContext('keysUsageFlight', context);
   assert.equal(el('keysBody').children.length, 4);
   assert.equal(el('keysBody').children[2].children[1].children[0].textContent, '暂不可用');
+  unavailable = false;
+  holdUsage = true;
+  await vm.runInContext('loadKeys()', context);
+  assert.equal(el('keysBody').children.length, 4, 'list is usable before the statistics response');
+  assert.equal(el('keysBody').children[0].children[1].children[0].textContent, '读取中…');
+  await el('keysNext').onclick();
+  assert.equal(el('keysBody').children[0].children[0].textContent, 'unused-next-page');
+  pendingUsage[0]();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(
+    el('keysBody').children[0].children[1].children[0].textContent,
+    '读取中…',
+    'old page result cannot overwrite new page usage',
+  );
+  pendingUsage[1]();
+  await vm.runInContext('keysUsageFlight', context);
+  assert.equal(el('keysBody').children[0].children[1].children[0].textContent, '0 Token');
 });

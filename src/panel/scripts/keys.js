@@ -1,4 +1,6 @@
 export const keysScript = String.raw`let keyPage = 0;
+let keysLoadVersion = 0;
+let keysUsageFlight = Promise.resolve();
 let selectedApiKey = null;
 let revealedKeyId = null;
 const masterKeyId = '00000000-0000-0000-0000-000000000000';
@@ -10,6 +12,7 @@ function clearKeySecret() {
   revealedKeyId = null;
 }
 function resetKeys() {
+  keysLoadVersion++;
   clearKeySecret();
   keyPage = 0;
   selectedApiKey = null;
@@ -39,11 +42,13 @@ function keyAction(label, action, danger = false) {
   return button;
 }
 async function loadKeys() {
+  const version = ++keysLoadVersion;
   const params = new URLSearchParams({
     page: String(keyPage),
     search: el('keysSearch').value.trim(),
   });
   const value = await api('/admin/api-keys?' + params);
+  if (version !== keysLoadVersion) return;
   el('keysBody').replaceChildren();
   el('keysCompatibility').textContent = value.master_enabled
     ? '原总密钥仍可使用，建议逐步为各项目配置独立密钥。'
@@ -62,21 +67,8 @@ async function loadKeys() {
           ...value.keys,
         ]
       : value.keys;
-  let usage = null;
-  if (rows.length) {
-    try {
-      const params = new URLSearchParams({
-        api_key_ids: rows.map((row) => row.id).join(','),
-        from: String(Math.floor(Date.now() / 300000) * 300000 - 30 * 86400000),
-      });
-      const totals = await api('/admin/stats?' + params);
-      usage = new Map(totals.api_keys.map((row) => [row.api_key_id, row]));
-      el('keysUsageNote').textContent =
-        '消耗统计：最近 30 天，上游报告总 Token，包含 DO 待落盘用量；内存 / 边缘缓存 1 分钟，KV 快照最多 5 分钟，D1 历史每小时按需同步。未报告部分不估算，非 Google 账号剩余额度。';
-    } catch {
-      el('keysUsageNote').textContent = '用量暂不可用，可刷新列表重试；密钥管理仍可使用。';
-    }
-  } else el('keysUsageNote').textContent = '';
+  const cells = new Map();
+  el('keysUsageNote').textContent = rows.length ? '密钥列表已加载，正在读取最新用量…' : '';
   for (const row of rows) {
     const tr = document.createElement('tr');
     for (const text of [
@@ -90,23 +82,8 @@ async function loadKeys() {
       tr.append(td);
     }
     const consumption = document.createElement('td');
-    const metric = usage?.get(row.id);
-    const amount = document.createElement('div');
-    amount.textContent = !usage
-      ? '暂不可用'
-      : !metric?.requests
-        ? '0 Token'
-        : metric.total_tokens == null
-          ? '未报告'
-          : tokenText(metric.total_tokens) + ' Token';
-    const coverage = document.createElement('small');
-    coverage.className = 'data-note';
-    coverage.textContent = usage
-      ? (metric?.requests || 0).toLocaleString('zh-CN') +
-        ' 次请求' +
-        (metric?.requests > (metric?.token_reports || 0) ? ' · 部分用量未报告' : '')
-      : '统计获取失败';
-    consumption.append(amount, coverage);
+    renderKeyConsumption(consumption, null, 'loading');
+    cells.set(row.id, consumption);
     tr.insertBefore(consumption, tr.children[1]);
     const actions = document.createElement('td');
     actions.append(
@@ -203,6 +180,49 @@ async function loadKeys() {
   el('keysNext').disabled = !value.has_next;
   el('keysPageInfo').textContent = '第 ' + (keyPage + 1) + ' 页 · 每页 50 个独立密钥';
   status('API 密钥列表已加载。');
+  keysUsageFlight = (async () => {
+    if (!rows.length) return;
+    try {
+      const params = new URLSearchParams({
+        api_key_ids: rows.map((row) => row.id).join(','),
+        from: String(Math.floor(Date.now() / 300000) * 300000 - 30 * 86400000),
+      });
+      const totals = await api('/admin/stats?' + params);
+      if (version !== keysLoadVersion) return;
+      const usage = new Map(totals.api_keys.map((row) => [row.api_key_id, row]));
+      for (const [id, cell] of cells) renderKeyConsumption(cell, usage.get(id), 'ready');
+      el('keysUsageNote').textContent =
+        '消耗统计：最近 30 天，上游报告总 Token，包含 DO 待落盘用量；未报告部分不估算，非 Google 账号剩余额度。';
+    } catch {
+      if (version !== keysLoadVersion) return;
+      for (const cell of cells.values()) renderKeyConsumption(cell, null, 'failed');
+      el('keysUsageNote').textContent = '用量暂不可用，可刷新列表重试；密钥管理仍可使用。';
+    }
+  })();
+}
+function renderKeyConsumption(cell, metric, state) {
+  const amount = document.createElement('div'),
+    coverage = document.createElement('small');
+  coverage.className = 'data-note';
+  amount.textContent =
+    state === 'loading'
+      ? '读取中…'
+      : state === 'failed'
+        ? '暂不可用'
+        : !metric?.requests
+          ? '0 Token'
+          : metric.total_tokens == null
+            ? '未报告'
+            : tokenText(metric.total_tokens) + ' Token';
+  coverage.textContent =
+    state === 'loading'
+      ? '正在汇总最新用量'
+      : state === 'failed'
+        ? '统计获取失败'
+        : (metric?.requests || 0).toLocaleString('zh-CN') +
+          ' 次请求' +
+          (metric?.requests > (metric?.token_reports || 0) ? ' · 部分用量未报告' : '');
+  cell.replaceChildren(amount, coverage);
 }
 async function loadKeyUsage(fresh = false) {
   if (!selectedApiKey) return;

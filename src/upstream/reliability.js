@@ -1,3 +1,4 @@
+import { timed } from '../core/timing.js';
 import { nodeEvents, mergeEvents } from '../storage/events.js';
 import { HttpError } from '../core/common.js';
 import { maybePrune, LOG_RETENTION_DAYS } from '../telemetry/maintenance.js';
@@ -210,15 +211,16 @@ export async function queryCallLogs(db, params, exporting = false, env = {}) {
       LEFT JOIN request_usage u ON u.request_id=p.request_id
       LEFT JOIN api_keys k ON k.id=u.api_key_id
       ORDER BY p.created_at DESC,p.event_source DESC,p.id DESC`;
-  const result = await db
-    .prepare(sql)
-    .bind(...values)
-    .all();
-  const combined = mergeEvents(
-    result.results.map(logRow),
-    await nodeEvents(env, params, { limit: limit + 1 }),
-    limit,
-  );
+  const [result, remote] = await Promise.all([
+    timed(env, 'logs_d1', () =>
+      db
+        .prepare(sql)
+        .bind(...values)
+        .all(),
+    ),
+    timed(env, 'logs_nodes', () => nodeEvents(env, params, { limit: limit + 1 })),
+  ]);
+  const combined = mergeEvents(result.results.map(logRow), remote, limit);
   return {
     records: combined.records,
     next: combined.next,

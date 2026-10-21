@@ -1,3 +1,6 @@
+import { attachTimings } from '../core/timing.js';
+import { pendingTelemetry } from '../telemetry/client.js';
+import { bufferedHealth } from '../telemetry/live-health.js';
 import { resetStorageNodes } from '../storage/client.js';
 import { storageNodesRoute } from '../storage/admin.js';
 import { invalidateTelemetryMetadata } from '../telemetry/client.js';
@@ -31,6 +34,8 @@ import { flushTelemetry } from '../telemetry/client.js';
 import { apiKeysRoute } from '../auth/api-keys.js';
 
 export async function adminRoute(request, env, fetcher) {
+  const timingStart = performance.now();
+  env = { ...env, REQUEST_TIMINGS: [] };
   let response;
   try {
     response = await dispatchAdmin(request, env, fetcher);
@@ -54,6 +59,7 @@ export async function adminRoute(request, env, fetcher) {
     const id = path.match(/^\/admin\/credentials\/([a-f0-9-]{36})/)?.[1];
     await invalidateTelemetryMetadata(env, id);
   }
+  attachTimings(response, env, timingStart, path);
   return response;
 }
 async function dispatchAdmin(request, env, fetcher) {
@@ -167,10 +173,16 @@ async function dispatchAdmin(request, env, fetcher) {
     );
     return response;
   }
+  if (url.pathname === '/admin/credentials/live' && request.method === 'GET') {
+    const snapshot = await pendingTelemetry(env);
+    return json({ health: [...bufferedHealth(snapshot.buckets).values()], queried_at: Date.now() });
+  }
   if (url.pathname === '/admin/credentials') {
     if (request.method === 'GET')
       return json({
-        credentials: await listCredentials(env.DB, env),
+        credentials: await listCredentials(env.DB, env, {
+          basic: url.searchParams.get('view') === 'basic',
+        }),
         oauth_clients: Object.fromEntries(
           Object.entries(oauthClients(env))
             .filter(([, client]) => client.client_id)

@@ -93,8 +93,10 @@ function renderPrimaryStorageNode(row) {
   );
   return tr;
 }
+let storageLastLoadedAt = 0;
 async function loadStorageNodes(fresh = false) {
   const value = await api('/admin/storage-nodes' + (fresh ? '?usage_fresh=1' : ''));
+  storageLastLoadedAt = Date.now();
   const nextNode = value.nodes.find((node) => node.id === value.next_node_id);
   el('storageSchedule').textContent = value.active_node_id
     ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
@@ -280,6 +282,7 @@ el('storageRefresh').onclick = () => run(() => loadStorageNodes(true));
 async function refreshVisibleStorage() {
   if (
     busy ||
+    Date.now() - storageLastLoadedAt < 30000 ||
     currentSection !== 'storage' ||
     el('workspace').hidden ||
     document.visibilityState !== 'visible'

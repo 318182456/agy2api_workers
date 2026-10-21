@@ -15,7 +15,10 @@ el('logout').onclick = () =>
     el('credentials').replaceChildren();
     el('credential').value = '';
     el('file').value = '';
+    credentialRefreshVersion++;
     resetKeys();
+    panelTimings.clear();
+    el('performanceBody').replaceChildren();
     resetStorageForm();
     el('storageNodes').replaceChildren();
     runtimeProbe = null;

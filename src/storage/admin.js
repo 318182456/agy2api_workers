@@ -1,3 +1,5 @@
+import { timed } from '../core/timing.js';
+import { dbCache } from '../cache/db.js';
 import { nodeSchedule } from './client.js';
 import { syncNodeTelemetry } from './telemetry.js';
 import { nodeUsage, primaryUsage } from './usage.js';
@@ -497,50 +499,92 @@ async function create(env, input, fetcher) {
 export async function storageNodesRoute(request, env, url, fetcher) {
   if (url.pathname === '/admin/storage-nodes') {
     if (request.method === 'GET') {
-      const rows = (
-        await env.DB.prepare(
-          'SELECT ' +
-            publicFields +
-            ',node_secret,(api_token IS NOT NULL AND length(api_token)>0) AS has_token FROM storage_nodes ORDER BY created_at',
-        ).all()
-      ).results;
-      const nodes = rows.map(publicNode);
-      // Keep concurrency bounded; refreshing a page never records metrics in D1.
-      for (let offset = 0; offset < rows.length; offset += 5) {
-        await Promise.all(
-          rows.slice(offset, offset + 5).map(async (row, index) => {
-            nodes[offset + index].usage = await nodeUsage(
-              env,
-              row,
-              fetcher,
-              url.searchParams.get('usage_fresh') === '1',
-            );
-          }),
+      const cache = dbCache(env.DB),
+        fresh = url.searchParams.get('usage_fresh') === '1';
+      if (
+        !fresh &&
+        cache.storagePanel?.origin === url.origin &&
+        cache.storagePanel?.until > Date.now()
+      )
+        return json(cache.storagePanel.value);
+      if (cache.storagePanelFlight && cache.storagePanelFlightOrigin === url.origin)
+        return json(await cache.storagePanelFlight);
+      const flight = (async () => {
+        const primaryFlight = timed(env, 'monitor_primary', () =>
+          primaryUsage(env, url.searchParams.get('usage_fresh') === '1'),
         );
+        const rows = (
+          await timed(env, 'monitor_d1', () =>
+            env.DB.prepare(
+              'SELECT ' +
+                publicFields +
+                ',node_secret,(api_token IS NOT NULL AND length(api_token)>0) AS has_token FROM storage_nodes ORDER BY created_at',
+            ).all(),
+          )
+        ).results;
+        const nodes = rows.map(publicNode);
+        // Keep concurrency bounded; refreshing a page never records metrics in D1.
+        await timed(env, 'monitor_nodes', async () => {
+          for (let offset = 0; offset < rows.length; offset += 5) {
+            await Promise.all(
+              rows.slice(offset, offset + 5).map(async (row, index) => {
+                nodes[offset + index].usage = await nodeUsage(
+                  env,
+                  row,
+                  fetcher,
+                  url.searchParams.get('usage_fresh') === '1',
+                );
+              }),
+            );
+          }
+        });
+        const eligible = nodes
+          .filter(
+            (row) =>
+              row.status === 'ready' && row.url === 'https://' + row.worker_name + '.pages.dev',
+          )
+          .sort((a, b) => a.id.localeCompare(b.id));
+        const schedule = nodeSchedule(eligible);
+        return {
+          primary_node: {
+            id: 'primary',
+            kind: 'primary',
+            name: '主节点（当前账号）',
+            url: url.origin,
+            usage: await primaryFlight,
+          },
+          nodes,
+          rotation_enabled: !!eligible.length,
+          active_node_id: schedule.current?.id || null,
+          next_node_id: schedule.next?.id || null,
+          preheating: schedule.warming,
+          switches_at: schedule.switches_at,
+          cache_only: false,
+        };
+      })();
+      cache.storagePanelFlight = flight;
+      cache.storagePanelFlightOrigin = url.origin;
+      try {
+        const value = await flight;
+        if (cache.storagePanelFlight === flight)
+          cache.storagePanel = {
+            until: Math.min(
+              Date.now() + 30000,
+              value.switches_at || Infinity,
+              Math.floor(Date.now() / 3600000) * 3600000 + 3540000 > Date.now()
+                ? Math.floor(Date.now() / 3600000) * 3600000 + 3540000
+                : Infinity,
+            ),
+            value,
+            origin: url.origin,
+          };
+        return json(value);
+      } finally {
+        if (cache.storagePanelFlight === flight) {
+          delete cache.storagePanelFlight;
+          delete cache.storagePanelFlightOrigin;
+        }
       }
-      const eligible = nodes
-        .filter(
-          (row) =>
-            row.status === 'ready' && row.url === 'https://' + row.worker_name + '.pages.dev',
-        )
-        .sort((a, b) => a.id.localeCompare(b.id));
-      const schedule = nodeSchedule(eligible);
-      return json({
-        primary_node: {
-          id: 'primary',
-          kind: 'primary',
-          name: '主节点（当前账号）',
-          url: url.origin,
-          usage: await primaryUsage(env, url.searchParams.get('usage_fresh') === '1'),
-        },
-        nodes,
-        rotation_enabled: !!eligible.length,
-        active_node_id: schedule.current?.id || null,
-        next_node_id: schedule.next?.id || null,
-        preheating: schedule.warming,
-        switches_at: schedule.switches_at,
-        cache_only: false,
-      });
     }
     if (request.method === 'POST') return create(env, await readJson(request), fetcher);
   }

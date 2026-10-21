@@ -52,7 +52,19 @@ export async function importNodeBuckets(env, nodeId, buckets) {
   return response.json();
 }
 export async function syncNodeTelemetry(env, selected) {
-  if (!env.TELEMETRY || env.INTERNAL_DO_STATS) return;
+  if (!env.DB || !env.TELEMETRY || env.INTERNAL_DO_STATS) return;
+  if (selected) return syncNodes(env, selected);
+  const cache = dbCache(env.DB);
+  if (cache.nodeTelemetrySyncFlight) return cache.nodeTelemetrySyncFlight;
+  const flight = syncNodes(env);
+  cache.nodeTelemetrySyncFlight = flight;
+  try {
+    return await flight;
+  } finally {
+    if (cache.nodeTelemetrySyncFlight === flight) delete cache.nodeTelemetrySyncFlight;
+  }
+}
+async function syncNodes(env, selected) {
   const nodes = selected || (await storageNodes(env));
   for (let start = 0; start < nodes.length; start += 5)
     await Promise.all(
