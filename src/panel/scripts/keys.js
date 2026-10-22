@@ -23,6 +23,7 @@ function clearKeySecret() {
   hideRevealedKey();
 }
 function resetKeys() {
+  parkNearby('keyUsageArea');
   keysLoadVersion++;
   clearKeySecret();
   keyPage = 0;
@@ -45,14 +46,15 @@ function keyExpiry(value) {
   if (!Number.isSafeInteger(time)) throw new Error('到期时间格式无效');
   return time;
 }
-function keyAction(label, action, danger = false) {
+function keyAction(label, action, danger = false, nearbyKey = null) {
   const button = document.createElement('button');
   button.textContent = label;
   button.className = danger ? 'danger' : 'secondary';
-  button.onclick = () => run(action);
+  button.onclick = () => (nearbyKey ? runNear(nearbyKey, action) : run(action));
   return button;
 }
 async function loadKeys() {
+  parkNearby('keyUsageArea');
   hideRevealedKey();
   const version = ++keysLoadVersion;
   const params = new URLSearchParams({
@@ -83,6 +85,8 @@ async function loadKeys() {
   el('keysUsageNote').textContent = rows.length ? '密钥列表已加载，正在读取最新用量…' : '';
   for (const row of rows) {
     const tr = document.createElement('tr');
+    const rowAction = (label, action, danger = false) =>
+      keyAction(label, action, danger, 'key:' + row.id);
     for (const text of [
       row.name,
       row.masked_key,
@@ -101,10 +105,10 @@ async function loadKeys() {
     tr.insertBefore(consumption, tr.children[1]);
     const actions = document.createElement('td');
     actions.append(
-      keyAction('用量明细', async () => {
+      rowAction('用量明细', async () => {
         selectedApiKey = { id: row.id, name: row.name };
+        mountNearby(tr, 'keyUsageArea', 6, row.name + ' · 用量明细');
         await loadKeyUsage(true);
-        el('keyUsageArea').scrollIntoView?.({ block: 'start', behavior: 'smooth' });
       }),
     );
     if (!row.master) {
@@ -117,7 +121,7 @@ async function loadKeys() {
       extraActions.className = 'action-menu';
       more.append(extraActions);
       if (row.can_reveal) {
-        const reveal = keyAction('查看密钥', async () => {
+        const reveal = rowAction('查看密钥', async () => {
           if (revealedKeyId === row.id) {
             hideRevealedKey();
             return;
@@ -128,7 +132,7 @@ async function loadKeys() {
           if (version !== keysLoadVersion || revealVersion !== keyRevealVersion) return;
           const code = document.createElement('code');
           code.textContent = value.key;
-          const copy = keyAction('复制密钥', async () => {
+          const copy = rowAction('复制密钥', async () => {
             if (!code.textContent) return;
             if (!navigator.clipboard?.writeText) {
               status('请选中当前行的完整密钥手动复制。');
@@ -149,36 +153,60 @@ async function loadKeys() {
         actions.append(reveal);
       }
       extraActions.append(
-        keyAction('改名', async () => {
-          const name = prompt('输入密钥名称', row.name);
-          if (name == null) return;
-          await api('/admin/api-keys/' + row.id, 'PATCH', { name });
-          if (selectedApiKey?.id === row.id) {
-            selectedApiKey.name = name.trim();
-            el('keyUsageTitle').textContent = selectedApiKey.name + ' · 用量统计';
-          }
-          await loadKeys();
-        }),
+        rowAction('改名', () =>
+          nearbyEditor(
+            tr,
+            'key:' + row.id,
+            6,
+            '修改密钥名称',
+            [{ name: 'name', label: '名称', value: row.name, required: true, maxLength: 100 }],
+            async (inputs) => {
+              const name = inputs.name.value.trim();
+              await api('/admin/api-keys/' + row.id, 'PATCH', { name });
+              if (selectedApiKey?.id === row.id) {
+                selectedApiKey.name = name;
+                el('keyUsageTitle').textContent = name + ' · 用量统计';
+              }
+              await loadKeys();
+              status('密钥名称已更新。');
+            },
+          ),
+        ),
       );
       extraActions.append(
-        keyAction('到期时间', async () => {
-          const local =
-            row.expires_at == null
-              ? ''
-              : new Date(row.expires_at - new Date(row.expires_at).getTimezoneOffset() * 60000)
-                  .toISOString()
-                  .slice(0, 16);
-          const value = prompt(
-            '输入到期时间（本地时间，例如 2026-12-31T23:59）；留空表示永不过期',
-            local,
-          );
-          if (value == null) return;
-          await api('/admin/api-keys/' + row.id, 'PATCH', { expires_at: keyExpiry(value.trim()) });
-          await loadKeys();
-        }),
+        rowAction('到期时间', () =>
+          nearbyEditor(
+            tr,
+            'key:' + row.id,
+            6,
+            '修改到期时间',
+            [
+              {
+                name: 'expiry',
+                label: '到期时间（留空永久有效）',
+                type: 'datetime-local',
+                value:
+                  row.expires_at == null
+                    ? ''
+                    : new Date(
+                        row.expires_at - new Date(row.expires_at).getTimezoneOffset() * 60000,
+                      )
+                        .toISOString()
+                        .slice(0, 16),
+              },
+            ],
+            async (inputs) => {
+              await api('/admin/api-keys/' + row.id, 'PATCH', {
+                expires_at: keyExpiry(inputs.expiry.value),
+              });
+              await loadKeys();
+              status('到期时间已更新。');
+            },
+          ),
+        ),
       );
       actions.append(
-        keyAction(row.enabled ? '停用' : '启用', async () => {
+        rowAction(row.enabled ? '停用' : '启用', async () => {
           await api('/admin/api-keys/' + row.id, 'PATCH', { enabled: !row.enabled });
           await loadKeys();
           status(
@@ -189,7 +217,7 @@ async function loadKeys() {
         }),
       );
       extraActions.append(
-        keyAction(
+        rowAction(
           '删除',
           async () => {
             if (!confirm('确认删除密钥“' + row.name + '”？后续请求将被拒绝，历史用量会保留。'))
@@ -207,8 +235,11 @@ async function loadKeys() {
       );
       actions.append(more);
     }
+    registerNearby('key:' + row.id, actions);
     tr.append(actions);
     el('keysBody').append(tr);
+    if (selectedApiKey?.id === row.id && !el('keyUsageArea').hidden)
+      mountNearby(tr, 'keyUsageArea', 6, row.name + ' · 用量明细');
   }
   el('keysEmpty').hidden = !!rows.length;
   el('keysPrev').disabled = keyPage === 0;
@@ -261,6 +292,8 @@ function renderKeyConsumption(cell, metric, state) {
 }
 async function loadKeyUsage(fresh = false) {
   if (!selectedApiKey) return;
+  const selectedId = selectedApiKey.id,
+    usageVersion = keysLoadVersion;
   el('keyUsageArea').hidden = false;
   el('keyUsageTitle').textContent = selectedApiKey.name + ' · 用量统计';
   for (const id of ['keyUsageSummary', 'keyUsageModels', 'keyUsageDaily']) el(id).replaceChildren();
@@ -274,6 +307,7 @@ async function loadKeyUsage(fresh = false) {
   if (fresh) params.set('fresh', '1');
   const value = await api('/admin/api-keys/usage?' + params),
     s = value.summary;
+  if (selectedApiKey?.id !== selectedId || usageVersion !== keysLoadVersion) return;
   for (const [label, text] of [
     ['请求数', s.requests],
     ['成功 / 失败 / 取消', [s.successes, s.failures, s.cancellations].join(' / ')],

@@ -1,5 +1,11 @@
 export const storageScript = String.raw`let storageEditingNode = null;
+let storageTokenView = null;
 function resetStorageForm() {
+  if (storageTokenView) {
+    storageTokenView.inputs.token.value = '';
+    storageTokenView.detail.remove();
+    storageTokenView = null;
+  }
   storageEditingNode = null;
   for (const id of ['storageEmail', 'storageToken', 'storageAccountId']) el(id).value = '';
   el('storageAccount').replaceChildren();
@@ -9,18 +15,45 @@ function resetStorageForm() {
   el('storageCreate').textContent = '自动创建 Pages 入口和 DO';
   el('storageCancel').hidden = true;
 }
-function editStorageToken(row) {
+function editStorageToken(row, tr) {
   resetStorageForm();
   storageEditingNode = row.id;
-  el('storageEmail').value = row.email;
-  el('storageAccountId').value = row.account_id;
-  el('storageCreate').textContent = '保存 Token 并重新部署';
-  el('storageCancel').hidden = false;
-  el('storageToken').focus();
-  status(
-    row.has_token
-      ? '填写新 Token 后保存，原 Token 会在账号验证通过后替换。'
-      : '此旧节点尚未保存 Token，请补填一次；之后可直接重新部署。',
+  storageTokenView = nearbyEditor(
+    tr,
+    'storage:' + row.id,
+    7,
+    row.email + ' · 更新 Token',
+    [
+      {
+        name: 'token',
+        label: 'Cloudflare API Token（验证后替换已保存值）',
+        type: 'password',
+        required: true,
+        minLength: 20,
+        maxLength: 512,
+      },
+    ],
+    async (inputs) => {
+      try {
+        status('正在验证 Token 并重新部署此节点…');
+        const value = await api('/admin/storage-nodes/' + row.id + '/deploy', 'POST', {
+          token: inputs.token.value.trim(),
+        });
+        await loadStorageNodes();
+        status(
+          value.deployment_pending
+            ? 'Pages 正在发布，请稍后点击检查连接。'
+            : 'Token 已更新，节点连接验证通过。',
+        );
+      } finally {
+        inputs.token.value = '';
+      }
+    },
+    () => {
+      if (storageTokenView) storageTokenView.inputs.token.value = '';
+      storageEditingNode = null;
+      storageTokenView = null;
+    },
   );
 }
 el('storageCancel').onclick = resetStorageForm;
@@ -101,10 +134,12 @@ async function loadStorageNodes(fresh = false) {
   el('storageSchedule').textContent = value.active_node_id
     ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
     : '当前没有可用子节点，回退主节点。';
+  if (storageTokenView) resetStorageForm();
   el('storageNodes').replaceChildren();
   if (value.primary_node) el('storageNodes').append(renderPrimaryStorageNode(value.primary_node));
   for (const row of value.nodes) {
     const tr = document.createElement('tr');
+    const localRun = (action) => runNear('storage:' + row.id, action);
     const account = document.createElement('td');
     account.textContent = row.email + ' · ' + row.account_id;
     const worker = document.createElement('td');
@@ -214,7 +249,7 @@ async function loadStorageNodes(fresh = false) {
       check.className = 'secondary';
       check.textContent = '检查连接';
       check.onclick = () =>
-        run(async () => {
+        localRun(async () => {
           try {
             await api('/admin/storage-nodes/' + row.id + '/check', 'POST');
           } finally {
@@ -230,10 +265,10 @@ async function loadStorageNodes(fresh = false) {
     deploy.disabled = row.status === 'provisioning';
     deploy.onclick = () => {
       if (!row.has_token) {
-        editStorageToken(row);
+        editStorageToken(row, tr);
         return;
       }
-      return run(async () => {
+      return localRun(async () => {
         status('正在使用已保存的 Token 重新部署…');
         let value;
         try {
@@ -252,14 +287,14 @@ async function loadStorageNodes(fresh = false) {
     update.className = 'secondary';
     update.textContent = row.has_token ? '更新 Token' : '补填 Token';
     update.disabled = row.status === 'provisioning';
-    update.onclick = () => editStorageToken(row);
+    update.onclick = () => editStorageToken(row, tr);
     actions.append(deploy, update);
     const remove = document.createElement('button');
     remove.className = 'danger';
     remove.textContent = '移除记录';
     remove.onclick = () => {
       if (confirm('移除 ' + row.email + ' 的节点配置？Cloudflare 上的 Pages、Worker 和 DO 保留。'))
-        return run(async () => {
+        return localRun(async () => {
           await api('/admin/storage-nodes/' + row.id, 'DELETE');
           await loadStorageNodes();
           status('节点记录已移除，远端资源保留。');
@@ -267,6 +302,7 @@ async function loadStorageNodes(fresh = false) {
     };
     actions.append(remove);
     tr.append(account, worker, savedToken, state, usage, checked, actions);
+    registerNearby('storage:' + row.id, actions);
     el('storageNodes').append(tr);
   }
   if (!value.nodes.length && !value.primary_node) {
@@ -278,10 +314,15 @@ async function loadStorageNodes(fresh = false) {
     el('storageNodes').append(tr);
   }
 }
-el('storageRefresh').onclick = () => run(() => loadStorageNodes(true));
+el('storageRefresh').onclick = () =>
+  run(() => {
+    resetStorageForm();
+    return loadStorageNodes(true);
+  });
 async function refreshVisibleStorage() {
   if (
     busy ||
+    storageEditingNode ||
     Date.now() - storageLastLoadedAt < 30000 ||
     currentSection !== 'storage' ||
     el('workspace').hidden ||
@@ -299,9 +340,10 @@ if (typeof document.addEventListener === 'function')
     if (document.visibilityState === 'visible') void refreshVisibleStorage();
   });
 
+registerNearby('storage-form', el('storageForm'));
 el('storageForm').onsubmit = (event) => {
   event.preventDefault();
-  return run(async () => {
+  return runNear('storage-form', async () => {
     let choose = false;
     try {
       status('正在识别账号并创建存储节点…');

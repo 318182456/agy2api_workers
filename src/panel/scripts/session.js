@@ -12,11 +12,13 @@ el('logout').onclick = () =>
     await api('/auth/logout', 'POST');
     el('workspace').hidden = true;
     el('loginCard').hidden = false;
+    parkNearby('healthPanel');
     el('credentials').replaceChildren();
     el('credential').value = '';
     el('file').value = '';
     credentialRefreshVersion++;
     resetKeys();
+    clearNearby();
     panelTimings.clear();
     el('performanceBody').replaceChildren();
     resetStorageForm();

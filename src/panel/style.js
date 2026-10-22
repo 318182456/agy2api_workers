@@ -18,5 +18,6 @@ export const panelStyle = String.raw`
 @media(min-width:1280px){.analytics-layout{grid-template-columns:minmax(0,1.5fr) repeat(3,minmax(0,1fr))}.trend-panel{grid-column:auto}}
 @media(max-width:800px){.sidebar>.brand{padding-bottom:8px}.workspace-tabs{margin-bottom:12px}.workspace-tabs .tab{padding:8px 10px}.metric,.account-metrics .metric{padding:12px}.metric strong{font-size:22px}.key-editors{grid-template-columns:1fr;gap:0}}
 
+.nearby-feedback{margin:6px 0 0;font-size:11px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere}.nearby-feedback:empty{display:none}.nearby-feedback.error{color:#bc3545}.nearby-feedback.loading{color:#7a86a2}.nearby-detail>td{background:#f8faff;padding:12px 16px}.nearby-heading{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}.nearby-heading strong{font-size:12px}.nearby-heading button{padding:3px 9px;min-height:27px;font-size:11px}.nearby-detail .card{padding:0;border:0;box-shadow:none;background:transparent;margin:0}.nearby-form{display:flex;flex-wrap:wrap;align-items:end;gap:10px}.nearby-form label{margin:0;min-width:180px;flex:1}.nearby-form input{display:block;width:100%;margin-top:5px}.nearby-form>button{flex:none}.nearby-detail .toolbar{margin:6px 0}
 @media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;transition:none!important}}
 `;

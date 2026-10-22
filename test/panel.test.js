@@ -700,6 +700,7 @@ test('API key list renders unused keys, later used keys and pagination even when
       this.textContent = '';
       this.hidden = false;
     }
+    setAttribute() {}
     append(...nodes) {
       this.children.push(...nodes);
     }
@@ -772,6 +773,8 @@ test('API key list renders unused keys, later used keys and pagination even when
       };
     },
   });
+  const { nearbyScript } = await import('../src/panel/scripts/nearby.js');
+  vm.runInContext(nearbyScript, context);
   vm.runInContext(keysScript, context);
   await vm.runInContext('loadKeys()', context);
   await vm.runInContext('keysUsageFlight', context);

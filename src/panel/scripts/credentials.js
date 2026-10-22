@@ -40,10 +40,10 @@ function mergeCredentialHealth(value, live) {
           : row.last_failure_status,
     };
   });
-  applyCredentialSnapshot(value);
+  applyCredentialSnapshot(value, !!document.querySelector?.('#credentials .nearby-detail'));
   el('credentialLiveStatus').textContent = '健康状态更新于 ' + formatReset(live.queried_at);
 }
-function applyCredentialSnapshot(value) {
+function applyCredentialSnapshot(value, preserveRows = false) {
   credentialsSnapshot = value.credentials;
   credentialsLoaded = true;
   renderEndpoints();
@@ -69,7 +69,7 @@ function applyCredentialSnapshot(value) {
   el('callsCredential').value = value.credentials.some((c) => c.id === selectedFilter)
     ? selectedFilter
     : '';
-  renderCredentials();
+  if (!preserveRows) renderCredentials();
   for (const target of ['overviewAccounts', 'credentialSummary']) {
     el(target).replaceChildren();
     for (const [label, count, state] of [
@@ -122,6 +122,7 @@ function visibleCredentials() {
 function renderCredentials() {
   const filtered = filteredCredentials();
   credentialPage = Math.min(credentialPage, Math.max(0, Math.ceil(filtered.length / 25) - 1));
+  parkNearby('healthPanel');
   el('credentials').replaceChildren();
   el('credentialsEmpty').hidden = filtered.length > 0;
   el('credentialCount').textContent =
@@ -133,6 +134,7 @@ function renderCredentials() {
   el('credentialsNext').hidden = (credentialPage + 1) * 25 >= filtered.length;
   for (const credential of visibleCredentials()) {
     const tr = document.createElement('tr');
+    const localRun = (action) => runNear('credential:' + credential.id, action);
     const selection = document.createElement('td');
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
@@ -199,7 +201,7 @@ function renderCredentials() {
     email.className = 'secondary';
     email.textContent = '获取邮箱';
     email.onclick = () =>
-      run(async () => {
+      localRun(async () => {
         const result = await api('/admin/credentials/' + credential.id + '/email', 'POST', {});
         await refresh();
         status('邮箱：' + result.user_email);
@@ -207,13 +209,13 @@ function renderCredentials() {
     const verify = document.createElement('button');
     verify.className = 'secondary';
     verify.textContent = '校验项目';
-    verify.onclick = () => run(() => verifyCredentialProject(credential));
+    verify.onclick = () => localRun(() => verifyCredentialProject(credential));
     if (credential.mode === 'antigravity') {
       const credits = document.createElement('button');
       credits.className = 'secondary';
       credits.textContent = credential.enable_credit ? '关闭此账号 Credits' : '允许此账号 Credits';
       credits.onclick = () =>
-        run(async () => {
+        localRun(async () => {
           if (
             !credential.enable_credit &&
             !confirm(
@@ -235,7 +237,7 @@ function renderCredentials() {
       preview.textContent =
         credential.preview_channel === 'EXPERIMENTAL' ? '检查 Preview' : '开通 Preview';
       preview.onclick = () =>
-        run(async () => {
+        localRun(async () => {
           if (
             !confirm(
               '将为此凭证对应的 Cloud 项目创建实验通道设置和绑定，需要项目设置管理权限。继续？',
@@ -243,8 +245,8 @@ function renderCredentials() {
           )
             return;
           const value = await api('/admin/credentials/' + credential.id + '/preview', 'POST', {});
-          status('Preview 实验通道已配置：' + value.project_id);
           await refresh();
+          status('Preview 实验通道已配置：' + value.project_id);
         });
       extraActions.append(preview);
     }
@@ -254,7 +256,7 @@ function renderCredentials() {
     test.title = '向指定凭证发起一次 hi 请求，最多生成 1 token，会消耗少量额度';
     test.onclick = () => {
       if (confirm('将使用此凭证发起一次最小聊天请求，消耗少量额度，是否继续？'))
-        run(async () => {
+        localRun(async () => {
           const result = await api('/admin/credentials/' + credential.id + '/test', 'POST', {});
           await refresh();
           status(
@@ -268,7 +270,7 @@ function renderCredentials() {
     download.className = 'secondary';
     download.textContent = '下载凭证';
     download.onclick = () =>
-      run(async () => {
+      localRun(async () => {
         const credentialData = await api('/admin/credentials/' + credential.id + '/download');
         const url = URL.createObjectURL(
           new Blob([JSON.stringify(credentialData, null, 2)], { type: 'application/json' }),
@@ -287,21 +289,35 @@ function renderCredentials() {
     const rename = document.createElement('button');
     rename.className = 'secondary';
     rename.textContent = '修改名称';
-    rename.onclick = () => {
-      const name = prompt('输入凭证名称（同渠道内不能重名）', credential.name);
-      if (name === null || name.trim() === credential.name) return;
-      run(async () => {
-        await api('/admin/credentials/' + credential.id, 'PATCH', { name });
-        await refresh();
-        el('callsBody').replaceChildren();
-        status('凭证名称已更新，调用记录会优先显示邮箱；无邮箱时显示新名称。');
-      });
-    };
+    rename.onclick = () =>
+      nearbyEditor(
+        tr,
+        'credential:' + credential.id,
+        6,
+        '修改名称',
+        [
+          {
+            name: 'name',
+            label: '凭证名称',
+            value: credential.name,
+            required: true,
+            maxLength: 200,
+          },
+        ],
+        async (inputs) => {
+          await api('/admin/credentials/' + credential.id, 'PATCH', {
+            name: inputs.name.value.trim(),
+          });
+          await refresh();
+          el('callsBody').replaceChildren();
+          status('凭证名称已更新。');
+        },
+      );
     const health = document.createElement('button');
     health.className = 'secondary';
     health.textContent = '健康详情';
     health.onclick = () =>
-      run(async () => {
+      localRun(async () => {
         const value = await api('/admin/credentials/' + credential.id + '/health');
         const h = value.health;
         el('healthDetails').textContent = [
@@ -327,41 +343,60 @@ function renderCredentials() {
           ),
           ...(!value.cooldowns.length ? ['无'] : []),
         ].join('\n');
+        mountNearby(
+          tr,
+          'healthPanel',
+          6,
+          (credential.user_email || credential.name) + ' · 健康详情',
+        );
         el('healthPanel').open = true;
-        el('healthDetails').scrollIntoView({ behavior: 'smooth', block: 'center' });
         status('已加载凭证健康详情。');
       });
     const scheduling = document.createElement('button');
     scheduling.className = 'secondary';
     scheduling.textContent = '调度设置';
-    scheduling.onclick = () => {
-      const priority = prompt(
-        '优先级（-100～100），仅优先级策略使用，数值越大越优先',
-        String(credential.priority ?? 0),
+    scheduling.onclick = () =>
+      nearbyEditor(
+        tr,
+        'credential:' + credential.id,
+        6,
+        '调度设置',
+        [
+          {
+            name: 'priority',
+            label: '优先级（优先级策略使用）',
+            type: 'number',
+            min: -100,
+            max: 100,
+            value: credential.priority ?? 0,
+            required: true,
+          },
+          {
+            name: 'weight',
+            label: '权重（权重随机策略使用）',
+            type: 'number',
+            min: 1,
+            max: 100,
+            value: credential.weight ?? 1,
+            required: true,
+          },
+        ],
+        async (inputs) => {
+          await api('/admin/credentials/' + credential.id, 'PATCH', {
+            priority: Number(inputs.priority.value),
+            weight: Number(inputs.weight.value),
+          });
+          await refresh();
+          status('调度设置已保存。');
+        },
       );
-      if (priority === null) return;
-      const weight = prompt('权重（1～100），仅权重随机策略使用', String(credential.weight ?? 1));
-      if (weight === null) return;
-      if (!priority.trim() || !weight.trim()) {
-        status('优先级和权重不能留空。');
-        return;
-      }
-      run(async () => {
-        await api('/admin/credentials/' + credential.id, 'PATCH', {
-          priority: Number(priority),
-          weight: Number(weight),
-        });
-        await refresh();
-        status('已保存调度设置。全局策略可在“网页配置”中切换。');
-      });
-    };
     actions.append(health);
     extraActions.append(rename, scheduling, email, verify, test, download);
     const history = document.createElement('button');
     history.className = 'secondary';
     history.textContent = '问题记录';
     history.onclick = () =>
-      run(async () => {
+      localRun(async () => {
         showPage('logs');
         el('callsCredential').value = credential.id;
         await loadCalls();
@@ -374,7 +409,7 @@ function renderCredentials() {
       clear.className = 'secondary';
       clear.textContent = '清除冷却';
       clear.onclick = () =>
-        run(async () => {
+        localRun(async () => {
           await api('/admin/credentials/' + credential.id + '/cooldowns', 'DELETE');
           await refresh();
           status('已清除该凭证的模型冷却；若 Google 仍限流，再次调用仍可能失败。');
@@ -385,7 +420,7 @@ function renderCredentials() {
     toggle.textContent = credential.disabled ? '启用' : '停用';
     toggle.className = 'secondary';
     toggle.onclick = () =>
-      run(async () => {
+      localRun(async () => {
         await api('/admin/credentials/' + credential.id, 'PATCH', {
           disabled: !credential.disabled,
         });
@@ -396,7 +431,7 @@ function renderCredentials() {
     remove.className = 'danger';
     remove.onclick = () => {
       if (confirm('确认删除凭证 ' + credential.name + '？'))
-        run(async () => {
+        localRun(async () => {
           await api('/admin/credentials/' + credential.id, 'DELETE');
           await refresh();
         });
@@ -414,7 +449,7 @@ function renderCredentials() {
               '？请同步修改客户端 Base URL。',
           )
         )
-          run(async () => {
+          localRun(async () => {
             await api('/admin/credentials/' + credential.id, 'PATCH', {
               mode: credential.detected_mode,
             });
@@ -431,11 +466,12 @@ function renderCredentials() {
     if (['antigravity', 'geminicli'].includes(credential.mode)) {
       const quota = document.createElement('button');
       quota.textContent = '查看额度';
-      quota.onclick = () => run(() => showQuota(credential));
+      quota.onclick = () => localRun(() => showQuota(credential));
       actions.append(quota);
     }
     extraActions.append(toggle, remove);
     actions.append(menu);
+    registerNearby('credential:' + credential.id, actions);
     tr.append(actions);
     el('credentials').append(tr);
     const details = document.createElement('tr');
@@ -489,6 +525,7 @@ async function verifyCredentialProject(credential, body = {}) {
     const result = await api('/admin/credentials/' + credential.id + '/verify', 'POST', body);
     await refresh();
     status('项目校验成功，已保存：' + result.project_id);
+    nearbyMessage('credential:' + credential.id, '项目校验成功，已保存：' + result.project_id);
     if (hadQuota) await showQuota(credential);
   } catch (error) {
     const current = el('quota-' + credential.id);

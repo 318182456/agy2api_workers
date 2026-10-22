@@ -4,6 +4,7 @@ const tabDefinitions = ${JSON.stringify(panelTabs)};
 const el = (id) => document.getElementById(id);
 const status = (text) => {
   el('status').textContent = text;
+  if (nearbyActive) nearbyMessage(nearbyActive, text);
 };
 let credentialsSnapshot = [];
 let credentialsLoaded = false;
@@ -94,6 +95,7 @@ function showPage(id, historyMode = 'push', params) {
     el('keyImportData').value = '';
     el('keyImportFile').value = '';
   }
+  if (currentSection === 'storage' && id !== 'storage') resetStorageForm();
   currentPage = page.id;
   currentSection = tabDefinitions[page.id]?.some((tab) => tab.id === id) ? id : page.id;
   for (const item of pageDefinitions) {
@@ -413,6 +415,8 @@ async function api(path, method = 'GET', body, responseType) {
   if (response.status === 401) {
     credentialRefreshVersion++;
     resetKeys();
+    resetStorageForm();
+    clearNearby();
     panelTimings.clear();
     el('performanceBody').replaceChildren();
     loadedPages.clear();
