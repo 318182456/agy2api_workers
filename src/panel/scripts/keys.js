@@ -3,13 +3,24 @@ let keysLoadVersion = 0;
 let keysUsageFlight = Promise.resolve();
 let selectedApiKey = null;
 let revealedKeyId = null;
+let revealedKeyView = null;
+let keyRevealVersion = 0;
 const masterKeyId = '00000000-0000-0000-0000-000000000000';
+function hideRevealedKey() {
+  keyRevealVersion++;
+  if (revealedKeyView) {
+    revealedKeyView.code.textContent = '';
+    revealedKeyView.cell.textContent = revealedKeyView.masked;
+    revealedKeyView.button.textContent = '查看密钥';
+    revealedKeyView.button.setAttribute('aria-expanded', 'false');
+    revealedKeyView = null;
+  }
+  revealedKeyId = null;
+}
 function clearKeySecret() {
   el('keyCreatedValue').textContent = '';
   el('keyCreatedArea').hidden = true;
-  el('keyRevealValue').textContent = '';
-  el('keyRevealArea').hidden = true;
-  revealedKeyId = null;
+  hideRevealedKey();
 }
 function resetKeys() {
   keysLoadVersion++;
@@ -42,6 +53,7 @@ function keyAction(label, action, danger = false) {
   return button;
 }
 async function loadKeys() {
+  hideRevealedKey();
   const version = ++keysLoadVersion;
   const params = new URLSearchParams({
     page: String(keyPage),
@@ -81,6 +93,8 @@ async function loadKeys() {
       td.textContent = text;
       tr.append(td);
     }
+    const identifier = tr.children[1];
+    identifier.className = 'key-identifier';
     const consumption = document.createElement('td');
     renderKeyConsumption(consumption, null, 'loading');
     cells.set(row.id, consumption);
@@ -102,17 +116,38 @@ async function loadKeys() {
       const extraActions = document.createElement('div');
       extraActions.className = 'action-menu';
       more.append(extraActions);
-      if (row.can_reveal)
-        actions.append(
-          keyAction('查看密钥', async () => {
-            clearKeySecret();
-            const value = await api('/admin/api-keys/' + row.id + '/reveal', 'POST');
-            revealedKeyId = row.id;
-            el('keyRevealName').textContent = row.name + ' · 完整密钥';
-            el('keyRevealValue').textContent = value.key;
-            el('keyRevealArea').hidden = false;
-          }),
-        );
+      if (row.can_reveal) {
+        const reveal = keyAction('查看密钥', async () => {
+          if (revealedKeyId === row.id) {
+            hideRevealedKey();
+            return;
+          }
+          clearKeySecret();
+          const revealVersion = keyRevealVersion;
+          const value = await api('/admin/api-keys/' + row.id + '/reveal', 'POST');
+          if (version !== keysLoadVersion || revealVersion !== keyRevealVersion) return;
+          const code = document.createElement('code');
+          code.textContent = value.key;
+          const copy = keyAction('复制密钥', async () => {
+            if (!code.textContent) return;
+            if (!navigator.clipboard?.writeText) {
+              status('请选中当前行的完整密钥手动复制。');
+              return;
+            }
+            await navigator.clipboard.writeText(code.textContent);
+            status('密钥已复制。');
+          });
+          copy.className += ' key-copy';
+          copy.setAttribute('aria-label', '复制“' + row.name + '”的密钥');
+          identifier.replaceChildren(code, copy);
+          revealedKeyId = row.id;
+          revealedKeyView = { cell: identifier, code, button: reveal, masked: row.masked_key };
+          reveal.textContent = '隐藏密钥';
+          reveal.setAttribute('aria-expanded', 'true');
+        });
+        reveal.setAttribute('aria-expanded', 'false');
+        actions.append(reveal);
+      }
       extraActions.append(
         keyAction('改名', async () => {
           const name = prompt('输入密钥名称', row.name);
@@ -285,18 +320,6 @@ el('keyCreateForm').onsubmit = (event) => {
   });
 };
 el('keyDismiss').onclick = clearKeySecret;
-el('keyRevealDismiss').onclick = clearKeySecret;
-el('keyRevealCopy').onclick = () =>
-  run(async () => {
-    const value = el('keyRevealValue').textContent;
-    if (!value) return;
-    if (!navigator.clipboard?.writeText) {
-      status('请手动复制上方密钥。');
-      return;
-    }
-    await navigator.clipboard.writeText(value);
-    status('密钥已复制。');
-  });
 el('keyCopy').onclick = () =>
   run(async () => {
     if (!el('keyCreatedValue').textContent) return;
