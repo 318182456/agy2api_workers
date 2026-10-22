@@ -181,6 +181,9 @@ test('production Worker: final usage, account health, selection, scoped log expo
     await db.exec(
       (await readFile('migrations/0014_telemetry_incremental.sql', 'utf8')).replaceAll('\n', ' '),
     );
+    await db.exec(
+      (await readFile('migrations/0015_request_failure_details.sql', 'utf8')).replaceAll('\n', ' '),
+    );
     assert.equal(
       (await db.prepare('SELECT weight FROM credentials WHERE id=?').bind(a).first()).weight,
       1,

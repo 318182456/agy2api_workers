@@ -1304,3 +1304,119 @@ test('daily archive keeps exact times, survives cold rebuild, deduplicates late 
     await mf.dispose();
   }
 });
+
+test('failure before account selection records its real phase, safe quota error and auto routing', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      raw = env.DB;
+    const DB = {
+      prepare(sql) {
+        if (sql.startsWith('SELECT c.* FROM credentials'))
+          throw new Error('D1 read quota exceeded private-cause-token');
+        return raw.prepare(sql);
+      },
+      batch: (args) => raw.batch(args),
+    };
+    let upstreamCalls = 0;
+    const response = await handleRequest(
+      new Request('https://test/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: 'Bearer api', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gemini-test', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      { ...env, DB, API_PASSWORD: 'api' },
+      async () => {
+        upstreamCalls++;
+        throw new Error('must not call Google');
+      },
+    );
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    const logs = await queryCallLogs(
+      raw,
+      new URLSearchParams({ request_id: body.error.request_id }),
+    );
+    assert.equal(logs.records.length, 1);
+    const final = logs.records[0];
+    assert.equal(final.mode, 'auto');
+    assert.equal(final.credential_id, null);
+    assert.equal(final.credential_state, 'not_selected');
+    assert.equal(final.stage, 'credential_select');
+    assert.equal(final.detail_code, 'DB_RESOURCE_LIMIT');
+    assert.match(final.detail_message, /D1/);
+    assert.ok(!JSON.stringify(final).includes('private-cause-token'));
+    assert.equal(final.status, response.status);
+    assert.equal(upstreamCalls, 0);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('unified routing retains selected account when preparation fails before upstream fetch', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    let calls = 0;
+    const response = await handleRequest(
+      new Request('https://test/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: 'Bearer api', 'content-type': 'application/json' },
+        body: JSON.stringify({ model: 'gemini-test', messages: [{ role: 'user', content: 'hi' }] }),
+      }),
+      { ...env, API_PASSWORD: 'api', ANTIGRAVITY_API_URL: 'http://invalid.example' },
+      async () => {
+        calls++;
+        throw new Error('must not call Google');
+      },
+    );
+    assert.equal(response.status, 503);
+    const body = await response.json();
+    const logs = await queryCallLogs(
+      env.DB,
+      new URLSearchParams({ request_id: body.error.request_id }),
+    );
+    assert.equal(logs.records[0].credential_id, id);
+    assert.equal(logs.records[0].mode, 'antigravity');
+    assert.equal(logs.records[0].credential_state, 'selected');
+    assert.equal(logs.records[0].stage, 'request_prepare');
+    assert.match(logs.records[0].detail_message, /HTTPS/);
+    assert.equal(calls, 0);
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('legacy accountless records remain explicit history instead of inventing an account', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf),
+      item = record({ row: undefined, status: 500, outcome: 'failed' });
+    await recordUsage(env.DB, item);
+    const logs = await queryCallLogs(env.DB, new URLSearchParams({ request_id: item.requestId }));
+    assert.equal(logs.records[0].credential_state, 'unrecorded');
+    assert.match(logs.records[0].display_name, /历史记录/);
+    assert.match(logs.records[0].detail_message, /无法还原/);
+    const expired = record({
+      row: undefined,
+      status: 503,
+      outcome: 'failed',
+      started: Date.now() - 8 * 86400000,
+      failure: { stage: 'credential_select', code: 'DB_RESOURCE_LIMIT', message: 'retained error' },
+    });
+    await recordUsage(env.DB, expired);
+    await pruneTelemetry(env.DB);
+    const retained = await env.DB.prepare(
+      'SELECT failure_stage,failure_code,failure_message,log_visible FROM request_usage WHERE request_id=?',
+    )
+      .bind(expired.requestId)
+      .first();
+    assert.deepEqual(
+      retained,
+      { failure_stage: null, failure_code: null, failure_message: null, log_visible: 0 },
+      'new failure diagnostics also expire after seven days while usage survives',
+    );
+  } finally {
+    await mf.dispose();
+  }
+});

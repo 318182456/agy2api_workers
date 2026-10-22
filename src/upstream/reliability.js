@@ -160,16 +160,37 @@ export async function recordAttempt(db, record, collector) {
 function logRow(row) {
   const email =
     typeof row.credential_email === 'string' && row.credential_email ? row.credential_email : null;
-  const name = row.current_credential_name || row.credential_name || '已删除凭证';
-  return { ...row, credential_name: name, credential_email: email, display_name: email || name };
+  const name =
+    row.current_credential_name || row.credential_name || (row.credential_id ? '已删除凭证' : '');
+  const selected = !!row.credential_id;
+  const knownFailure = !!row.detail_code;
+  return {
+    ...row,
+    credential_name: selected ? name : '',
+    credential_email: email,
+    display_name: selected
+      ? email || name
+      : knownFailure
+        ? row.status === 499
+          ? '调用前取消（未选择账号）'
+          : '调用前失败（未选择账号）'
+        : '未关联账号（历史记录）',
+    credential_state: selected ? 'selected' : knownFailure ? 'not_selected' : 'unrecorded',
+    ...(!selected && !knownFailure && !row.detail_message
+      ? {
+          detail_message:
+            '这条旧记录没有保存账号与具体失败原因，无法还原；不代表某个账号调用失败。',
+        }
+      : {}),
+  };
 }
 // Keep a bounded view of recent final requests, alongside retained retry/error events.
 const events = `WITH events AS (
  SELECT id,request_id,credential_id,credential_name,mode,model,status,stage,duration_ms,created_at,detail_code,0 AS event_source,NULL AS parent_id,NULL AS attempt_index,0 AS retried,NULL AS detail_message FROM call_logs WHERE created_at>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000}
  UNION ALL
  SELECT id,request_id,credential_id,credential_name,mode,model,status,
-   CASE outcome WHEN 'success' THEN 'completed' WHEN 'cancelled' THEN 'client_cancelled' ELSE 'request_failed' END AS stage,
-   duration_ms,created_at+duration_ms AS created_at,NULL AS detail_code,1 AS event_source,id AS parent_id,NULL AS attempt_index,(attempts<>'[]') AS retried,NULL AS detail_message FROM request_usage
+   CASE outcome WHEN 'success' THEN 'completed' WHEN 'cancelled' THEN 'client_cancelled' ELSE COALESCE(failure_stage,'request_failed') END AS stage,
+   duration_ms,created_at+duration_ms AS created_at,failure_code AS detail_code,1 AS event_source,id AS parent_id,NULL AS attempt_index,(attempts<>'[]') AS retried,failure_message AS detail_message FROM request_usage
  WHERE log_visible=1 AND created_at+duration_ms>=CAST(strftime('%s','now') AS INTEGER)*1000-${LOG_RETENTION_DAYS * 86400000} AND id>(SELECT COALESCE(MAX(id),0)-2000 FROM request_usage)
  UNION ALL
  SELECT u.id*32+CAST(j.key AS INTEGER) AS id,u.request_id,
@@ -220,7 +241,7 @@ export async function queryCallLogs(db, params, exporting = false, env = {}) {
     ),
     timed(env, 'logs_nodes', () => nodeEvents(env, params, { limit: limit + 1 })),
   ]);
-  const combined = mergeEvents(result.results.map(logRow), remote, limit);
+  const combined = mergeEvents(result.results.map(logRow), remote.map(logRow), limit);
   return {
     records: combined.records,
     next: combined.next,

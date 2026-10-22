@@ -17,7 +17,7 @@ export async function pruneTelemetry(db) {
     // Historical detailed rows still supply statistics; erase only their packed diagnostics.
     db
       .prepare(
-        "UPDATE request_usage SET attempts='[]',hidden_attempts='[]',log_visible=0 WHERE created_at<? AND attempts<>'[]'",
+        "UPDATE request_usage SET attempts='[]',hidden_attempts='[]',log_visible=0,failure_stage=NULL,failure_code=NULL,failure_message=NULL WHERE created_at<? AND (attempts<>'[]' OR failure_stage IS NOT NULL OR failure_code IS NOT NULL OR failure_message IS NOT NULL)",
       )
       .bind(Date.now() - LOG_RETENTION_DAYS * 86400000),
     db

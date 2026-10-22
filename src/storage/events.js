@@ -50,7 +50,9 @@ export async function diagnosticEvents(record) {
             ? 'completed'
             : record.outcome === 'cancelled'
               ? 'client_cancelled'
-              : 'request_failed',
+              : record.failure?.stage || 'request_failed',
+        detail_code: record.failure?.code || null,
+        detail_message: record.failure?.message || null,
         duration_ms: Math.max(0, Date.now() - record.started),
         created_at: Date.now(),
       },

@@ -32,7 +32,10 @@ export function unifiedRouting(env, model) {
 }
 // One global attempt budget across both channels, one final usage record per client request.
 export async function callUnifiedUpstream(env, model, request, stream, signal, fetcher, meta) {
-  await Promise.all(['geminicli', 'antigravity'].map((mode) => loadModelNames(env, mode)));
+  meta.phase = 'model_catalog';
+  await operation('model_catalog', () =>
+    Promise.all(['geminicli', 'antigravity'].map((mode) => loadModelNames(env, mode))),
+  );
   const routing = unifiedRouting(env, model);
   const configured = Number(env.MAX_CREDENTIAL_ATTEMPTS ?? 3);
   const limit = Number.isFinite(configured) ? Math.max(1, Math.min(5, Math.floor(configured))) : 3;
@@ -41,9 +44,12 @@ export async function callUnifiedUpstream(env, model, request, stream, signal, f
     operation('credential_select', () =>
       selectCredential(env.DB, 'auto', model, used, env.CREDENTIAL_SELECTION, routing, env),
     );
+  meta.phase = 'credential_select';
   let row = await select();
   for (let attempt = 0; attempt < limit; attempt++) {
     used.push(row.id);
+    meta.row = row;
+    meta.headersReceived = false;
     meta.mode = row.mode;
     meta.initialRow = row;
     const collect = row.mode === 'antigravity' && !stream && env.ANTIGRAVITY_STREAM2NOSTREAM;

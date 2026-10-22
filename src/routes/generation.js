@@ -2,7 +2,7 @@ import { prepareClientTools, restoreToolNames } from '../protocols/tool-compat.j
 import { fakeStream } from '../upstream/fake-stream.js';
 import { collectContinuations } from '../upstream/continuation.js';
 import { boundedSeconds, clientAborted } from '../upstream/timeouts.js';
-import { HttpError, json, readJson } from '../core/common.js';
+import { HttpError, json, readJson, publicFailure } from '../core/common.js';
 import { authenticateApi } from '../auth/api-keys.js';
 import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../protocols/openai.js';
 import { collectGoogleResponse } from '../upstream/stream-collect.js';
@@ -32,7 +32,7 @@ function validateModel(model) {
 export async function generationRoute(request, env, fetcher, context, internal) {
   const url = new URL(request.url);
   const fixed = url.pathname.match(/^\/(antigravity|geminicli)\//)?.[1];
-  let mode = fixed || 'geminicli';
+  let mode = fixed || 'auto';
   const path = fixed ? url.pathname.slice(('/' + fixed).length) : url.pathname;
   const nativeMatch = path.match(
     /^\/v1(?:beta)?\/models\/([^/:]+):(generateContent|streamGenerateContent|countTokens)$/,
@@ -162,6 +162,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
   );
   let usageSaved = false;
   let latestUsage;
+  let finalFailure;
   const persist = (task) => {
     context?.waitUntil?.(task);
     return task;
@@ -181,6 +182,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
         usage,
         started,
         attempts: attemptMeta.attempts,
+        failure: finalFailure,
       }),
     );
   };
@@ -406,8 +408,15 @@ export async function generationRoute(request, env, fetcher, context, internal) 
         attemptMeta,
       );
     }
+    error.operation ||= attemptMeta.phase;
+    const safe = publicFailure(error);
+    finalFailure = {
+      stage: error.operation || attemptMeta.phase || 'request',
+      code: safe.errorCode || 'REQUEST_FAILED',
+      message: safe.message.slice(0, 500),
+    };
     await finishUsage(
-      clientAborted(abort.signal) ? 499 : error.status || 500,
+      clientAborted(abort.signal) ? 499 : safe.status,
       clientAborted(abort.signal) ? 'cancelled' : 'failed',
       latestUsage,
     );

@@ -54,7 +54,13 @@ export async function callUpstream(
   fetcher = fetch,
   meta = {},
 ) {
-  await loadModelNames(env, mode);
+  const initialRow = meta.initialRow;
+  delete meta.initialRow;
+  if (initialRow) meta.row = initialRow;
+  meta.mode = mode;
+  meta.phase = 'model_catalog';
+  await operation('model_catalog', () => loadModelNames(env, mode));
+  meta.phase = 'request_prepare';
   const known = knownModelId(env, mode, model);
   const normalized = normalizeRequest(request, model, mode);
   model = known || normalized.model;
@@ -68,8 +74,7 @@ export async function callUpstream(
   const used = [];
   const origin = upstreamOrigin(env, mode);
   const action = stream ? 'streamGenerateContent?alt=sse' : 'generateContent';
-  const initialRow = meta.initialRow;
-  delete meta.initialRow;
+  meta.phase = 'credential_select';
   let row =
     initialRow ||
     (await operation('credential_select', () =>
@@ -78,6 +83,7 @@ export async function callUpstream(
   for (let attempt = 0; attempt < maxAttempts; attempt++) {
     used.push(row.id);
     meta.row = row;
+    meta.phase = 'request_prepare';
     meta.headersReceived = false;
     const started = Date.now();
     let logged = false;
