@@ -1,5 +1,6 @@
 import { dbCache } from '../cache/db.js';
-import { storageNodes, nodeSchedule } from './client.js';
+import { storageNodes } from './client.js';
+import { storageSchedule } from './schedule.js';
 import { HttpError, readJson } from '../core/common.js';
 
 async function rpc(env, node, path, body) {
@@ -13,7 +14,7 @@ async function rpc(env, node, path, body) {
 }
 export async function recordNodeTelemetry(env, payload) {
   if (!env.TELEMETRY_ORIGIN) return null;
-  const node = nodeSchedule(await storageNodes(env)).current;
+  const node = (await storageSchedule(env, await storageNodes(env))).current;
   if (!node) return null;
   const cache = dbCache(env.DB);
   cache.nodeTelemetryBackoff ||= new Map();

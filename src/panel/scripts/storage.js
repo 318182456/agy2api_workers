@@ -132,7 +132,15 @@ async function loadStorageNodes(fresh = false) {
   storageLastLoadedAt = Date.now();
   const nextNode = value.nodes.find((node) => node.id === value.next_node_id);
   el('storageSchedule').textContent = value.active_node_id
-    ? '下次调度：' + formatReset(value.switches_at) + '；预计节点：' + (nextNode?.email || '—')
+    ? '下次调度：' +
+      formatReset(value.switches_at) +
+      '；预计节点：' +
+      (nextNode?.email || '整点前一分钟确定') +
+      (value.schedule_basis === 'daily_requests'
+        ? '；按当日业务请求数择低值班'
+        : value.schedule_basis === 'single_node'
+          ? '；单节点值班'
+          : '；用量暂不可读时按轮换兜底')
     : '当前没有可用子节点，回退主节点。';
   if (storageTokenView) resetStorageForm();
   el('storageNodes').replaceChildren();

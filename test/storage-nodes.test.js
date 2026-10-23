@@ -1,3 +1,4 @@
+import { StorageScheduler, leastUsedNode, storageSchedule } from '../src/storage/schedule.js';
 import { nodeUsage } from '../src/storage/usage.js';
 import { usageStats } from '../src/telemetry/stats.js';
 import { dbCache } from '../src/cache/db.js';
@@ -1183,3 +1184,159 @@ test('node monitoring coalesces concurrent reads, caches metadata and metrics, a
     await handleRequest(request(), env, fetcher);
     assert.equal(calls, 2, 'metadata invalidation retains the independent 30-second metric cache');
   }));
+
+test('hourly scheduling balances daily business traffic and freezes a durable preheat decision', async () => {
+  const hour = Date.parse('2026-10-23T05:00:00Z');
+  const nodes = [1, 2, 3].map((n) => ({
+    id: `${n}`.repeat(8) + '-0000-0000-0000-000000000000',
+    worker_name: 'gcli2api-storage-' + `${n}`.repeat(12),
+    url: 'https://gcli2api-storage-' + `${n}`.repeat(12) + '.pages.dev',
+    node_secret: `${n}`.repeat(64),
+    activated_at: 0,
+  }));
+  const counts = [1000, 10, 100];
+  let sampled = hour + 1000,
+    calls = 0,
+    writes = 0;
+  const states = new Map();
+  const owner = {
+    history: {
+      state: (key) => states.get(key),
+      putState: (key, value) => {
+        states.set(key, value);
+        writes++;
+      },
+    },
+    env: {
+      DB: {},
+      STORAGE_NODE_FETCH: async (url) => {
+        calls++;
+        const i = nodes.findIndex((n) => url === n.url + '/usage');
+        if (counts[i] === null) return new Response('', { status: 503 });
+        return Response.json({
+          success: true,
+          node_id: nodes[i].id,
+          day: new Date(sampled + 8 * 3600000).toISOString().slice(0, 10),
+          sampled_at: sampled,
+          started_at: hour,
+          cache_entries: 0,
+          cache_bytes: 0,
+          today: {
+            requests: counts[i],
+            reads: 0,
+            hits: 0,
+            misses: 0,
+            writes: 0,
+            imports: 0,
+            exports: 0,
+            errors: 0,
+          },
+        });
+      },
+    },
+  };
+  const scheduler = new StorageScheduler(owner);
+  const first = await scheduler.resolve(nodes, sampled);
+  assert.equal(first.current_id, nodes[1].id);
+  assert.equal(first.basis, 'daily_requests');
+  assert.equal(first.next_id, null);
+  assert.equal(calls, 3);
+  counts[1] = 9000;
+  const restarted = new StorageScheduler(owner);
+  assert.equal((await restarted.resolve(nodes, hour + 2000)).current_id, first.current_id);
+  assert.equal(calls, 3, 'frozen decisions do not resample on restart');
+  sampled = hour + 3590000;
+  counts[2] = 0;
+  counts[0] = null; // An unhealthy node must not be considered idle.
+  const [warm, concurrent] = await Promise.all([
+    restarted.resolve(nodes, sampled),
+    restarted.resolve(nodes, sampled),
+  ]);
+  assert.equal(warm.current_id, first.current_id);
+  assert.equal(warm.next_id, nodes[2].id);
+  assert.equal(warm.warming, true);
+  assert.deepEqual(concurrent, warm);
+  assert.equal(calls, 6, 'concurrent preheat planning samples once');
+  counts[2] = 50000;
+  sampled = hour + 3600000;
+  assert.equal((await new StorageScheduler(owner).resolve(nodes, sampled)).current_id, nodes[2].id);
+  assert.equal(calls, 6, 'hour boundary reuses the node that was preheated');
+  assert.equal(writes, 3);
+  assert.ok(![...states.values()].join('').includes(nodes[0].node_secret));
+  // Membership changes mid-hour never add a newer node ahead of existing candidates.
+  const added = { ...nodes[0], activated_at: sampled + 1000 };
+  assert.equal(
+    (await restarted.resolve([added, nodes[1]], sampled + 2000)).current_id,
+    nodes[1].id,
+  );
+});
+
+test('daily scheduling handles midnight reset, unavailable metrics and same-hour membership', async () => {
+  const now = Date.parse('2026-10-23T15:59:30Z');
+  const nodes = ['a', 'b'].map((id) => ({ id, activated_at: 0 }));
+  const metric = (requests, day = '2026-10-23', sampled_at = now) => ({
+    available: true,
+    day,
+    sampled_at,
+    today: { requests },
+  });
+  const metrics = new Map([
+    ['a', metric(200)],
+    ['b', metric(0)],
+  ]);
+  assert.equal(leastUsedNode(nodes, metrics, now).id, 'b');
+  metrics.set('b', { available: false });
+  assert.equal(leastUsedNode(nodes, metrics, now).id, 'a');
+  metrics.set('a', metric(0, '2026-10-22'));
+  assert.equal(leastUsedNode(nodes, metrics, now).basis, 'fallback');
+  assert.equal(leastUsedNode([], new Map(), now).id, null);
+  // Previous-day values are not used to rank the new day.
+  assert.equal(
+    leastUsedNode(
+      nodes,
+      new Map([
+        ['a', metric(1)],
+        ['b', metric(20)],
+      ]),
+      Date.parse('2026-10-23T16:00:00Z'),
+    ).basis,
+    'fallback',
+  );
+});
+
+test('Worker instances coalesce and cache coordinator schedules until preheat or membership changes', async () => {
+  const now = Date.parse('2026-10-23T05:01:00Z'),
+    end = Date.parse('2026-10-23T06:00:00Z');
+  const nodes = [
+    { id: 'a', activated_at: 0 },
+    { id: 'b', activated_at: 0 },
+  ];
+  let calls = 0;
+  const env = {
+    DB: {},
+    TELEMETRY: {
+      idFromName: () => '',
+      get: () => ({
+        fetch: async () => {
+          calls++;
+          return Response.json({
+            current_id: 'b',
+            next_id: null,
+            basis: 'daily_requests',
+            switches_at: end,
+            warming: false,
+          });
+        },
+      }),
+    },
+  };
+  const results = await Promise.all(
+    Array.from({ length: 10 }, () => storageSchedule(env, nodes, now)),
+  );
+  assert.equal(calls, 1);
+  assert.ok(results.every((s) => s.current.id === 'b'));
+  await storageSchedule(env, nodes, now + 1000);
+  assert.equal(calls, 1);
+  await storageSchedule(env, nodes, end - 30000);
+  assert.equal(calls, 2);
+});

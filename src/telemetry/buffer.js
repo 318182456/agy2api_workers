@@ -1,3 +1,4 @@
+import { StorageScheduler } from '../storage/schedule.js';
 import { bumpRevision } from './archive.js';
 import { bufferedHealth } from './live-health.js';
 import { primaryNodeSnapshot } from './node-usage.js';
@@ -69,6 +70,23 @@ export class TelemetryBuffer {
   }
   async handle(request) {
     const path = new URL(request.url).pathname;
+    if (path === '/storage-schedule' && request.method === 'POST') {
+      const { nodes } = await request.json();
+      if (
+        !Array.isArray(nodes) ||
+        nodes.length > 100 ||
+        nodes.some(
+          (node) =>
+            !/^[a-f0-9-]{36}$/.test(node.id) ||
+            !/^gcli2api-storage-[a-f0-9]{12}$/.test(node.worker_name) ||
+            node.url !== 'https://' + node.worker_name + '.pages.dev' ||
+            !/^[a-f0-9]{64}$/.test(node.node_secret),
+        )
+      )
+        return json({ error: 'invalid storage nodes' }, 400);
+      this.storageScheduler ||= new StorageScheduler(this);
+      return json(await this.storageScheduler.resolve(nodes));
+    }
     const quotaId = path.match(/^\/quota\/([a-f0-9-]{36})$/)?.[1];
     if (quotaId) {
       if (request.method === 'GET') {

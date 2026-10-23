@@ -1,6 +1,6 @@
 import { timed } from '../core/timing.js';
 import { dbCache } from '../cache/db.js';
-import { nodeSchedule } from './client.js';
+import { storageSchedule } from './schedule.js';
 import { syncNodeTelemetry } from './telemetry.js';
 import { nodeUsage, primaryUsage } from './usage.js';
 import { HttpError, json, readJson } from '../core/common.js';
@@ -544,7 +544,10 @@ export async function storageNodesRoute(request, env, url, fetcher) {
               row.status === 'ready' && row.url === 'https://' + row.worker_name + '.pages.dev',
           )
           .sort((a, b) => a.id.localeCompare(b.id));
-        const schedule = nodeSchedule(eligible);
+        const schedule = await storageSchedule(
+          env,
+          rows.filter((row) => eligible.some((node) => node.id === row.id)),
+        );
         return {
           primary_node: {
             id: 'primary',
@@ -558,6 +561,7 @@ export async function storageNodesRoute(request, env, url, fetcher) {
           active_node_id: schedule.current?.id || null,
           next_node_id: schedule.next?.id || null,
           preheating: schedule.warming,
+          schedule_basis: schedule.basis || 'fallback',
           switches_at: schedule.switches_at,
           cache_only: false,
         };

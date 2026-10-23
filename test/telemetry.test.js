@@ -1420,3 +1420,37 @@ test('legacy accountless records remain explicit history instead of inventing an
     await mf.dispose();
   }
 });
+
+test('persistent schedule endpoint rejects external hosts and never rewrites a frozen hourly decision', async () => {
+  const mf = await runtime();
+  try {
+    const env = await setup(mf);
+    const stub = env.TELEMETRY.get(env.TELEMETRY.idFromName('gcli2api'));
+    const nodes = [1, 2].map((n) => ({
+      id: `${n}`.repeat(8) + '-0000-0000-0000-000000000000',
+      worker_name: 'gcli2api-storage-' + `${n}`.repeat(12),
+      url: 'https://gcli2api-storage-' + `${n}`.repeat(12) + '.pages.dev',
+      node_secret: `${n}`.repeat(64),
+      activated_at: 0,
+    }));
+    const request = (value) =>
+      stub.fetch('https://test/storage-schedule', {
+        method: 'POST',
+        body: JSON.stringify({ nodes: value }),
+      });
+    assert.equal((await request([{ ...nodes[0], url: 'https://untrusted.example' }])).status, 400);
+    const firstResponse = await request(nodes);
+    assert.equal(firstResponse.status, 200);
+    const first = await firstResponse.json();
+    assert.ok(nodes.some((n) => n.id === first.current_id));
+    assert.ok(!JSON.stringify(first).includes(nodes[0].node_secret));
+    const before = await (await stub.fetch('https://test/test/status')).json();
+    const second = await (await request([...nodes].reverse())).json();
+    assert.deepEqual(second, first);
+    const after = await (await stub.fetch('https://test/test/status')).json();
+    assert.equal(after.sqlWrites, before.sqlWrites);
+    assert.equal(after.queries, before.queries, 'schedule uses no D1 reads');
+  } finally {
+    await mf.dispose();
+  }
+});

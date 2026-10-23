@@ -1,3 +1,5 @@
+import { storageSchedule } from './schedule.js';
+export { nodeSchedule } from './schedule.js';
 import { dbCache } from '../cache/db.js';
 
 const HOUR = 3600000;
@@ -6,6 +8,7 @@ const failures = new WeakMap();
 export function resetStorageNodes(env) {
   if (env.DB) {
     delete dbCache(env.DB).storageNodes;
+    delete dbCache(env.DB).storageSchedule;
     delete dbCache(env.DB).storagePanel;
     delete dbCache(env.DB).storagePanelFlight;
     delete dbCache(env.DB).storagePanelFlightOrigin;
@@ -48,29 +51,6 @@ export async function storageNodes(env) {
   } finally {
     if (cache.storageNodesFlight === flight) delete cache.storageNodesFlight;
   }
-}
-export function nodeSchedule(nodes, now = Date.now()) {
-  const hourStart = Math.floor(now / HOUR) * HOUR;
-  const available = [...nodes].sort((a, b) => a.id.localeCompare(b.id));
-  const joined = (node) => node.activated_at ?? 0;
-  // Membership is frozen as of this hour's start. A new/recovered node joins next hour.
-  let eligible = available.filter((node) => joined(node) <= hourStart);
-  if (!eligible.length && available.length) {
-    // Bootstrap or total outage: use the oldest available node without waiting an hour.
-    eligible = [
-      [...available].sort((a, b) => joined(a) - joined(b) || a.id.localeCompare(b.id))[0],
-    ];
-  }
-  if (!eligible.length)
-    return { current: null, next: null, warming: false, switches_at: hourStart + HOUR };
-  const current = eligible[Math.floor(now / HOUR) % eligible.length];
-  const next = available[(Math.floor(now / HOUR) + 1) % available.length];
-  return {
-    current,
-    next,
-    warming: next.id !== current.id && now % HOUR >= HOUR - 60000,
-    switches_at: hourStart + HOUR,
-  };
 }
 async function keyFor(env, kind, key) {
   const bytes = new TextEncoder().encode(
@@ -140,7 +120,7 @@ async function warm(env, schedule) {
   }
 }
 export async function readNodeCache(env, kind, key) {
-  const schedule = nodeSchedule(await storageNodes(env));
+  const schedule = await storageSchedule(env, await storageNodes(env));
   if (!schedule.current) return null;
   await warm(env, schedule);
   const response = await call(env, schedule.current, '/cache/' + (await keyFor(env, kind, key)));
@@ -165,7 +145,7 @@ export async function readNodeCache(env, kind, key) {
 }
 export async function writeNodeCache(env, kind, key, value, expiresAt) {
   if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) return false;
-  const schedule = nodeSchedule(await storageNodes(env));
+  const schedule = await storageSchedule(env, await storageNodes(env));
   if (!schedule.current) return false;
   const body = JSON.stringify({ expires_at: expiresAt, value });
   if (new TextEncoder().encode(body).length > 524288) return false;
