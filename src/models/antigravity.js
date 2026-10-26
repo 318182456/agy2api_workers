@@ -4,6 +4,7 @@ const aliases = {
   'claude-sonnet-4-6-thinking': 'claude-sonnet-4-6',
   'gemini-3.1-pro-high': 'gemini-pro-agent',
 };
+export { aliases as antigravityAliases };
 const ratios = [
   [1, 1],
   [2, 3],

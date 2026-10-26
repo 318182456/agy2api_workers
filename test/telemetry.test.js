@@ -1454,3 +1454,132 @@ test('persistent schedule endpoint rejects external hosts and never rewrites a f
     await mf.dispose();
   }
 });
+
+test('search model errors retain sanitized Google messages for each retry and the final issue', async () => {
+  for (const status of [503, 404]) {
+    const mf = await runtime();
+    try {
+      const env = {
+        ...(await setup(mf)),
+        API_PASSWORD: 'api',
+        PANEL_PASSWORD: 'panel',
+        ANTIGRAVITY_STREAM2NOSTREAM: false,
+        MAX_CREDENTIAL_ATTEMPTS: 3,
+      };
+      const data = JSON.stringify({
+        token: 'fixture-private-oauth-token',
+        refresh_token: 'fixture-private-refresh',
+        project_id: 'fixture-project',
+        expiry: '2099-01-01T00:00:00Z',
+      });
+      await env.DB.prepare('UPDATE credentials SET data=? WHERE id=?').bind(data, id).run();
+      for (let n = 2; n <= 3; n++)
+        await env.DB.prepare(
+          'INSERT INTO credentials(id,mode,name,data,created_at)VALUES(?,?,?,?,?)',
+        )
+          .bind(
+            `${n}`.repeat(8) + '-1111-4111-8111-111111111111',
+            'antigravity',
+            'account-' + n,
+            data,
+            Date.now(),
+          )
+          .run();
+      let calls = 0;
+      const raw = {
+        error: {
+          code: status,
+          status: status === 503 ? 'UNAVAILABLE' : 'NOT_FOUND',
+          message:
+            (status === 503 ? 'Model capacity unavailable' : 'Model not found') +
+            ' fixture-private-oauth-token',
+        },
+      };
+      const response = await handleRequest(
+        new Request('https://fixture/antigravity/v1/chat/completions', {
+          method: 'POST',
+          headers: { authorization: 'Bearer api', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gemini-2.5-pro-search',
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        }),
+        env,
+        async (url, init) => {
+          calls++;
+          const payload = JSON.parse(init.body);
+          assert.equal(payload.model, 'gemini-2.5-pro');
+          assert.ok(payload.request.tools.some((tool) => tool.googleSearch));
+          return Response.json(raw, { status });
+        },
+      );
+      assert.equal(response.status, status);
+      assert.deepEqual(await response.json(), raw);
+      assert.equal(calls, status === 503 ? 3 : 1);
+      const logs = await queryCallLogs(
+        env.DB,
+        new URLSearchParams({ request_id: response.headers.get('x-request-id') }),
+      );
+      assert.equal(logs.records.length, calls + 1);
+      for (const event of logs.records) {
+        assert.equal(event.detail_code, 'HTTP_' + status);
+        assert.match(
+          event.detail_message,
+          status === 503 ? /Model capacity unavailable/ : /Model not found/,
+        );
+        assert.ok(!event.detail_message.includes('fixture-private-oauth-token'));
+      }
+    } finally {
+      await mf.dispose();
+    }
+  }
+});
+
+test('catalog tiered search shortcut reaches the real upstream model on fixed and unified endpoints', async () => {
+  for (const path of ['/antigravity/v1/chat/completions', '/v1/chat/completions']) {
+    const mf = await runtime();
+    try {
+      const env = { ...(await setup(mf)), API_PASSWORD: 'api', ANTIGRAVITY_STREAM2NOSTREAM: false };
+      await env.DB.prepare('UPDATE credentials SET data=? WHERE id=?')
+        .bind(
+          JSON.stringify({
+            token: 'fixture-token',
+            project_id: 'project',
+            expiry: '2099-01-01T00:00:00Z',
+          }),
+          id,
+        )
+        .run();
+      const { dbCache } = await import('../src/cache/db.js');
+      const model = 'gemini-3.8-flash-tiered';
+      dbCache(env.DB).models = {
+        until: Date.now() + 60000,
+        value: { ids: [model], routes: { [model]: model }, queriedAt: new Date().toISOString() },
+      };
+      const response = await handleRequest(
+        new Request('https://fixture' + path, {
+          method: 'POST',
+          headers: { authorization: 'Bearer api', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: model + '-search',
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        }),
+        env,
+        async (url, init) => {
+          const body = JSON.parse(init.body);
+          assert.equal(body.model, model);
+          assert.ok(body.request.tools.some((tool) => tool.googleSearch));
+          return Response.json({
+            response: {
+              candidates: [{ content: { parts: [{ text: 'hello' }] }, finishReason: 'STOP' }],
+            },
+          });
+        },
+      );
+      assert.equal(response.status, 200);
+    } finally {
+      await mf.dispose();
+    }
+  }
+});

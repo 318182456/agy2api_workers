@@ -1,7 +1,7 @@
 import { retryableStatus } from './timeouts.js';
 import { HttpError, operation } from '../core/common.js';
 import { selectCredential } from '../credentials/index.js';
-import { normalizeRequest } from '../protocols/gemini.js';
+import { modelRequest } from '../models/request.js';
 import { callUpstream } from './index.js';
 import { discoverModels } from '../models/list.js';
 import { loadModelNames, knownModelId } from '../models/names.js';
@@ -11,7 +11,7 @@ export function unifiedRouting(env, model) {
   const models = Object.fromEntries(
     ['geminicli', 'antigravity'].map((mode) => [
       mode,
-      knownModelId(env, mode, model) || normalizeRequest({}, model, mode).model,
+      modelRequest({}, model, mode, (id) => knownModelId(env, mode, id)).model,
     ]),
   );
   const scope = env.DB ? dbCache(env.DB) : {};
@@ -21,7 +21,10 @@ export function unifiedRouting(env, model) {
       (mode === 'geminicli' && /^gemini-/i.test(models[mode])) ||
       !known[mode]?.length ||
       known[mode].includes(model) ||
-      known[mode].includes(models[mode]),
+      known[mode].includes(models[mode]) ||
+      Object.values(
+        scope[mode === 'geminicli' ? 'cliModels' : 'models']?.value?.routes || {},
+      ).includes(models[mode]),
   );
   const exclusive =
     /^(?:claude-|gpt-|tab_|chat_)/i.test(model) || /-agent$|-image(?:-|$)/i.test(model);

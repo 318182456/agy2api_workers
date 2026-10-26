@@ -48,17 +48,17 @@ export function cooldownSeconds(response, now = Date.now(), body) {
   );
 }
 // Error-body inspection is bounded and optional. Preserve the original response for the client.
-export async function quotaCooldown(response, signal, now = Date.now()) {
+export async function upstreamErrorBody(response, signal) {
   if (
-    ![429, 503].includes(response.status) ||
+    response.ok ||
     signal?.aborted ||
     !/application\/(?:json|[a-z0-9.+-]+\+json)/i.test(response.headers.get('content-type') || '')
   )
-    return cooldownSeconds(response, now);
+    return null;
   let reader, timer, onAbort;
   try {
     reader = response.clone().body?.getReader();
-    if (!reader) return cooldownSeconds(response, now);
+    if (!reader) return null;
     const stop = new Promise((resolve) => {
       timer = setTimeout(() => resolve(null), 1000);
       onAbort = () => resolve(null);
@@ -83,9 +83,9 @@ export async function quotaCooldown(response, signal, now = Date.now()) {
         return null;
       }
     };
-    return cooldownSeconds(response, now, await Promise.race([read(), stop]));
+    return await Promise.race([read(), stop]);
   } catch {
-    return cooldownSeconds(response, now);
+    return null;
   } finally {
     clearTimeout(timer);
     if (onAbort) signal?.removeEventListener('abort', onAbort);
@@ -93,6 +93,26 @@ export async function quotaCooldown(response, signal, now = Date.now()) {
     reader?.cancel().catch(() => {});
     reader?.releaseLock();
   }
+}
+export async function quotaCooldown(response, signal, now = Date.now()) {
+  return cooldownSeconds(response, now, await upstreamErrorBody(response, signal));
+}
+// Keep only the structured message; never persist response bodies or request contents.
+export function upstreamErrorMessage(body, secrets = []) {
+  if (typeof body?.error?.message !== 'string') return null;
+  let message = body.error.message;
+  for (const secret of secrets)
+    if (typeof secret === 'string' && secret.length >= 4)
+      message = message.split(secret).join('[REDACTED]');
+  return message
+    .replace(/\bBearer\s+[^\s"'<>]+/gi, 'Bearer [REDACTED]')
+    .replace(/\b(?:sk-|AIza|ya29\.|1\/\/)[A-Za-z0-9_.-]{10,}/g, '[REDACTED]')
+    .replace(
+      /((?:api[_-]?key|access_token|refresh_token|client_secret|password)\s*[=:]\s*)[^\s&,;"'<>]+/gi,
+      '$1[REDACTED]',
+    )
+    .replace(/[\u0000-\u001f\u007f]/g, ' ')
+    .slice(0, 500);
 }
 export async function putCooldown(db, row, model, status, seconds) {
   await db

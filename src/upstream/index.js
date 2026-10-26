@@ -1,9 +1,16 @@
 import { retryableStatus, clientAborted, fetchGeneration, boundedSeconds } from './timeouts.js';
 import { HttpError, operation } from '../core/common.js';
 import { accessToken, selectCredential } from '../credentials/index.js';
-import { quotaCooldown, putCooldown, recordAttempt } from './reliability.js';
+import {
+  cooldownSeconds,
+  upstreamErrorBody,
+  upstreamErrorMessage,
+  putCooldown,
+  recordAttempt,
+} from './reliability.js';
 import { loadModelNames, knownModelId, publicModelId } from '../models/names.js';
 import { normalizeRequest } from '../protocols/gemini.js';
+import { modelRequest } from '../models/request.js';
 
 export function upstreamOrigin(env, mode) {
   const value =
@@ -61,9 +68,8 @@ export async function callUpstream(
   meta.phase = 'model_catalog';
   await operation('model_catalog', () => loadModelNames(env, mode));
   meta.phase = 'request_prepare';
-  const known = knownModelId(env, mode, model);
-  const normalized = normalizeRequest(request, model, mode);
-  model = known || normalized.model;
+  const normalized = modelRequest(request, model, mode, (id) => knownModelId(env, mode, id));
+  model = normalized.model;
   meta.model = publicModelId(env, mode, model);
   request = normalized.request;
   const requestId = meta.requestId || crypto.randomUUID();
@@ -166,6 +172,20 @@ export async function callUpstream(
         response = await send();
       }
       meta.headersReceived = response.ok;
+      const errorBody = response.ok ? null : await upstreamErrorBody(response, signal);
+      const detailMessage = upstreamErrorMessage(errorBody, [
+        token,
+        row.data.refresh_token,
+        env.API_PASSWORD,
+        env.PANEL_PASSWORD,
+      ]);
+      meta.upstreamFailure = response.ok
+        ? null
+        : {
+            stage: 'request_failed',
+            code: 'HTTP_' + response.status,
+            message: detailMessage || 'Google 返回 HTTP ' + response.status,
+          };
       await recordAttempt(
         env.DB,
         {
@@ -176,13 +196,14 @@ export async function callUpstream(
           status: response.status,
           stage: 'response_headers',
           code: response.ok ? null : 'HTTP_' + response.status,
+          detailMessage,
           started,
         },
         meta,
       );
       logged = true;
       if (!retryableStatus(response.status)) return response;
-      const seconds = await quotaCooldown(response, signal);
+      const seconds = cooldownSeconds(response, Date.now(), errorBody);
       await operation('credential_cooldown', () =>
         putCooldown(env.DB, row, model, response.status, seconds),
       );

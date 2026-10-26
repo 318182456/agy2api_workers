@@ -1,3 +1,4 @@
+import { describeModels } from '../models/capabilities.js';
 import { attachTimings } from '../core/timing.js';
 import { pendingTelemetry } from '../telemetry/client.js';
 import { bufferedHealth } from '../telemetry/live-health.js';
@@ -70,15 +71,14 @@ async function dispatchAdmin(request, env, fetcher) {
     if (request.method !== 'GET') throw new HttpError(405, '请求方法不支持');
     return json(await runtimeLocation(request, env, fetcher));
   }
-  if (url.pathname === '/admin/models' && request.method === 'GET')
-    return json(
-      await discoverModels(
-        await effectiveEnv(env),
-        url.searchParams.get('mode') || 'antigravity',
-        fetcher,
-        { fresh: true, publish: true },
-      ),
-    );
+  if (url.pathname === '/admin/models' && request.method === 'GET') {
+    const mode = url.searchParams.get('mode') || 'antigravity';
+    const value = await discoverModels(await effectiveEnv(env), mode, fetcher, {
+      fresh: true,
+      publish: true,
+    });
+    return json({ ...value, models: describeModels(value, mode) });
+  }
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
   if (url.pathname === '/admin/storage-nodes' || url.pathname.startsWith('/admin/storage-nodes/'))
     return storageNodesRoute(request, env, url, fetcher);

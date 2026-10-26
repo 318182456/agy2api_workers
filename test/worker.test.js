@@ -1484,7 +1484,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.20\.1/);
+    assert.match(html, /v0\.21\.0/);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);
@@ -2690,4 +2690,112 @@ test('runtime location endpoint requires panel authentication and works without 
     { status: 405 },
   );
   assert.equal(calls, 1);
+});
+
+test('upstream error summaries redact credentials and bound inspection without consuming the client response', async () => {
+  const { upstreamErrorBody, upstreamErrorMessage } =
+    await import('../src/upstream/reliability.js');
+  const raw = {
+    error: {
+      message:
+        'Model unavailable; Bearer abcdefghijklmnop api_key=private-value sk-12345678901234567890 known-secret',
+      status: 'UNAVAILABLE',
+    },
+    request_body: 'must-not-log',
+  };
+  const response = Response.json(raw, { status: 503 });
+  const parsed = await upstreamErrorBody(response);
+  const summary = upstreamErrorMessage(parsed, ['known-secret']);
+  assert.match(summary, /Model unavailable/);
+  for (const value of [
+    'abcdefghijklmnop',
+    'private-value',
+    'sk-12345678901234567890',
+    'known-secret',
+    'must-not-log',
+  ])
+    assert.ok(!summary.includes(value));
+  assert.deepEqual(await response.json(), raw, 'original response remains intact');
+  assert.equal(upstreamErrorMessage({ error: { message: 'x'.repeat(2000) } }).length, 500);
+  assert.equal(
+    await upstreamErrorBody(
+      Response.json({ error: { message: 'x'.repeat(70000) } }, { status: 404 }),
+    ),
+    null,
+  );
+  assert.equal(await upstreamErrorBody(new Response('<html>error</html>', { status: 503 })), null);
+  assert.equal(await upstreamErrorBody(Response.json({ ok: true })), null);
+});
+
+test('model capability annotations use real adapter routes and preserve native tiers in search aliases', async () => {
+  const { describeModels } = await import('../src/models/capabilities.js');
+  const { modelRequest } = await import('../src/models/request.js');
+  const { unifiedRouting } = await import('../src/upstream/unified.js');
+  const ids = [
+    'gemini-2.5-pro',
+    'gemini-3.8-flash-high',
+    'gemini-3.8-flash-tiered',
+    'gemini-future-text',
+    'gemini-3.1-flash-image',
+    'claude-example',
+    'claude-sonnet-4-6',
+    'future-vendor',
+  ];
+  const catalog = { ids, routes: Object.fromEntries(ids.map((id) => [id, id])) };
+  catalog.routes['gemini-2.5-pro'] = 'gemini-custom-pro';
+  const models = describeModels(catalog, 'antigravity');
+  const resolve = (id) => catalog.routes[id] || null;
+  for (const id of ['gemini-3.8-flash-high', 'gemini-3.8-flash-tiered', 'gemini-future-text']) {
+    const option = models.find((m) => m.id === id).variants.find((v) => v.label === '联网搜索');
+    assert.equal(option.id, id + '-search');
+    const prepared = modelRequest(
+      { tools: [{ googleSearch: {} }] },
+      option.id,
+      'antigravity',
+      resolve,
+    );
+    assert.equal(prepared.model, id);
+    assert.equal(prepared.request.tools.filter((tool) => tool.googleSearch).length, 1);
+  }
+  assert.equal(models.find((m) => m.id === 'claude-example').search, false);
+  assert.ok(
+    models
+      .find((m) => m.id === 'claude-sonnet-4-6')
+      .variants.some((v) => v.id === 'claude-sonnet-4-6-thinking'),
+  );
+  assert.equal(models.find((m) => m.id === 'gemini-3.1-flash-image').search, false);
+  assert.equal(models.find((m) => m.id === 'future-vendor').variants.length, 1);
+  assert.equal(
+    models.find((m) => m.id === 'gemini-3.8-flash-high').variants.length,
+    2,
+    'native tiers do not advertise additional thinking aliases that could erase their route',
+  );
+  const pro = models.find((m) => m.id === 'gemini-2.5-pro');
+  assert.match(pro.variants.find((v) => v.id.endsWith('-nothinking')).note, /不能完全关闭/);
+  for (const variant of pro.variants)
+    assert.equal(modelRequest({}, variant.id, 'antigravity', resolve).model, 'gemini-custom-pro');
+  const local = { DB: {} };
+  probeCache(local.DB).models = {
+    until: Date.now() + 60000,
+    value: { ...catalog, queriedAt: new Date().toISOString() },
+  };
+  const routing = unifiedRouting(local, 'gemini-2.5-pro-search');
+  assert.equal(routing.models.antigravity, 'gemini-custom-pro');
+  assert.ok(routing.modes.includes('antigravity'));
+  const unknown = modelRequest({}, 'gemini-future-unknown-search', 'antigravity', resolve);
+  assert.equal(unknown.model, 'gemini-future-unknown-search', 'unknown routes are never guessed');
+  assert.ok(!unknown.request.tools?.some((tool) => tool.googleSearch));
+});
+
+test('admin model discovery includes nearby capability descriptions without adding synthetic upstream IDs', async () => {
+  const response = await handleRequest(
+    request('/admin/models?mode=antigravity', null, 'panel-secret'),
+    { ...env, DB: fakeDB() },
+    async () => Response.json({ models: { 'gemini-2.5-pro': {}, 'gemini-3.8-flash-tiered': {} } }),
+  );
+  assert.equal(response.status, 200);
+  const value = await response.json();
+  assert.deepEqual(value.ids, ['gemini-2.5-pro', 'gemini-3.8-flash-tiered']);
+  assert.equal(value.models.length, 2);
+  assert.ok(value.models[0].variants.some((v) => v.id === 'gemini-2.5-pro-search'));
 });

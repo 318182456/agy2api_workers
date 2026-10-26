@@ -218,6 +218,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
     };
     let response = await send(geminiRequest);
     if (!response.ok) {
+      finalFailure = attemptMeta.upstreamFailure;
       await finishUsage(response.status, 'failed');
       if (isAnthropic) {
         let message = `Google 返回 HTTP ${response.status}`;
