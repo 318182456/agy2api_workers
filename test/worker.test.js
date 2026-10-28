@@ -1484,7 +1484,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.21\.0/);
+    assert.match(html, /v0\.21\.1/);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);
@@ -2798,4 +2798,66 @@ test('admin model discovery includes nearby capability descriptions without addi
   assert.deepEqual(value.ids, ['gemini-2.5-pro', 'gemini-3.8-flash-tiered']);
   assert.equal(value.models.length, 2);
   assert.ok(value.models[0].variants.some((v) => v.id === 'gemini-2.5-pro-search'));
+});
+
+test('Gemini image settings bridge responseFormat.image without losing modalities or mutating caller data', async () => {
+  const { normalizeRequest } = await import('../src/protocols/gemini.js');
+  const original = {
+    contents: [{ role: 'user', parts: [{ text: 'draw' }] }],
+    generationConfig: {
+      responseModalities: ['IMAGE'],
+      responseFormat: { image: { imageSize: '1K', aspectRatio: '16:9' } },
+      maxOutputTokens: 123,
+    },
+  };
+  const saved = structuredClone(original);
+  for (const mode of ['geminicli', 'antigravity']) {
+    const output = normalizeRequest(original, 'gemini-3.1-flash-image', mode).request;
+    assert.deepEqual(output.generationConfig.imageConfig, { imageSize: '1K', aspectRatio: '16:9' });
+    assert.deepEqual(output.generationConfig.responseModalities, ['IMAGE']);
+    assert.equal(output.generationConfig.maxOutputTokens, 123);
+    assert.equal(output.generationConfig.responseFormat, undefined);
+  }
+  assert.deepEqual(original, saved);
+  const snake = normalizeRequest(
+    {
+      contents: original.contents,
+      generation_config: {
+        response_modalities: ['TEXT', 'IMAGE'],
+        response_format: { image: { image_size: '2k', aspect_ratio: '3:2' } },
+      },
+    },
+    'gemini-3.1-flash-image',
+    'antigravity',
+  ).request;
+  assert.deepEqual(snake.generationConfig.imageConfig, { imageSize: '2K', aspectRatio: '3:2' });
+  assert.equal(snake.generation_config, undefined);
+  const merged = normalizeRequest(
+    {
+      contents: original.contents,
+      generationConfig: {
+        responseFormat: {
+          image: { imageSize: '1K', aspectRatio: '16:9', delivery: 'INLINE' },
+          text: { mimeType: 'TEXT_PLAIN' },
+        },
+        imageConfig: { imageSize: '4K' },
+      },
+    },
+    'custom-image',
+    'geminicli',
+  ).request.generationConfig;
+  assert.deepEqual(merged.imageConfig, { imageSize: '4K', aspectRatio: '16:9' });
+  assert.deepEqual(merged.responseFormat, {
+    image: { delivery: 'INLINE' },
+    text: { mimeType: 'TEXT_PLAIN' },
+  });
+  assert.throws(
+    () =>
+      normalizeRequest(
+        { generationConfig: { responseFormat: { image: [] } } },
+        'custom',
+        'geminicli',
+      ),
+    /必须为对象/,
+  );
 });

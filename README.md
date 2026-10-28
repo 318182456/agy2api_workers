@@ -321,6 +321,10 @@ npm run check
 
 修改代码后运行 `npm run format`、`npm test`、`npm run format:check` 和 `npm run check`。最后一项只打包，不创建资源、不迁移远程数据库、不发布。
 
+### Gemini 图片参数兼容
+
+原生 `generateContent` 接口兼容客户端的 `generationConfig.responseFormat.image`（包括对应 snake_case 字段）。其中的 `imageSize` 与 `aspectRatio` 在转发 Google 内部接口前转换为 `generationConfig.imageConfig`，保留 `responseModalities`。同时传入两种布局时，显式 `imageConfig` 优先；其余响应配置保持原样。Denova 的 Gemini Images 接入可继续使用现有请求格式。
+
 ### 模型能力与快捷调用名
 
 “系统设置 → 模型列表”按行显示用途、原始 ID 及可复制的调用名。联网搜索通过给模型名追加 `-search` 请求，例如 `gemini-2.5-pro-search`；搜索由模型按需执行，账号资格、渠道支持和容量仍以上游响应为准。发现的 Gemini 文本模型会自动生成搜索入口，保留 `-high`、`-low`、`-tiered` 等上游原有档位，不会改为不存在的基础 ID。

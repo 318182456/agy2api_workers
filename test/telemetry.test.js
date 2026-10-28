@@ -1583,3 +1583,66 @@ test('catalog tiered search shortcut reaches the real upstream model on fixed an
     }
   }
 });
+
+test('Denova native image ping shape reaches Google internal imageConfig and returns inline image data', async () => {
+  for (const prefix of ['/v1', '/v1beta', '/antigravity/v1beta']) {
+    const mf = await runtime();
+    try {
+      const env = { ...(await setup(mf)), API_PASSWORD: 'api', ANTIGRAVITY_STREAM2NOSTREAM: false };
+      await env.DB.prepare('UPDATE credentials SET data=? WHERE id=?')
+        .bind(
+          JSON.stringify({
+            token: 'fixture-token',
+            project_id: 'project',
+            expiry: '2099-01-01T00:00:00Z',
+          }),
+          id,
+        )
+        .run();
+      let calls = 0;
+      const response = await handleRequest(
+        new Request('https://fixture' + prefix + '/models/gemini-3.1-flash-image:generateContent', {
+          method: 'POST',
+          headers: { 'x-goog-api-key': 'api', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            contents: [{ role: 'user', parts: [{ text: 'draw a tiny circle' }] }],
+            generationConfig: {
+              responseModalities: ['IMAGE'],
+              responseFormat: { image: { imageSize: '1K', aspectRatio: '1:1' } },
+            },
+          }),
+        }),
+        env,
+        async (url, init) => {
+          calls++;
+          const payload = JSON.parse(init.body);
+          assert.equal(payload.model, 'gemini-3.1-flash-image');
+          assert.deepEqual(payload.request.generationConfig.imageConfig, {
+            imageSize: '1K',
+            aspectRatio: '1:1',
+          });
+          assert.equal(payload.request.generationConfig.responseFormat, undefined);
+          assert.deepEqual(payload.request.generationConfig.responseModalities, ['IMAGE']);
+          return Response.json({
+            response: {
+              candidates: [
+                {
+                  content: { parts: [{ inlineData: { mimeType: 'image/png', data: 'AQID' } }] },
+                  finishReason: 'STOP',
+                },
+              ],
+            },
+          });
+        },
+      );
+      assert.equal(response.status, 200);
+      assert.equal(calls, 1);
+      assert.deepEqual((await response.json()).candidates[0].content.parts[0].inlineData, {
+        mimeType: 'image/png',
+        data: 'AQID',
+      });
+    } finally {
+      await mf.dispose();
+    }
+  }
+});

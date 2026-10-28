@@ -1,3 +1,4 @@
+import { normalizeImageSettings } from './image-config.js';
 import { normalizeToolHistory } from './tool-compat.js';
 import { HttpError } from '../core/common.js';
 import { cleanToolSchema } from './schema.js';
@@ -74,6 +75,7 @@ export function parseModel(model) {
     : { model, profile: null };
 }
 export function normalizeRequest(request, model, mode) {
+  request = normalizeImageSettings(request);
   if (
     request.generationConfig != null &&
     (typeof request.generationConfig !== 'object' || Array.isArray(request.generationConfig))
