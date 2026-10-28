@@ -231,25 +231,6 @@ function renderCredentials() {
         });
       extraActions.append(credits);
     }
-    if (credential.mode === 'geminicli') {
-      const preview = document.createElement('button');
-      preview.className = 'secondary';
-      preview.textContent =
-        credential.preview_channel === 'EXPERIMENTAL' ? '检查 Preview' : '开通 Preview';
-      preview.onclick = () =>
-        localRun(async () => {
-          if (
-            !confirm(
-              '将为此凭证对应的 Cloud 项目创建实验通道设置和绑定，需要项目设置管理权限。继续？',
-            )
-          )
-            return;
-          const value = await api('/admin/credentials/' + credential.id + '/preview', 'POST', {});
-          await refresh();
-          status('Preview 实验通道已配置：' + value.project_id);
-        });
-      extraActions.append(preview);
-    }
     const test = document.createElement('button');
     test.className = 'secondary';
     test.textContent = '测试调用';
@@ -463,7 +444,7 @@ function renderCredentials() {
       };
       extraActions.append(repair);
     }
-    if (['antigravity', 'geminicli'].includes(credential.mode)) {
+    if (credential.mode === 'antigravity') {
       const quota = document.createElement('button');
       quota.textContent = '查看额度';
       quota.onclick = () => localRun(() => showQuota(credential));
@@ -533,43 +514,6 @@ async function verifyCredentialProject(credential, body = {}) {
       current.hidden = false;
       const cell = current.firstChild;
       cell.textContent = '项目校验未完成：' + error.message;
-      if (error.reason === 'PROJECT_REQUIRED') {
-        const form = document.createElement('form');
-        const label = document.createElement('label');
-        const input = document.createElement('input');
-        input.id = 'project-id-' + credential.id;
-        input.name = 'project_id';
-        input.required = true;
-        input.pattern = '[a-z][a-z0-9-]{4,28}[a-z0-9]';
-        input.maxLength = 30;
-        input.placeholder = '例如 my-gemini-project';
-        input.value = body.project_id || credential.project_id || '';
-        label.htmlFor = input.id;
-        label.textContent = 'Google Cloud 项目 ID（不是项目名称或数字编号）';
-        const submit = document.createElement('button');
-        submit.type = 'submit';
-        submit.textContent = '使用此项目校验';
-        const help = document.createElement('a');
-        help.href =
-          'https://geminicli.com/docs/get-started/authentication/#set-your-google-cloud-project';
-        help.target = '_blank';
-        help.rel = 'noopener noreferrer';
-        help.textContent = '查看 Google 官方项目配置说明';
-        const projects = document.createElement('a');
-        projects.className = 'button secondary';
-        projects.href = 'https://console.cloud.google.com/cloud-resource-manager';
-        projects.target = '_blank';
-        projects.rel = 'noopener noreferrer';
-        projects.textContent = '打开 Google Cloud 项目列表';
-        const note = document.createElement('p');
-        note.textContent = '使用此凭证对应的 Google 账号登录，复制项目 ID 后填入上方。';
-        form.append(label, input, submit, projects, note, help);
-        form.onsubmit = (event) => {
-          event.preventDefault();
-          run(() => verifyCredentialProject(credential, { project_id: input.value.trim() }));
-        };
-        cell.append(form);
-      }
     }
     throw error;
   }

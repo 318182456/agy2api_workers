@@ -1,6 +1,6 @@
 export const oauthPage = String.raw`<div class="narrow-page"><section class="card"><div class="step-label">01 · 创建授权链接</div><h2>添加 Google 账号</h2>
 <p>生成链接后登录 Google 并授权。完成后若跳转 localhost 页面无法访问，复制地址栏中的完整 URL 粘贴到下方；无需在本地启动服务。链接 10 分钟有效。</p>
-<form id="oauthStart"><label for="oauthMode">授权渠道</label><select id="oauthMode"><option value="antigravity">Antigravity</option><option value="geminicli">GeminiCLI</option></select>
+<form id="oauthStart"><label for="oauthMode">授权渠道</label><select id="oauthMode"><option value="antigravity">Antigravity</option></select>
 <label for="oauthProject">项目 ID（可选，自动校验失败时使用）</label><input id="oauthProject" placeholder="project_id">
 <label for="oauthName">凭证名称（可选）</label><input id="oauthName" maxlength="180"><button>生成 Google 授权链接</button></form>
 <p id="oauthLinkArea" hidden><a id="oauthLink" target="_blank" rel="noopener noreferrer">打开 Google 授权页面</a></p>

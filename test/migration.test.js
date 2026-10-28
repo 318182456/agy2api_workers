@@ -91,7 +91,8 @@ test('sixth tool sort enum is compatible across OpenAI, Anthropic and native inp
   ];
   for (const request of requests) {
     const original = structuredClone(request);
-    for (const mode of ['geminicli', 'antigravity']) {
+    {
+      const mode = 'antigravity';
       const result = normalizeRequest(request, 'model', mode).request;
       assert.equal(result.tools[0].functionDeclarations.length, 6);
       const tool = result.tools[0].functionDeclarations[5];
@@ -132,11 +133,14 @@ test('Antigravity aliases are exact and image normalization preserves generation
   );
   assert.equal(
     normalizeRequest(message, 'gemini-3.1-pro-high', 'antigravity').model,
-    'gemini-pro-agent',
+    'gemini-3.1-pro-high',
   );
   assert.equal(normalizeRequest(message, 'custom-high', 'antigravity').model, 'custom-high');
   assert.equal(normalizeRequest(message, 'constructor', 'antigravity').model, 'constructor');
-  assert.equal(normalizeRequest(message, 'claude-opus-4-6', 'geminicli').model, 'claude-opus-4-6');
+  assert.equal(
+    normalizeRequest(message, 'claude-opus-4-6', 'antigravity').model,
+    'claude-opus-4-6-thinking',
+  );
   const result = normalizeRequest(
     {
       ...message,

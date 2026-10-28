@@ -91,7 +91,7 @@ function quotaGroups() {
   for (const entry of quotaOverviewResults) {
     if (entry.error) continue;
     for (const model of accountQuota(entry)) {
-      const key = JSON.stringify([entry.credential.mode,model.id,entry.credential.mode === 'geminicli' ? entry.credential.id : null,model.tokenType ?? null,model.bucketIndex ?? null]);
+      const key = JSON.stringify([entry.credential.mode,model.id,null,model.tokenType ?? null,model.bucketIndex ?? null]);
       if (!groups.has(key)) groups.set(key,{ id:model.id,mode:entry.credential.mode,tokenType:model.tokenType || null,accounts:[],values:[],unknown:0 });
       const group = groups.get(key); group.accounts.push({ credential:entry.credential,...model });
       if (model.remaining == null) group.unknown++; else group.values.push(model.remaining);
@@ -150,7 +150,7 @@ function renderQuotaOverview() {
   const failed = entries.filter(e=>e.error).length;
   const low = groups.filter(g=>g.values.some(v=>v<=.2)).length;
   el('quotaKpis').replaceChildren();
-  for (const [name,value,hint] of [['已查询账号',entries.length,'成功 '+(entries.length-failed)+' · 失败 '+failed],['返回额度项',groups.length,'按渠道分别统计，GeminiCLI 按账号展示'],['存在低额度的配额项',low,'任一已知账号剩余 ≤ 20%'],['未知额度',groups.filter(g=>g.unknown>0).length,'上游未报告剩余比例']]) {
+  for (const [name,value,hint] of [['已查询账号',entries.length,'成功 '+(entries.length-failed)+' · 失败 '+failed],['返回额度项',groups.length,'按 Gemini / Claude 共享配额分别统计'],['存在低额度的配额项',low,'任一已知账号剩余 ≤ 20%'],['未知额度',groups.filter(g=>g.unknown>0).length,'上游未报告剩余比例']]) {
     const box = ui('a','metric metric-link'); box.setAttribute('href',name==='已查询账号'?'#quotaAccountDetails':'#quotaSummary');
     box.onclick=event=>{ event?.preventDefault(); if(busy) return; const target=el(name==='已查询账号'?'quotaAccountDetails':'quotaSummary'); if(name!=='已查询账号') { el('quotaSearch').value=''; el('quotaStateFilter').value=name==='未知额度'?'unknown':name==='存在低额度的配额项'?'low_or_empty':'all'; quotaModelPage=0; renderQuotaOverview(); } target.scrollIntoView?.({block:'start',behavior:'smooth'}); };
     box.append(ui('small','',name),ui('strong','',value),ui('small','',hint)); el('quotaKpis').append(box);
@@ -161,7 +161,7 @@ function renderQuotaOverview() {
   for (const group of filtered.slice(quotaModelPage*8,quotaModelPage*8+8)) {
     const card = ui('article','quota-model-card');
     const heading = ui('div','quota-card-heading'); heading.append(ui('h3','',group.id+' · '+group.mode+(group.tokenType?' · '+group.tokenType:'')),ui('span','pill '+quotaTone(group.minimum),group.minimum == null ? '未报告' : group.minimum===0 ? '存在耗尽账号' : group.minimum<=.2 ? '存在低额度账号' : '额度充足'));
-    const balance = ui('div','quota-balance'); balance.append(ui('strong','',quotaPercent(group.average)),ui('span','',group.mode==='geminicli'?'剩余比例':'平均剩余'));
+    const balance = ui('div','quota-balance'); balance.append(ui('strong','',quotaPercent(group.average)),ui('span','','平均剩余'));
     const meta = ui('div','quota-meta'); meta.append(ui('span','','最低 '+quotaPercent(group.minimum)),ui('span','',group.values.length+' 个已知 · '+group.unknown+' 个未知'));
     const details = ui('details','quota-breakdown'); details.append(ui('summary','','查看 '+group.accounts.length+' 个账号的额度与重置时间'));
     const list = ui('div','quota-account-list');

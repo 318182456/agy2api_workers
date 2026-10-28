@@ -1,8 +1,10 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
-  "name": "gcli2api",
+  "name": "agy2api_workers",
   "main": "src/index.js",
-  "placement": { "region": "aws:ap-northeast-1" },
+  "placement": {
+    "region": "aws:ap-northeast-1"
+  },
   "compatibility_date": "2025-09-01",
   "workers_dev": true,
   "d1_databases": [
@@ -17,8 +19,6 @@
   "vars": {
     "MAX_CREDENTIAL_ATTEMPTS": "3",
     "USAGE_STORAGE_MODE": "aggregate",
-    "GEMINICLI_CLIENT_ID": "681255809395-oo8ft2oprdrnp9e3aqf6av3hmdib135j.apps.googleusercontent.com",
-    "GEMINICLI_CLIENT_SECRET": "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",
     "ANTIGRAVITY_CLIENT_ID": "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com",
     "ANTIGRAVITY_CLIENT_SECRET": "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"
   },

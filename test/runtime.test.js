@@ -648,7 +648,7 @@ test('production Worker: web settings take effect, backups restore state, duplic
       (await (await admin('/admin/settings')).json()).effective.MAX_CREDENTIAL_ATTEMPTS,
       1,
     );
-    response = await mf.dispatchFetch('https://test/geminicli/v1/models', {
+    response = await mf.dispatchFetch('https://test/antigravity/v1/models', {
       headers: { authorization: 'Bearer api' },
     });
     assert.equal(response.status, 503); // No enabled GeminiCLI credential yet.
@@ -661,7 +661,6 @@ test('production Worker: web settings take effect, backups restore state, duplic
     for (const item of [
       { name: 'active', mode: 'antigravity', disabled: false },
       { name: 'disabled', mode: 'antigravity', disabled: true },
-      { name: 'cli', mode: 'geminicli', disabled: false },
     ]) {
       response = await admin('/admin/credentials', 'POST', { ...item, credential });
       assert.equal(response.status, 201, await response.clone().text());
@@ -813,7 +812,7 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
       await db.exec((await readFile('migrations/' + name, 'utf8')).replaceAll('\n', ' '));
     for (const [id, mode, token] of [
       ['11111111-1111-4111-8111-111111111111', 'antigravity', 'anti-token'],
-      ['22222222-2222-4222-8222-222222222222', 'geminicli', 'cli-token'],
+      ['22222222-2222-4222-8222-222222222222', 'antigravity', 'cli-token'],
     ])
       await db
         .prepare(
@@ -822,7 +821,7 @@ test('production Worker: Messages works on both channels with SDK headers, SSE, 
         .bind(
           id,
           mode,
-          mode,
+          id,
           JSON.stringify({ project_id: 'p', token, expiry: '2099-01-01T00:00:00Z' }),
           1,
         )

@@ -706,7 +706,7 @@ test('node quota cache bypasses primary DO, scopes keys, invalidates and falls b
     try {
       const quota = {
         credentialId: id,
-        mode: 'geminicli',
+        mode: 'antigravity',
         queriedAt: new Date().toISOString(),
         models: [{ id: 'gemini-test', remaining: 0.5, access_token: 'must-not-store' }],
         access_token: 'must-not-store',
@@ -1340,3 +1340,140 @@ test('Worker instances coalesce and cache coordinator schedules until preheat or
   await storageSchedule(env, nodes, end - 30000);
   assert.equal(calls, 2);
 });
+function renameMock(row, options = {}) {
+  const namespace = 'c'.repeat(32);
+  const target = row.worker_name.replace('gcli2api-', 'agy2api-');
+  let moved = !!options.alreadyMoved;
+  let project;
+  const calls = [];
+  const fetcher = async (url, init = {}) => {
+    const path = new URL(url).pathname;
+    calls.push([init.method || 'GET', path]);
+    const ok = (result) => Response.json({ success: true, result });
+    const missing = () => Response.json({ success: false }, { status: 404 });
+    if (url.startsWith('https://api.cloudflare.com/')) {
+      assert.equal(init.headers.authorization, 'Bearer ' + token);
+      if (path.endsWith('/settings')) {
+        const current = path.includes('/' + target + '/');
+        if (current ? !moved && !options.collision : moved) return missing();
+        return ok({
+          bindings: [
+            { name: 'NODE_ID', text: options.collision && current ? 'another-node' : row.id },
+            { name: 'STORAGE', namespace_id: namespace },
+          ],
+        });
+      }
+      if (path.endsWith('/workers/workers/' + row.worker_name)) {
+        if (init.method === 'PATCH') {
+          assert.deepEqual(JSON.parse(init.body), { name: target });
+          moved = true;
+          if (options.lostAcknowledgement && !options.failedOnce) {
+            options.failedOnce = true;
+            throw new Error('network');
+          }
+          return ok({ id: 'unchanged-worker-id', name: target });
+        }
+        return ok({ id: 'unchanged-worker-id', name: row.worker_name });
+      }
+      if (path.endsWith('/deployments') && init.method === 'POST') {
+        assert.equal(await init.body.get('_worker.js').text(), storagePagesSource);
+        return ok({ id: 'new-deployment', latest_stage: { status: 'success' } });
+      }
+      if (path.endsWith('/pages/projects') && init.method === 'POST') {
+        project = JSON.parse(init.body);
+        assert.equal(
+          project.deployment_configs.production.durable_object_namespaces.STORAGE.namespace_id,
+          namespace,
+        );
+        return ok({ ...project, subdomain: target + '.pages.dev' });
+      }
+      if (path.endsWith('/pages/projects/' + target))
+        return project ? ok({ ...project, subdomain: target + '.pages.dev' }) : missing();
+      throw new Error('unexpected request ' + path);
+    }
+    assert.equal(url, 'https://' + target + '.pages.dev/self-test');
+    assert.equal(init.headers.authorization, 'Bearer ' + row.node_secret);
+    if (options.badProbe) return Response.json({ success: false }, { status: 500 });
+    return Response.json({ success: true, node_id: row.id, protocol: 1, storage: 'sqlite-do' });
+  };
+  return { fetcher, calls };
+}
+async function legacyStorageNode(env) {
+  const setup = cloudMock();
+  const response = await handleRequest(
+    request('', 'POST', { email: 'cf@example.test', token }),
+    env,
+    setup.fetcher,
+  );
+  assert.equal(response.status, 201);
+  const row = await env.DB.prepare('SELECT * FROM storage_nodes').first();
+  row.worker_name = row.worker_name.replace('agy2api-', 'gcli2api-');
+  row.url = 'https://' + row.worker_name + '.pages.dev';
+  await env.DB.prepare('UPDATE storage_nodes SET worker_name=?,url=? WHERE id=?')
+    .bind(row.worker_name, row.url, row.id)
+    .run();
+  return row;
+}
+test('node resource rename preserves namespace, identity, activation and secrets; repeats are harmless', () =>
+  database(async (env) => {
+    const row = await legacyStorageNode(env);
+    const mock = renameMock(row);
+    let response = await handleRequest(
+      request('/' + row.id + '/rename', 'POST'),
+      env,
+      mock.fetcher,
+    );
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json();
+    assert.equal(result.namespace_preserved, true);
+    assert.ok(!JSON.stringify(result).includes(token));
+    const saved = await env.DB.prepare('SELECT * FROM storage_nodes WHERE id=?')
+      .bind(row.id)
+      .first();
+    assert.equal(saved.worker_name, row.worker_name.replace('gcli2api-', 'agy2api-'));
+    assert.equal(saved.activated_at, row.activated_at);
+    assert.equal(saved.node_secret, row.node_secret);
+    assert.equal(saved.status, 'ready');
+    assert.ok(!mock.calls.some(([method]) => method === 'DELETE' || method === 'PUT'));
+    const count = mock.calls.length;
+    response = await handleRequest(request('/' + row.id + '/rename', 'POST'), env, mock.fetcher);
+    assert.equal((await response.json()).unchanged, true);
+    assert.equal(mock.calls.length, count);
+  }));
+test('node rename stops at name collision or failed probe without changing the original address', () =>
+  database(async (env) => {
+    const row = await legacyStorageNode(env);
+    for (const options of [{ collision: true }, { badProbe: true }]) {
+      const mock = renameMock(row, options);
+      const response = await handleRequest(
+        request('/' + row.id + '/rename', 'POST'),
+        env,
+        mock.fetcher,
+      );
+      assert.ok(response.status >= 400);
+      const saved = await env.DB.prepare('SELECT * FROM storage_nodes WHERE id=?')
+        .bind(row.id)
+        .first();
+      assert.equal(saved.worker_name, row.worker_name);
+      assert.equal(saved.url, row.url);
+      assert.equal(saved.status, 'ready');
+      assert.ok(!mock.calls.some(([method]) => method === 'PATCH'));
+      Object.assign(row, saved);
+    }
+  }));
+test('node rename recovers after Worker rename succeeds but its acknowledgement is lost', () =>
+  database(async (env) => {
+    let row = await legacyStorageNode(env);
+    const mock = renameMock(row, { lostAcknowledgement: true });
+    let response = await handleRequest(
+      request('/' + row.id + '/rename', 'POST'),
+      env,
+      mock.fetcher,
+    );
+    assert.equal(response.status, 502);
+    row = await env.DB.prepare('SELECT * FROM storage_nodes WHERE id=?').bind(row.id).first();
+    assert.ok(row.worker_name.startsWith('gcli2api-'));
+    response = await handleRequest(request('/' + row.id + '/rename', 'POST'), env, mock.fetcher);
+    assert.equal(response.status, 200, await response.clone().text());
+    assert.equal(mock.calls.filter(([method]) => method === 'PATCH').length, 1);
+  }));

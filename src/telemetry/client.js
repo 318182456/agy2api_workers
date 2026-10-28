@@ -93,6 +93,7 @@ export async function cachedQuota(env, id) {
   const remote = await readNodeCache(env, 'quota', id);
   if (
     remote?.value?.credentialId === id &&
+    remote.value.mode === 'antigravity' &&
     remote.value.success === true &&
     Array.isArray(remote.value.models) &&
     Date.parse(remote.value.queriedAt) <= Date.now() &&
@@ -109,7 +110,10 @@ export async function cachedQuota(env, id) {
   if (!stub) return null;
   try {
     const response = await stub.fetch('https://telemetry/quota/' + id);
-    if (response.ok) return await response.json();
+    if (response.ok) {
+      const value = await response.json();
+      if (value.mode === 'antigravity') return value;
+    }
   } catch {
     /* A cache failure does not prevent an explicit Google quota query. */
   }

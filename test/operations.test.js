@@ -1,10 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel, Response as OutboundResponse } from 'miniflare';
 import { webcrypto } from 'node:crypto';
-import { weightedChoice, selectCredential } from '../src/credentials/index.js';
+import { weightedChoice, selectCredential, listCredentials } from '../src/credentials/index.js';
+import { importArchive, exportArchive } from '../src/credentials/archive.js';
+import { importCredential } from '../src/credentials/index.js';
+import { writeZip } from '../src/core/zip.js';
 import { filters } from '../src/telemetry/filters.js';
 import { pruneTelemetry } from '../src/telemetry/maintenance.js';
 import { reportedUsage, recordUsage } from '../src/telemetry/index.js';
@@ -482,6 +485,109 @@ test('production Worker: final usage, account health, selection, scoped log expo
           .first()
       ).count,
       0,
+    );
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('retired credential rows remain stored but cannot appear in Antigravity listing or selection', async () => {
+  const mf = new Miniflare({
+    modules: true,
+    script: 'export default {fetch(){return new Response("ok")}}',
+    compatibilityDate: '2025-09-01',
+    d1Databases: ['DB'],
+    log: new Log(LogLevel.NONE),
+  });
+  try {
+    const DB = await mf.getD1Database('DB');
+    for (const file of (await readdir('migrations')).filter((f) => f.endsWith('.sql')).sort())
+      await DB.exec((await readFile('migrations/' + file, 'utf8')).replaceAll('\n', ' '));
+    // The legacy row deliberately uses the historical schema value; no runtime path supports it.
+    for (const [id, mode] of [
+      [a, 'geminicli'],
+      [b, 'antigravity'],
+    ])
+      await DB.prepare('INSERT INTO credentials(id,mode,name,data,created_at)VALUES(?,?,?,?,?)')
+        .bind(
+          id,
+          mode,
+          id,
+          JSON.stringify({
+            token: 'fixture',
+            project_id: 'project',
+            expiry: '2099-01-01T00:00:00Z',
+          }),
+          Date.now(),
+        )
+        .run();
+    const listed = await listCredentials(DB, {}, { basic: true });
+    assert.deepEqual(
+      listed.map((row) => row.id),
+      [b],
+    );
+    assert.equal((await selectCredential(DB, 'antigravity', 'model')).id, b);
+    assert.equal(await DB.prepare('SELECT COUNT(*) AS n FROM credentials').first('n'), 2);
+    await assert.rejects(selectCredential(DB, 'unsupported', 'model'), { status: 400 });
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('renamed credential ZIP backups restore credentials and metadata, including legacy format', async () => {
+  const mf = new Miniflare({
+    modules: true,
+    script: 'export default {fetch(){return new Response("ok")}}',
+    compatibilityDate: '2025-09-01',
+    d1Databases: ['DB'],
+    log: new Log(LogLevel.NONE),
+  });
+  try {
+    const DB = await mf.getD1Database('DB');
+    for (const file of (await readdir('migrations')).filter((file) => file.endsWith('.sql')).sort())
+      await DB.exec((await readFile('migrations/' + file, 'utf8')).replaceAll('\n', ' '));
+    const entry = {
+      mode: 'antigravity',
+      name: 'backup-original',
+      priority: 7,
+      weight: 3,
+      disabled: true,
+      credential: { project_id: 'backup-project', refresh_token: 'fixture-backup-refresh' },
+    };
+    await importCredential(DB, entry);
+    const original = await DB.prepare('SELECT * FROM credentials').first();
+    const exported = await exportArchive({ DB }, [original.id]);
+    assert.match(exported.headers.get('content-disposition'), /agy2api-credentials/);
+    const zip = await exported.arrayBuffer();
+    await DB.prepare('DELETE FROM credentials').run();
+    let response = await importArchive(
+      new Request('https://test/import', { method: 'POST', body: zip }),
+      { DB },
+      'antigravity',
+    );
+    assert.equal((await response.json()).imported, 1);
+    const restored = await DB.prepare('SELECT * FROM credentials').first();
+    for (const key of ['name', 'mode', 'priority', 'weight', 'disabled'])
+      assert.equal(restored[key], original[key]);
+    assert.equal(JSON.parse(restored.data).refresh_token, entry.credential.refresh_token);
+    const legacy = writeZip([
+      {
+        name: 'old.json',
+        data: JSON.stringify({
+          format: 'gcli2api-workers-credential-v1',
+          entry: { ...entry, name: 'legacy' },
+        }),
+      },
+    ]);
+    response = await importArchive(
+      new Request('https://test/import', { method: 'POST', body: legacy }),
+      { DB },
+      'antigravity',
+    );
+    assert.equal((await response.json()).imported, 1);
+    assert.equal(
+      (await DB.prepare('SELECT name FROM credentials WHERE name=?').bind('legacy').first()).name,
+      'legacy',
     );
   } finally {
     await mf.dispose();

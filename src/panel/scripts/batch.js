@@ -31,7 +31,10 @@ function batchLine(text) {
 }
 function downloadJson(value, filename) {
   const blob = new Blob([JSON.stringify(value, null, 2)], { type: 'application/json' });
-  if (value.format === 'gcli2api-workers-credentials-v1' && blob.size > 4 * 1024 * 1024)
+  if (
+    ['agy2api-workers-credentials-v1', 'gcli2api-workers-credentials-v1'].includes(value.format) &&
+    blob.size > 4 * 1024 * 1024
+  )
     throw new Error('备份超过 4 MiB，请减少选中项后分批导出。');
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
@@ -61,7 +64,7 @@ el('batchRun').onclick = () => {
       const url = URL.createObjectURL(blob),
         link = document.createElement('a');
       link.href = url;
-      link.download = 'gcli2api-credentials.zip';
+      link.download = 'agy2api-credentials.zip';
       document.body.append(link);
       link.click();
       link.remove();
@@ -113,8 +116,8 @@ el('batchRun').onclick = () => {
       }
       if (action === 'export' && exported.length && !stopBatch)
         downloadJson(
-          { format: 'gcli2api-workers-credentials-v1', credentials: exported },
-          'gcli2api-credentials-' + Date.now() + '.json',
+          { format: 'agy2api-workers-credentials-v1', credentials: exported },
+          'agy2api-credentials-' + Date.now() + '.json',
         );
       await refresh();
       status(
@@ -164,7 +167,9 @@ el('batchImportForm').onsubmit = (event) => {
 
           const value = JSON.parse(await file.text());
           entries =
-            value.format === 'gcli2api-workers-credentials-v1' && Array.isArray(value.credentials)
+            ['agy2api-workers-credentials-v1', 'gcli2api-workers-credentials-v1'].includes(
+              value.format,
+            ) && Array.isArray(value.credentials)
               ? value.credentials
               : [{ name: file.name, credential: value }];
           if (entries.length > 1000) throw new Error('单份备份最多 1000 个凭证');

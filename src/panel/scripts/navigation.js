@@ -114,7 +114,7 @@ function showPage(id, historyMode = 'push', params) {
   el('pageTitle').textContent = page.title;
   el('pageDescription').textContent = page.description;
   el('pageBreadcrumb').textContent = page.title;
-  document.title = page.title + ' · GCLI2API Workers';
+  document.title = page.title + ' · AGY2API Workers';
   if (historyMode && typeof scrollTo === 'function') scrollTo({ top: 0, behavior: 'auto' });
   const query = params?.toString();
   const search = params

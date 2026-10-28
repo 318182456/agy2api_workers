@@ -78,7 +78,7 @@ export class TelemetryBuffer {
         nodes.some(
           (node) =>
             !/^[a-f0-9-]{36}$/.test(node.id) ||
-            !/^gcli2api-storage-[a-f0-9]{12}$/.test(node.worker_name) ||
+            !/^(?:gcli2api|agy2api)-storage-[a-f0-9]{12}$/.test(node.worker_name) ||
             node.url !== 'https://' + node.worker_name + '.pages.dev' ||
             !/^[a-f0-9]{64}$/.test(node.node_secret),
         )
@@ -101,7 +101,7 @@ export class TelemetryBuffer {
         const value = await request.json();
         if (
           value.credentialId !== quotaId ||
-          !['geminicli', 'antigravity'].includes(value.mode) ||
+          value.mode !== 'antigravity' ||
           !Number.isFinite(Date.parse(value.queriedAt)) ||
           !Array.isArray(value.models) ||
           value.models.length > 2000

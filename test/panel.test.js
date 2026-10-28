@@ -139,7 +139,7 @@ test('management script: batch continues after one failure and exports/imports c
   await el('batchRun').onclick();
   assert.equal(downloads.length, 1);
   const backup = JSON.parse(await downloads[0].text());
-  assert.equal(backup.format, 'gcli2api-workers-credentials-v1');
+  assert.equal(backup.format, 'agy2api-workers-credentials-v1');
   assert.equal(backup.credentials[0].disabled, true);
   assert.equal(backup.credentials[0].credential.refresh_token, 'test-refresh-secret');
   assert.doesNotMatch(el('batchResults').textContent, /test-refresh-secret/);
@@ -234,7 +234,7 @@ test('management script: quota failures continue, stop works, stats/health and s
     },
     { id: 'b', name: 'B', mode: 'antigravity' },
     { id: 'c', name: 'C', mode: 'antigravity', disabled: 1 },
-    { id: 'd', name: 'D', mode: 'geminicli' },
+    { id: 'd', name: 'D', mode: 'antigravity' },
   ];
   const requests = [];
   let stopOnFirst = false;
@@ -558,7 +558,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
     id: String(i),
     name: 'account-' + i,
     user_email: 'user' + i + '@example.test',
-    mode: i % 2 ? 'geminicli' : 'antigravity',
+    mode: i % 2 ? 'antigravity' : 'antigravity',
     disabled: i % 3 === 0 ? 1 : 0,
   }));
   const calls = [];
@@ -611,7 +611,7 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   assert.equal(el('workspace').hidden, false);
   assert.equal(el('page-logs').hidden, false);
   assert.equal(el('page-overview').hidden, true);
-  assert.equal(document.title, '问题一览 · GCLI2API Workers');
+  assert.equal(document.title, '问题一览 · AGY2API Workers');
   assert.equal(
     calls.some((path) => path.startsWith('/admin/stats')),
     false,
@@ -640,8 +640,8 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   assert.equal(el('credentialsNext').hidden, true);
   el('credentialMode').value = 'antigravity';
   el('credentialMode').onchange();
-  assert.equal(el('credentials').children.length, 0);
-  assert.equal(el('credentialsEmpty').hidden, false);
+  assert.equal(el('credentials').children.length, 2);
+  assert.equal(el('credentialsEmpty').hidden, true);
   await el('nav-overview').onclick({ preventDefault() {} });
   assert.equal(calls.filter((path) => path.startsWith('/admin/stats?')).length, 1);
   el('stats-tab-models').onclick();
@@ -680,13 +680,16 @@ test('management pages: deep-link restore, lazy loading, history, retained input
   vm.runInContext(
     `quotaOverviewResults = [
     {credential:{id:'ag',mode:'antigravity',name:'same-email'},value:{models:[{id:'same-model',remaining:.8}]}},
-    {credential:{id:'cli',mode:'geminicli',name:'same-email'},value:{models:[{id:'same-model',remaining:.4,bucketIndex:0}]}}
+    {credential:{id:'cli',mode:'antigravity',name:'same-email'},value:{models:[{id:'same-model',remaining:.4,bucketIndex:0}]}}
   ]`,
     context,
   );
   assert.equal(vm.runInContext('quotaGroups().length', context), 2);
   assert.equal(
-    vm.runInContext('quotaGroups().find(g=>g.mode==="geminicli").average', context),
+    vm.runInContext(
+      'quotaGroups().find(g=>g.accounts.some(a=>a.credential.id==="cli")).average',
+      context,
+    ),
     0.4,
   );
 });

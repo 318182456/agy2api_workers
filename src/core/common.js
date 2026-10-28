@@ -72,7 +72,7 @@ export async function authenticate(request, secret, allowQuery = false) {
 }
 
 export function modeValue(value) {
-  if (!['geminicli', 'antigravity'].includes(value)) throw new HttpError(400, '未知凭证模式');
+  if (value !== 'antigravity') throw new HttpError(400, '未知凭证模式');
   return value;
 }
 

@@ -8,7 +8,6 @@ import { invalidateTelemetryMetadata } from '../telemetry/client.js';
 import { dbCache } from '../cache/db.js';
 import { runtimeLocation } from '../core/runtime-location.js';
 import { importArchive, exportArchive } from '../credentials/archive.js';
-import { configurePreview } from '../credentials/preview.js';
 import { HttpError, json, readJson, operation } from '../core/common.js';
 import {
   oauthClients,
@@ -51,7 +50,7 @@ export async function adminRoute(request, env, fetcher) {
   if (
     response.ok &&
     ['POST', 'PATCH', 'DELETE'].includes(request.method) &&
-    (/^\/admin\/credentials(?:$|\/import\.zip$|\/[a-f0-9-]{36}(?:$|\/(?:verify|email|preview|credits)$))/.test(
+    (/^\/admin\/credentials(?:$|\/import\.zip$|\/[a-f0-9-]{36}(?:$|\/(?:verify|email|credits)$))/.test(
       path,
     ) ||
       /^\/admin\/api-keys(?:$|\/import$|\/[a-f0-9-]{36}$)/.test(path))
@@ -132,7 +131,7 @@ async function dispatchAdmin(request, env, fetcher) {
     );
   }
   const accountMatch = url.pathname.match(
-    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|test|download|preview|credits)$/,
+    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|test|download|credits)$/,
   );
   if (accountMatch) {
     const action = accountMatch[2];
@@ -147,11 +146,6 @@ async function dispatchAdmin(request, env, fetcher) {
       await saveData(env.DB, row, { enable_credit: enabled });
       return json({ success: true, enabled });
     }
-    if (action === 'preview')
-      return json(
-        await operation('preview_configure', () => configurePreview(accountEnv, row, fetcher)),
-      );
-    if (action === 'email') return json(await fetchEmail(accountEnv, row, fetcher));
     if (action === 'verify')
       return json(
         await verifyProject(accountEnv, row, fetcher, request.body ? await readJson(request) : {}),

@@ -1,4 +1,4 @@
-// Fold model aliases once per account. Different channels and CLI quota types stay separate.
+// Fold model aliases once per account. Shared model aliases remain in their family.
 // A reset timestamp alone cannot identify a five-hour or weekly quota window.
 export function groupQuotaModels(models, mode = 'antigravity') {
   const groups = new Map();
@@ -12,7 +12,7 @@ export function groupQuotaModels(models, mode = 'antigravity') {
       groups.set(JSON.stringify(['raw', model.id, model.bucketIndex]), { ...model });
       continue;
     }
-    const key = JSON.stringify([family, mode === 'geminicli' ? model.tokenType || '' : '']);
+    const key = JSON.stringify([family]);
     if (!groups.has(key))
       groups.set(key, {
         id: family,
@@ -36,7 +36,7 @@ export function groupQuotaModels(models, mode = 'antigravity') {
       : null;
     group.inconsistent =
       new Set(known.map((model) => model.remaining)).size > 1 || new Set(resets).size > 1;
-    // A quantity from one CLI bucket cannot be summed or attributed to another bucket.
+    // Preserve explicit quantities only for a single reported bucket.
     if (group.members.length === 1) group.remainingAmount = group.members[0].remainingAmount;
     return group;
   });

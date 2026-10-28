@@ -33,7 +33,7 @@ const candidate = (text = '你好') => ({
 const rowData = () => ({ token: 'token', project_id: 'project', expiry: '2099-01-01T00:00:00Z' });
 function fakeDB(data = rowData()) {
   const calls = [];
-  const row = { id: '1', mode: 'geminicli', data: JSON.stringify(data) };
+  const row = { id: '1', mode: 'antigravity', data: JSON.stringify(data) };
   return {
     calls,
     prepare(sql) {
@@ -66,7 +66,7 @@ const stream = (text) =>
 test('health and management page work without passwords or D1', async () => {
   assert.equal((await handleRequest(request('/health'), {})).status, 200);
   const response = await handleRequest(request('/'), {});
-  assert.match(await response.text(), /GCLI2API Workers/);
+  assert.match(await response.text(), /AGY2API Workers/);
   assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
 });
 
@@ -89,12 +89,15 @@ test('models require dynamic discovery, Gemini query keys work and admin has no 
   assert.equal(response.status, 503);
   assert.equal(response.headers.get('access-control-allow-origin'), '*');
   const native = await handleRequest(
-    new Request('https://x/geminicli/v1beta/models?key=api-secret'),
+    new Request('https://x/antigravity/v1beta/models?key=api-secret'),
     { ...env, DB: fakeDB() },
     async (url, options) => {
-      assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota');
-      assert.deepEqual(JSON.parse(options.body), { project: 'project' });
-      return Response.json({ buckets: [{ modelId: 'gemini-dynamic', remainingFraction: 0.5 }] });
+      assert.equal(
+        url,
+        'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+      );
+      assert.deepEqual(JSON.parse(options.body), {});
+      return Response.json({ models: { 'gemini-dynamic': {} } });
     },
   );
   assert.equal(native.status, 200);
@@ -247,7 +250,7 @@ test('import stores only known credential fields and never exposes token_uri', a
       name: 'test',
       credential: { project_id: 'p', refresh_token: 'r', token_uri: 'https://evil.example' },
     },
-    { GEMINICLI_CLIENT_ID: 'test-client', GEMINICLI_CLIENT_SECRET: 'test-secret' },
+    { ANTIGRAVITY_CLIENT_ID: 'test-client', ANTIGRAVITY_CLIENT_SECRET: 'test-secret' },
   );
   const saved = JSON.parse(db.calls[0].args[3]);
   assert.equal(saved.refresh_token, 'r');
@@ -283,7 +286,7 @@ test('refresh posts only to Google and persists rotated refresh tokens', async (
 test('full OpenAI and native routes use stored credentials and correct upstream envelopes', async () => {
   const db = fakeDB();
   const fetcher = async (url, options) => {
-    assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal:generateContent');
+    assert.equal(url, 'https://daily-cloudcode-pa.googleapis.com/v1internal:generateContent');
     assert.equal(options.headers.authorization, 'Bearer token');
     const payload = JSON.parse(options.body);
     assert.equal(payload.project, 'project');
@@ -566,7 +569,7 @@ test('known OAuth client prevents import into the wrong channel', async () => {
     importCredential(
       db,
       {
-        mode: 'geminicli',
+        mode: 'unsupported',
         credential: {
           project_id: 'p',
           refresh_token: 'r',
@@ -575,7 +578,7 @@ test('known OAuth client prevents import into the wrong channel', async () => {
       },
       env,
     ),
-    /属于 antigravity/,
+    /未知凭证模式/,
   );
   assert.equal(db.calls.length, 0);
 });
@@ -592,7 +595,7 @@ test('credential metadata reports detected mode without exposing stored tokens',
               {
                 id: quotaId,
                 name: 'a',
-                mode: 'geminicli',
+                mode: 'antigravity',
                 disabled: 0,
                 data: JSON.stringify(data),
               },
@@ -604,7 +607,7 @@ test('credential metadata reports detected mode without exposing stored tokens',
   };
   const result = await listCredentials(db, env);
   assert.equal(result[0].detected_mode, 'antigravity');
-  assert.equal(result[0].mode, 'geminicli');
+  assert.equal(result[0].mode, 'antigravity');
   assert.equal(result[0].data, undefined);
   assert.equal(JSON.stringify(result).includes('client_id'), false);
   assert.equal(JSON.stringify(result).includes('token'), false);
@@ -612,7 +615,7 @@ test('credential metadata reports detected mode without exposing stored tokens',
 
 test('repair mode via admin endpoint preserves enabled state without changing token data', async () => {
   const data = { ...rowData(), client_id: 'test-antigravity-client' };
-  const db = quotaDB('geminicli', data);
+  const db = quotaDB('antigravity', data);
   const response = await handleRequest(
     request('/admin/credentials/' + quotaId, { mode: 'antigravity' }, 'panel-secret', 'PATCH'),
     { ...env, DB: db },
@@ -628,14 +631,14 @@ test('mode repair rejects known incompatible target, missing row, and duplicate 
   const { updateCredential } = await import('../src/credentials/index.js');
   const data = { ...rowData(), client_id: 'test-antigravity-client' };
   await assert.rejects(
-    updateCredential(quotaDB('antigravity', data), quotaId, { mode: 'geminicli' }, env),
-    /不能改为/,
+    updateCredential(quotaDB('antigravity', data), quotaId, { mode: 'unsupported' }, env),
+    /未知凭证模式/,
   );
   await assert.rejects(
     updateCredential(quotaDB('antigravity', data, false), quotaId, { mode: 'antigravity' }),
     /不存在/,
   );
-  const db = quotaDB('geminicli', data);
+  const db = quotaDB('antigravity', data);
   const original = db.prepare.bind(db);
   db.prepare = (sql) => {
     const statement = original(sql);
@@ -653,10 +656,10 @@ test('mode repair rejects known incompatible target, missing row, and duplicate 
 
 test('disabled PATCH still works for incorrectly categorized old credentials', async () => {
   const { updateCredential } = await import('../src/credentials/index.js');
-  const db = quotaDB('geminicli', { ...rowData(), client_id: 'test-antigravity-client' });
+  const db = quotaDB('antigravity', { ...rowData(), client_id: 'test-antigravity-client' });
   await updateCredential(db, quotaId, { disabled: false });
   assert.deepEqual(db.calls.find((call) => call.sql.startsWith('UPDATE')).args, [
-    'geminicli',
+    'antigravity',
     0,
     quotaId,
   ]);
@@ -687,9 +690,9 @@ test('503 identifies the selected mode and its Base URL', async () => {
   );
   assert.equal(response.status, 503);
   const value = await response.json();
-  assert.match(value.error.message, /antigravity 渠道/);
-  assert.match(value.error.message, /已启用/);
-  assert.match(value.error.message, /\/antigravity\/v1/);
+  assert.match(value.error.message, /Antigravity/);
+  assert.match(value.error.message, /启用/);
+  assert.match(value.error.message, /凭证/);
 });
 
 test('OAuth network failure and malformed token responses return 502 rather than database error', async () => {
@@ -812,7 +815,7 @@ test('cookie-authenticated management writes require a same-origin request', asy
   const path = 'https://example.com/admin/credentials';
   const body = {
     name: 'new',
-    mode: 'geminicli',
+    mode: 'antigravity',
     credential: { project_id: 'p', refresh_token: 'r' },
   };
   const send = (origin) =>
@@ -897,88 +900,6 @@ test('OAuth endpoints reject unauthenticated callers, forged and malformed callb
   }
 });
 
-test('GeminiCLI verifies its managed project through Code Assist rather than unrelated Cloud projects', async () => {
-  const { verifyProject } = await import('../src/credentials/account.js');
-  const db = fakeDB();
-  const row = {
-    id: '1',
-    mode: 'geminicli',
-    data: { token: 'token', expiry: '2099-01-01T00:00:00Z' },
-  };
-  const fetcher = async (url, options) => {
-    assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist');
-    assert.equal(JSON.parse(options.body).metadata.pluginType, 'GEMINI');
-    return Response.json({
-      currentTier: { id: 'free-tier' },
-      cloudaicompanionProject: 'managed-project',
-    });
-  };
-  assert.equal((await verifyProject({ DB: db }, row, fetcher)).project_id, 'managed-project');
-  assert.equal(row.data.project_id, 'managed-project');
-  assert.ok(
-    db.calls.some(
-      (call) =>
-        call.sql.startsWith('UPDATE credentials') &&
-        JSON.parse(call.args[0]).project_id === 'managed-project',
-    ),
-  );
-});
-
-test('GeminiCLI onboarding keeps free requests projectless and resumes a pending operation', async () => {
-  const { verifyProject } = await import('../src/credentials/account.js');
-  const db = fakeDB();
-  const row = {
-    id: '1',
-    mode: 'geminicli',
-    data: { token: 'token', expiry: '2099-01-01T00:00:00Z' },
-  };
-  let onboardCalls = 0;
-  const fetcher = async (url, options) => {
-    if (url.endsWith(':loadCodeAssist'))
-      return Response.json({ allowedTiers: [{ id: 'free-tier', isDefault: true }] });
-    if (url.endsWith(':onboardUser')) {
-      onboardCalls++;
-      const body = JSON.parse(options.body);
-      assert.equal(body.cloudaicompanionProject, undefined);
-      assert.equal(body.tierId, 'free-tier');
-      return Response.json({ name: 'operations/local-fixture', done: false });
-    }
-    assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal/operations/local-fixture');
-    assert.equal(options.method, 'GET');
-    return Response.json({
-      done: true,
-      response: { cloudaicompanionProject: { id: 'managed-new' } },
-    });
-  };
-  await assert.rejects(verifyProject({ DB: db }, row, fetcher), (error) => error.status === 409);
-  assert.equal(row.data.project_verification_operation, 'operations/local-fixture');
-  assert.equal((await verifyProject({ DB: db }, row, fetcher)).project_id, 'managed-new');
-  assert.equal(row.data.project_verification_operation, null);
-  assert.equal(onboardCalls, 1);
-});
-
-test('GeminiCLI never claims verification success without a project or ignores account verification', async () => {
-  const { verifyProject } = await import('../src/credentials/account.js');
-  for (const value of [
-    { currentTier: { id: 'standard-tier' } },
-    { ineligibleTiers: [{ reasonCode: 'VALIDATION_REQUIRED' }] },
-  ]) {
-    const db = fakeDB();
-    await assert.rejects(
-      verifyProject(
-        { DB: db },
-        { id: '1', mode: 'geminicli', data: { token: 'token', expiry: '2099-01-01T00:00:00Z' } },
-        async () => Response.json(value),
-      ),
-      (error) => error.status === 400,
-    );
-    assert.equal(
-      db.calls.some((call) => call.sql.startsWith('UPDATE credentials')),
-      false,
-    );
-  }
-});
-
 test('Antigravity OpenAI and Gemini model lists come from Google without vars or exposing quotas', async () => {
   const local = { ...env, DB: fakeDB() };
   const fetcher = async (url, options) => {
@@ -1031,33 +952,6 @@ test('a successful empty Google list stays empty rather than inventing available
   assert.deepEqual((await response.json()).data, []);
 });
 
-test('admin inspects dynamic model sources and GeminiCLI uses quota model IDs without calling Antigravity', async () => {
-  let response = await handleRequest(
-    request('/admin/models?mode=antigravity', null, 'panel-secret'),
-    { ...env, DB: fakeDB() },
-    async () => Response.json({ models: { real: {} } }),
-  );
-  assert.equal((await response.json()).source, 'google');
-  response = await handleRequest(
-    request('/admin/models?mode=geminicli', null, 'panel-secret'),
-    { ...env, DB: fakeDB() },
-    async (url) => {
-      assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota');
-      return Response.json({
-        buckets: [
-          { modelId: 'gemini-b' },
-          { modelId: 'gemini-a' },
-          { modelId: 'gemini-a' },
-          { tokenType: 'REQUESTS' },
-        ],
-      });
-    },
-  );
-  const value = await response.json();
-  assert.equal(value.source, 'quota');
-  assert.deepEqual(value.ids, ['gemini-a', 'gemini-b']);
-});
-
 test('dynamic discovery refreshes an expired credential and retries an upstream 401 once', async () => {
   let count = 0;
   let refreshes = 0;
@@ -1091,13 +985,13 @@ test('known Gemini thinking profiles translate effort, budget and suffixes witho
       thinkingConfig: { thinkingBudget: 999999, includeThoughts: true },
     },
   };
-  let result = normalizeRequest(original, 'gemini-2.5-flash', 'geminicli');
+  let result = normalizeRequest(original, 'gemini-2.5-flash', 'antigravity');
   assert.equal(result.request.generationConfig.thinkingConfig.thinkingBudget, 24576);
   assert.equal(result.request.generationConfig.maxOutputTokens, 10);
   assert.equal(original.generationConfig.thinkingConfig.thinkingBudget, 999999);
-  result = normalizeRequest(original, 'gemini-3-pro-preview-low-search', 'geminicli');
-  assert.equal(result.model, 'gemini-3-pro-preview');
-  assert.equal(result.request.generationConfig.thinkingConfig.thinkingLevel, 'low');
+  result = normalizeRequest(original, 'gemini-3-pro-preview-low-search', 'antigravity');
+  assert.equal(result.model, 'gemini-3-pro-preview-low');
+  assert.equal(result.request.generationConfig.thinkingConfig.thinkingLevel, undefined);
   assert.equal(result.request.generationConfig.thinkingConfig.thinkingBudget, undefined);
   assert.deepEqual(result.request.tools, [{ googleSearch: {} }]);
   const converted = openaiToGemini({
@@ -1105,10 +999,10 @@ test('known Gemini thinking profiles translate effort, budget and suffixes witho
     reasoning_effort: 'none',
     messages: [{ role: 'user', content: 'hi' }],
   });
-  result = normalizeRequest(converted, 'gemini-2.5-pro', 'geminicli');
+  result = normalizeRequest(converted, 'gemini-2.5-pro', 'antigravity');
   assert.equal(result.request.generationConfig.thinkingConfig.thinkingBudget, 128);
   assert.equal(result.request._reasoningEffort, undefined);
-  assert.equal(normalizeRequest(original, 'custom-high', 'geminicli').model, 'custom-high');
+  assert.equal(normalizeRequest(original, 'custom-high', 'antigravity').model, 'custom-high');
 });
 
 test('message cleanup preserves tool signatures and drops only model-specific trailing prefill', async () => {
@@ -1124,7 +1018,7 @@ test('message cleanup preserves tool signatures and drops only model-specific tr
       { role: 'model', parts: [{ text: 'prefill' }] },
     ],
   };
-  const result = normalizeRequest(input, 'gemini-2.5-flash', 'geminicli');
+  const result = normalizeRequest(input, 'gemini-2.5-flash', 'antigravity');
   assert.equal(result.request.contents.length, 3);
   assert.equal(result.request.contents[1].parts[0].thoughtSignature, 'sig');
   assert.equal(input.contents.length, 4);
@@ -1484,7 +1378,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.21\.1/);
+    assert.match(html, /v0\.22\.0/);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);
@@ -1536,39 +1430,6 @@ test('refresh uses channel environment defaults and preserves imported custom cl
       env,
     );
   }
-});
-
-test('GeminiCLI quota uses official retrieveUserQuota request without generation and preserves unknown bucket values', async () => {
-  const response = await handleRequest(
-    request('/admin/credentials/' + quotaId + '/quota', null, 'panel-secret'),
-    { ...env, DB: quotaDB('geminicli') },
-    async (url, options) => {
-      assert.equal(url, 'https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota');
-      assert.deepEqual(JSON.parse(options.body), { project: rowData().project_id });
-      return Response.json({
-        buckets: [
-          {
-            modelId: 'gemini-model',
-            remainingFraction: 0.6,
-            remainingAmount: '60',
-            tokenType: 'REQUESTS',
-            resetTime: '2026-10-20T00:00:00Z',
-          },
-          { modelId: 'unknown', remainingFraction: null },
-          { remainingAmount: '0', tokenType: 'TOKENS' },
-        ],
-      });
-    },
-  );
-  assert.equal(response.status, 200);
-  const value = await response.json();
-  assert.equal(value.mode, 'geminicli');
-  assert.equal(value.models[0].remaining, 0.6);
-  assert.equal(value.models[0].remainingAmount, '60');
-  assert.equal(value.models[1].remaining, null);
-  assert.equal(value.models[2].remaining, null);
-  assert.equal(value.models[2].remainingAmount, '0');
-  assert.equal(value.models[2].id, '共享配额');
 });
 
 test('model names derive future versions automatically while preserving variants and collisions', async () => {
@@ -1711,178 +1572,6 @@ test('official model reference extracts future codes, refreshes only for newly d
     }),
     null,
   );
-});
-
-test('GeminiCLI project requirements follow Google tier metadata rather than non-free ID guesses', async () => {
-  const { verifyProject } = await import('../src/credentials/account.js');
-  for (const requirement of [false, undefined]) {
-    const db = fakeDB();
-    const row = {
-      id: '1',
-      mode: 'geminicli',
-      data: { token: 'token', expiry: '2099-01-01T00:00:00Z' },
-    };
-    let onboards = 0;
-    const result = await verifyProject({ DB: db }, row, async (url, options) => {
-      if (url.endsWith(':loadCodeAssist'))
-        return Response.json({
-          allowedTiers: [
-            {
-              id: 'future-managed-tier',
-              isDefault: true,
-              userDefinedCloudaicompanionProject: requirement,
-            },
-          ],
-        });
-      assert.ok(url.endsWith(':onboardUser'));
-      onboards++;
-      const body = JSON.parse(options.body);
-      assert.equal(body.tierId, 'future-managed-tier');
-      assert.equal(Object.hasOwn(body, 'cloudaicompanionProject'), false);
-      assert.equal(Object.hasOwn(body.metadata, 'duetProject'), false);
-      return Response.json({
-        done: true,
-        response: { cloudaicompanionProject: { id: 'google-managed-project' } },
-      });
-    });
-    assert.equal(result.project_id, 'google-managed-project');
-    assert.equal(row.data.project_id, 'google-managed-project');
-    assert.equal(onboards, 1);
-  }
-  const requiring = {
-    allowedTiers: [
-      { id: 'explicit-custom-tier', isDefault: true, userDefinedCloudaicompanionProject: true },
-    ],
-  };
-  let onboards = 0;
-  const fetcher = async (url, options) => {
-    if (url.endsWith(':loadCodeAssist')) return Response.json(requiring);
-    onboards++;
-    assert.equal(JSON.parse(options.body).cloudaicompanionProject, 'my-existing-project');
-    return Response.json({
-      done: true,
-      response: { cloudaicompanionProject: { id: 'my-existing-project' } },
-    });
-  };
-  await assert.rejects(
-    verifyProject(
-      { DB: fakeDB() },
-      { id: '1', mode: 'geminicli', data: rowDataWithoutProject() },
-      fetcher,
-    ),
-    (error) => error.status === 400 && error.message.includes('explicit-custom-tier'),
-  );
-  assert.equal(onboards, 0);
-  assert.equal(
-    (
-      await verifyProject(
-        { DB: fakeDB() },
-        {
-          id: '1',
-          mode: 'geminicli',
-          data: { ...rowDataWithoutProject(), project_id: 'my-existing-project' },
-        },
-        fetcher,
-      )
-    ).project_id,
-    'my-existing-project',
-  );
-  assert.equal(onboards, 1);
-  function rowDataWithoutProject() {
-    return { token: 'token', expiry: '2099-01-01T00:00:00Z' };
-  }
-});
-
-test('GeminiCLI validation-required response blocks onboarding even if a default tier is also returned', async () => {
-  const { verifyProject } = await import('../src/credentials/account.js');
-  await assert.rejects(
-    verifyProject(
-      { DB: fakeDB() },
-      { id: '1', mode: 'geminicli', data: rowData() },
-      async (url) => {
-        assert.ok(url.endsWith(':loadCodeAssist'));
-        return Response.json({
-          allowedTiers: [{ id: 'free-tier', isDefault: true }],
-          ineligibleTiers: [{ reasonCode: 'VALIDATION_REQUIRED' }],
-        });
-      },
-    ),
-    /账号验证/,
-  );
-});
-
-test('admin project verification accepts an explicit project only after Google confirms it and rejects invalid input', async () => {
-  const data = { token: 'token', expiry: '2099-01-01T00:00:00Z' };
-  const db = fakeDB(data);
-  let calls = 0;
-  const fetcher = async (url, options) => {
-    calls++;
-    assert.ok(url.endsWith(':loadCodeAssist'));
-    const body = JSON.parse(options.body);
-    assert.equal(body.cloudaicompanionProject, 'my-cloud-project');
-    assert.equal(body.metadata.duetProject, 'my-cloud-project');
-    return Response.json({
-      currentTier: { id: 'standard-tier', userDefinedCloudaicompanionProject: true },
-      cloudaicompanionProject: 'my-cloud-project',
-    });
-  };
-  const path = '/admin/credentials/11111111-1111-4111-8111-111111111111/verify';
-  const response = await handleRequest(
-    request(path, { project_id: 'my-cloud-project' }, 'panel-secret'),
-    { ...env, DB: db },
-    fetcher,
-  );
-  assert.equal(response.status, 200);
-  assert.equal((await response.json()).project_id, 'my-cloud-project');
-  assert.ok(
-    db.calls.some(
-      (call) =>
-        call.sql.startsWith('UPDATE credentials') &&
-        JSON.parse(call.args[0]).project_id === 'my-cloud-project',
-    ),
-  );
-  for (const project_id of ['123456789', 'Project Name', '', '../../operations/bad']) {
-    assert.equal(
-      (
-        await handleRequest(
-          request(path, { project_id }, 'panel-secret'),
-          { ...env, DB: fakeDB(data) },
-          fetcher,
-        )
-      ).status,
-      400,
-    );
-  }
-  assert.equal(calls, 1);
-  const rejected = fakeDB(data);
-  const failed = await handleRequest(
-    request(path, { project_id: 'my-cloud-project' }, 'panel-secret'),
-    { ...env, DB: rejected },
-    async () => Response.json({}, { status: 403 }),
-  );
-  assert.equal(failed.status, 403);
-  assert.equal(
-    rejected.calls.some((call) => call.sql.startsWith('UPDATE credentials')),
-    false,
-  );
-});
-
-test('project-required response has a structured reason for the inline setup form', async () => {
-  const path = '/admin/credentials/11111111-1111-4111-8111-111111111111/verify';
-  const response = await handleRequest(
-    request(path, {}, 'panel-secret'),
-    { ...env, DB: fakeDB({ token: 'token', expiry: '2099-01-01T00:00:00Z' }) },
-    async () =>
-      Response.json({
-        allowedTiers: [
-          { id: 'standard-tier', isDefault: true, userDefinedCloudaicompanionProject: true },
-        ],
-      }),
-  );
-  assert.equal(response.status, 400);
-  const error = (await response.json()).error;
-  assert.equal(error.reason, 'PROJECT_REQUIRED');
-  assert.equal(error.stage, 'project_verify');
 });
 
 test('generation header timeout aborts stalled fetches but never times out an already received body', async (t) => {
@@ -2150,7 +1839,7 @@ test('Flash-Lite thinking budgets preserve disable/dynamic and clamp the support
     const result = normalizeRequest(
       { generationConfig: { thinkingConfig: { thinkingBudget: budget } } },
       'gemini-2.5-flash-lite',
-      'geminicli',
+      'antigravity',
     );
     assert.equal(result.request.generationConfig.thinkingConfig.thinkingBudget, expected);
   }
@@ -2160,7 +1849,7 @@ test('Flash-Lite thinking budgets preserve disable/dynamic and clamp the support
     reasoning_effort: 'low',
   });
   assert.equal(
-    normalizeRequest(converted, 'gemini-2.5-flash-lite', 'geminicli').request.generationConfig
+    normalizeRequest(converted, 'gemini-2.5-flash-lite', 'antigravity').request.generationConfig
       .thinkingConfig.thinkingBudget,
     1024,
   );
@@ -2200,30 +1889,6 @@ test('split SSE usage agrees with telemetry and does not reset prompt tokens', a
   assert.equal(recorded.totalTokenCount, 21);
 });
 
-test('partial CLI model lists do not exclude explicitly requested Gemini models', async () => {
-  const { dbCache } = await import('../src/cache/db.js');
-  const { unifiedRouting } = await import('../src/upstream/unified.js');
-  const { knownModelId, publicModelId } = await import('../src/models/names.js');
-  const DB = fakeDB();
-  const scope = dbCache(DB);
-  scope.cliModels = { value: { ids: ['gemini-2.5-pro'], queriedAt: new Date().toISOString() } };
-  scope.models = { value: { ids: ['gemini-2.5-flash-lite'], queriedAt: new Date().toISOString() } };
-  assert.deepEqual(unifiedRouting({ DB }, 'gemini-2.5-flash-lite').modes, [
-    'geminicli',
-    'antigravity',
-  ]);
-  assert.deepEqual(unifiedRouting({ DB }, 'claude-sonnet-4-6').modes, ['antigravity']);
-  scope.models = {
-    value: {
-      ids: ['gemini-2.5-flash'],
-      routes: { 'gemini-2.5-flash': 'gemini-raw' },
-      queriedAt: 'invalid',
-    },
-  };
-  assert.equal(knownModelId({ DB }, 'antigravity', 'gemini-2.5-flash'), null);
-  assert.equal(publicModelId({ DB }, 'antigravity', 'gemini-raw'), 'gemini-raw');
-});
-
 test('cancelling a request aborts OAuth refresh without persisting tokens', async () => {
   const db = fakeDB();
   const controller = new AbortController();
@@ -2233,7 +1898,7 @@ test('cancelling a request aborts OAuth refresh without persisting tokens', asyn
   });
   const result = accessToken(
     db,
-    { id: '1', mode: 'geminicli', data: { refresh_token: 'local-refresh' } },
+    { id: '1', mode: 'antigravity', data: { refresh_token: 'local-refresh' } },
     async (_url, options) => {
       started();
       return new Promise((_resolve, reject) =>
@@ -2277,9 +1942,9 @@ test('shared quota families count once per account and keep unknown windows unkn
         { id: 'gemini-x', tokenType: 'INPUT' },
         { id: 'gemini-x', tokenType: 'OUTPUT' },
       ],
-      'geminicli',
+      'antigravity',
     ).length,
-    2,
+    1,
   );
 });
 
@@ -2379,41 +2044,41 @@ test('OpenAI Gemini tool history preserves real signatures and supplies the docu
     assert.deepEqual(converted.contents[1].parts[0].functionCall.args, { query: 'fixture' });
   }
   let calls = 0;
-  for (const mode of ['geminicli', 'antigravity'])
-    for (const streaming of [false, true]) {
-      const db = fakeDB();
-      const prepare = db.prepare;
-      db.prepare = (sql) => {
-        const stmt = prepare(sql),
-          first = stmt.first;
-        stmt.first = async () => ({ ...(await first()), mode });
-        return stmt;
-      };
-      const response = await handleRequest(
-        request('/' + mode + '/v1/chat/completions', { ...history, stream: streaming }),
-        { ...env, DB: db },
-        async (_url, options) => {
-          calls++;
-          const payload = JSON.parse(options.body);
-          assert.equal(
-            payload.request.contents[1].parts[0].thoughtSignature,
-            'skip_thought_signature_validator',
-          );
-          assert.equal(
-            payload.request.contents[1].parts[1].thoughtSignature,
-            'original-real-signature',
-          );
-          return streaming
-            ? new Response('data: ' + JSON.stringify(candidate('tool loop completed')) + '\n\n', {
-                headers: { 'content-type': 'text/event-stream' },
-              })
-            : Response.json(candidate('tool loop completed'));
-        },
-      );
-      assert.equal(response.status, 200);
-      assert.ok((await response.text()).includes('tool loop completed'));
-    }
-  assert.equal(calls, 4);
+  const mode = 'antigravity';
+  for (const streaming of [false, true]) {
+    const db = fakeDB();
+    const prepare = db.prepare;
+    db.prepare = (sql) => {
+      const stmt = prepare(sql),
+        first = stmt.first;
+      stmt.first = async () => ({ ...(await first()), mode });
+      return stmt;
+    };
+    const response = await handleRequest(
+      request('/' + mode + '/v1/chat/completions', { ...history, stream: streaming }),
+      { ...env, DB: db },
+      async (_url, options) => {
+        calls++;
+        const payload = JSON.parse(options.body);
+        assert.equal(
+          payload.request.contents[1].parts[0].thoughtSignature,
+          'skip_thought_signature_validator',
+        );
+        assert.equal(
+          payload.request.contents[1].parts[1].thoughtSignature,
+          'original-real-signature',
+        );
+        return streaming
+          ? new Response('data: ' + JSON.stringify(candidate('tool loop completed')) + '\n\n', {
+              headers: { 'content-type': 'text/event-stream' },
+            })
+          : Response.json(candidate('tool loop completed'));
+      },
+    );
+    assert.equal(response.status, 200);
+    assert.ok((await response.text()).includes('tool loop completed'));
+  }
+  assert.equal(calls, 2);
   const signed = geminiToOpenai(
     {
       candidates: [
@@ -2730,7 +2395,6 @@ test('upstream error summaries redact credentials and bound inspection without c
 test('model capability annotations use real adapter routes and preserve native tiers in search aliases', async () => {
   const { describeModels } = await import('../src/models/capabilities.js');
   const { modelRequest } = await import('../src/models/request.js');
-  const { unifiedRouting } = await import('../src/upstream/unified.js');
   const ids = [
     'gemini-2.5-pro',
     'gemini-3.8-flash-high',
@@ -2779,9 +2443,6 @@ test('model capability annotations use real adapter routes and preserve native t
     until: Date.now() + 60000,
     value: { ...catalog, queriedAt: new Date().toISOString() },
   };
-  const routing = unifiedRouting(local, 'gemini-2.5-pro-search');
-  assert.equal(routing.models.antigravity, 'gemini-custom-pro');
-  assert.ok(routing.modes.includes('antigravity'));
   const unknown = modelRequest({}, 'gemini-future-unknown-search', 'antigravity', resolve);
   assert.equal(unknown.model, 'gemini-future-unknown-search', 'unknown routes are never guessed');
   assert.ok(!unknown.request.tools?.some((tool) => tool.googleSearch));
@@ -2811,7 +2472,8 @@ test('Gemini image settings bridge responseFormat.image without losing modalitie
     },
   };
   const saved = structuredClone(original);
-  for (const mode of ['geminicli', 'antigravity']) {
+  {
+    const mode = 'antigravity';
     const output = normalizeRequest(original, 'gemini-3.1-flash-image', mode).request;
     assert.deepEqual(output.generationConfig.imageConfig, { imageSize: '1K', aspectRatio: '16:9' });
     assert.deepEqual(output.generationConfig.responseModalities, ['IMAGE']);
@@ -2844,7 +2506,7 @@ test('Gemini image settings bridge responseFormat.image without losing modalitie
       },
     },
     'custom-image',
-    'geminicli',
+    'antigravity',
   ).request.generationConfig;
   assert.deepEqual(merged.imageConfig, { imageSize: '4K', aspectRatio: '16:9' });
   assert.deepEqual(merged.responseFormat, {
@@ -2856,8 +2518,59 @@ test('Gemini image settings bridge responseFormat.image without losing modalitie
       normalizeRequest(
         { generationConfig: { responseFormat: { image: [] } } },
         'custom',
-        'geminicli',
+        'antigravity',
       ),
     /必须为对象/,
+  );
+});
+
+test('tiered Gemini routes accept OpenAI reasoning effort while preserving native identity and search', async () => {
+  const { normalizeRequest, parseModel } = await import('../src/protocols/gemini.js');
+  const model = 'gemini-3.8-flash-tiered';
+  assert.equal(parseModel(model).model, model);
+  for (const [effort, expected] of [
+    ['none', 'low'],
+    ['minimal', 'low'],
+    ['low', 'low'],
+    ['medium', 'medium'],
+    ['high', 'high'],
+    ['xhigh', 'high'],
+    ['max', 'high'],
+  ]) {
+    const converted = openaiToGemini({
+      model,
+      reasoning_effort: effort,
+      messages: [{ role: 'user', content: 'hello' }],
+    });
+    {
+      const mode = 'antigravity';
+      const output = normalizeRequest(converted, model, mode);
+      assert.equal(output.model, model);
+      assert.equal(output.request.generationConfig.thinkingConfig.thinkingLevel, undefined);
+      assert.equal(output.request._reasoningEffort, undefined);
+    }
+  }
+  const search = normalizeRequest(
+    openaiToGemini({
+      model: model + '-search',
+      reasoning_effort: 'medium',
+      messages: [{ role: 'user', content: 'hello' }],
+    }),
+    model + '-search',
+    'antigravity',
+  );
+  assert.equal(search.model, model);
+  assert.equal(search.request.generationConfig.thinkingConfig.thinkingLevel, undefined);
+  assert.ok(search.request.tools.some((tool) => tool.googleSearch));
+  const native = normalizeRequest(
+    { generationConfig: { thinkingConfig: { thinkingLevel: 'high' } } },
+    model,
+    'antigravity',
+  );
+  assert.equal(native.request.generationConfig.thinkingConfig.thinkingLevel, undefined);
+  assert.equal(parseModel('custom-tiered').profile, null);
+  assert.deepEqual(
+    normalizeRequest({}, model, 'antigravity').request.generationConfig.thinkingConfig,
+    { includeThoughts: true },
   );
 });

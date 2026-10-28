@@ -1,5 +1,5 @@
 {
-  "name": "gcli2api-workers",
+  "name": "agy2api_workers",
   "private": true,
   "type": "module",
   "scripts": {
@@ -24,12 +24,6 @@
       "PANEL_PASSWORD": {
         "description": "必填：管理台登录密码。设置与 API_PASSWORD 不同的长随机字符串。"
       },
-      "GEMINICLI_CLIENT_ID": {
-        "description": "已在 vars 中预置原项目的 GeminiCLI OAuth 客户端配置，无需重复填写；使用自定义客户端时成对替换 ID 和 Secret。"
-      },
-      "GEMINICLI_CLIENT_SECRET": {
-        "description": "已在 vars 中预置原项目的 GeminiCLI OAuth 客户端配置，无需重复填写；使用自定义客户端时成对替换 ID 和 Secret。"
-      },
       "ANTIGRAVITY_CLIENT_ID": {
         "description": "已在 vars 中预置原项目的 Antigravity OAuth 客户端配置，无需重复填写；使用自定义客户端时成对替换 ID 和 Secret。"
       },
@@ -40,7 +34,7 @@
         "description": "低频配置与模型列表缓存。使用 Wrangler 自动创建并绑定 KV，不存凭证令牌或逐请求日志。"
       },
       "TELEMETRY": {
-        "description": "SQLite Durable Object 用量持久缓冲，5 分钟聚合后落盘 D1；由 Wrangler 自动创建，关联 gcli2api Worker。"
+        "description": "SQLite Durable Object 用量持久缓冲，5 分钟聚合后落盘 D1；由 Wrangler 自动创建，关联 agy2api_workers Worker。"
       }
     }
   },

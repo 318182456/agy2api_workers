@@ -13,23 +13,12 @@ export function parseModelList(value) {
     throw new HttpError(502, 'Google 未返回有效的模型列表');
   return Object.keys(models).filter(validId).sort();
 }
-export function parseCliModels(value) {
-  if (!Array.isArray(value?.buckets))
-    throw new HttpError(502, 'Google 未返回有效的 GeminiCLI 配额信息');
-  return [
-    ...new Set(
-      value.buckets
-        .map((bucket) => bucket?.modelId)
-        .filter((id) => validId(id) && id.startsWith('gemini-')),
-    ),
-  ].sort();
-}
 export async function discoverModels(env, mode, fetcher, options = {}) {
   modeValue(mode);
   if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库，无法动态获取模型');
-  const cacheKey = mode === 'antigravity' ? 'models' : 'cliModels',
+  const cacheKey = 'models',
     scope = dbCache(env.DB);
-  const source = mode === 'antigravity' ? 'google' : 'quota';
+  const source = 'google';
   if (!options.fresh) {
     const local = scope[cacheKey];
     if (local?.until > Date.now()) return { ...structuredClone(local.value), cache: 'memory' };
@@ -66,22 +55,17 @@ export async function discoverModels(env, mode, fetcher, options = {}) {
     );
     if (!stored) throw new HttpError(503, mode + ' 没有已启用的凭证，无法动态获取模型');
     const row = { ...stored, data: parseCredentialData(stored.data) };
-    const cli = mode === 'geminicli';
-    if (cli && !row.data.project_id)
-      throw new HttpError(400, 'GeminiCLI 凭证缺少 project_id，请先校验项目');
     const response = await accountRequest(
       env,
       row,
-      upstreamOrigin(env, mode) +
-        '/v1internal:' +
-        (cli ? 'retrieveUserQuota' : 'fetchAvailableModels'),
-      cli ? { project: row.data.project_id } : {},
+      upstreamOrigin(env, mode) + '/v1internal:' + 'fetchAvailableModels',
+      {},
       'model_discovery',
       fetcher,
     );
     const data = await googleJson(response, 'Google 模型列表查询');
-    const rawIds = cli ? parseCliModels(data) : parseModelList(data);
-    const catalog = modelCatalog(rawIds.map((id) => [id, cli ? null : data.models[id]]));
+    const rawIds = parseModelList(data);
+    const catalog = modelCatalog(rawIds.map((id) => [id, data.models[id]]));
     const ids = catalog.ids;
     const reference = await refreshOfficialModels(env, rawIds, fetcher);
     const officialIds = new Set(reference?.ids || []);
@@ -97,9 +81,7 @@ export async function discoverModels(env, mode, fetcher, options = {}) {
         : null,
       source,
       queriedAt: new Date().toISOString(),
-      warning: cli
-        ? 'GeminiCLI 列表来自 Google 配额中的模型 ID，可能不是完整可用模型清单；未返回的模型仍可由客户端显式指定。'
-        : null,
+      warning: null,
     };
     scope[cacheKey] = { until: Date.now() + 60000, value: structuredClone(value) };
     if (ids.length) {

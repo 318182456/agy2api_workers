@@ -39,11 +39,10 @@ export async function startOAuth(request, env, body) {
     'https://www.googleapis.com/auth/userinfo.email',
     'https://www.googleapis.com/auth/userinfo.profile',
   ];
-  if (mode === 'antigravity')
-    scopes.push(
-      'https://www.googleapis.com/auth/cclog',
-      'https://www.googleapis.com/auth/experimentsandconfigs',
-    );
+  scopes.push(
+    'https://www.googleapis.com/auth/cclog',
+    'https://www.googleapis.com/auth/experimentsandconfigs',
+  );
   const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
   url.search = new URLSearchParams({
     client_id: client.client_id,

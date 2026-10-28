@@ -1,10 +1,9 @@
-# GCLI2API Workers
+# AGY2API Workers
 
-将 GeminiCLI / Antigravity 凭证接入 OpenAI、Anthropic 和 Gemini API，运行在 **Cloudflare Workers + D1 + KV + SQLite Durable Object** 上，自带中文管理控制台。
 
 无需 Python、Docker 或独立服务器。API 转换、账号调度、凭证存储和管理页面由同一个 Worker 提供。
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/318182456/gcli2api-workers)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/318182456/agy2api_workers)
 
 [快速部署](#一键部署到-cloudflare) · [接入客户端](#接入客户端) · [配置说明](#配置说明) · [常见问题](#常见问题)
 
@@ -13,7 +12,6 @@
 | 模块        | 支持内容                                                                              |
 | ----------- | ------------------------------------------------------------------------------------- |
 | API 兼容    | OpenAI Chat Completions、Anthropic Messages、Gemini 原生接口，普通响应与 SSE 流式输出 |
-| 双渠道      | GeminiCLI、Antigravity 分别管理凭证、模型与调用路径                                   |
 | 凭证管理    | JSON 导入、多文件导入、备份恢复、启停、重命名、邮箱查重、下载                         |
 | Google 授权 | 授权链接、PKCE、一次性 state、手动回填回调 URL                                        |
 | 账号调度    | 轮询、优先级、权重随机；按模型冷却，失败时有限切换凭证                                |
@@ -28,7 +26,7 @@
 
 准备一个 **Cloudflare 账号**和一个 **GitHub 账号**，点击按钮：
 
-[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/318182456/gcli2api-workers)
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/318182456/agy2api_workers)
 
 1. 登录 Cloudflare，按页面提示授权访问 GitHub，并创建你自己的代码仓库。
 2. 选择 Worker 名称，确认 D1 数据库配置，保留数据库绑定名 **`DB`**。
@@ -53,8 +51,6 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 | Worker 变量                 | 原项目常量                  |
 | --------------------------- | --------------------------- |
-| `GEMINICLI_CLIENT_ID`       | `CLIENT_ID`                 |
-| `GEMINICLI_CLIENT_SECRET`   | `CLIENT_SECRET`             |
 | `ANTIGRAVITY_CLIENT_ID`     | `ANTIGRAVITY_CLIENT_ID`     |
 | `ANTIGRAVITY_CLIENT_SECRET` | `ANTIGRAVITY_CLIENT_SECRET` |
 
@@ -64,7 +60,6 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 ### 方式一：导入 JSON 凭证
 
-在管理台进入 **导入凭证**，选择 GeminiCLI 或 Antigravity，上传 JSON 或粘贴内容。例如：
 
 ```json
 {
@@ -96,7 +91,6 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 下面用 `https://your-worker.example.com` 代表你的 Worker 域名，**API Key 可填写管理页创建/导入的独立密钥，或兼容总密钥 `API_PASSWORD`**。
 
-| 接口                 | GeminiCLI                                              | Antigravity                                                        |
 | -------------------- | ------------------------------------------------------ | ------------------------------------------------------------------ |
 | OpenAI Base URL      | `https://your-worker.example.com/v1`                   | `https://your-worker.example.com/antigravity/v1`                   |
 | Chat Completions     | `/v1/chat/completions`                                 | `/antigravity/v1/chat/completions`                                 |
@@ -118,9 +112,7 @@ curl https://your-worker.example.com/v1/chat/completions \
   -d '{"model":"gemini-2.5-flash","messages":[{"role":"user","content":"你好"}],"stream":false}'
 ```
 
-默认 `/v1/chat/completions` 为统一入口，按模型支持与凭证策略选择 GeminiCLI / Antigravity，所有重试共享 `MAX_CREDENTIAL_ATTEMPTS` 上限。同一个客户端请求只记一次最终用量，内部重试保留实际渠道和账号。模型匹配参考两边已动态发现的模型 ID，专有模型只进入对应渠道；未知模型由 Google 最终校验。
 
-需要固定渠道时使用 `/antigravity/v1/chat/completions` 或 `/geminicli/v1/chat/completions`；对应的 Models、Messages、Gemini 原生接口也支持这两个前缀。统一 `/v1/models` 合并启用渠道的模型列表。收到响应头前的连接/OAuth 故障及 429/500/502/503/504 可在预算内换账号；流开始后或成功响应内容解析失败时不会自动重新生成。`stream: true` 启用 SSE；OpenAI 请求可用 `stream_options: {"include_usage": true}` 获取末尾用量块。
 
 Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用请求头。Anthropic 客户端也可使用 `x-api-key`。
 
@@ -159,7 +151,6 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 - **请求统计**按一次客户端生成请求的最终结果记录，内部重试不重复计数；额度查询、模型发现和管理页测试调用不计入该统计。
 - **Token**仅采用上游实际报告值，缺失显示“未报告”，不会用本地估算补齐。账号消耗排行仅比较已报告的总 Token。
 - **统计保留**：聚合模式保留最近 30 天完整汇总，明细模式保留最近 30 天且最多约 10000 次请求；默认展示最近 7 天，日期按北京时间分组。模型和账号分组最多各 200 项。
-- **额度**支持 Antigravity 与 GeminiCLI，分别查询和展示；GeminiCLI 使用官方客户端的 `retrieveUserQuota` 请求，保留可用数量、配额类型及重置时间，不按会员档位估算缺失数据。手动逐账号查询，可停止后续查询，不发起聊天，不后台轮询。同一账号的 Gemini、Claude 模型各折叠为额度组，模型数量不影响账号均值；渠道与 GeminiCLI 配额类型分别展示。同组上游报告不同则显示最低剩余、最晚重置和差异提示，不保证整个模型系列共享同一个池。当前额度接口未分别返回 5 小时与周窗口，页面明确显示未提供，保留实际上报的剩余比例与重置时间，不按距离重置的时长猜测窗口。
 - **平均与最低额度**仅计算成功返回数值的账号。失败、未查询、未返回该模型和未知比例不计入均值，未知不等于零；比例不能相加为余额或换算成调用次数。
 - **问题一览**保留 7 天，最多展示最近约 2000 次异常请求及旧版独立事件；聚合模式只保存失败、取消和重试明细，正常成功请求只计入汇总。清理日志不会删除用量统计和健康摘要。
 
@@ -178,18 +169,17 @@ Gemini 原生接口支持 `x-goog-api-key`、Bearer 和 `?key=`；建议使用�
 
 上述配置可在管理台 **系统设置** 保存，D1 中的网页设置优先于环境变量；恢复默认后重新使用环境配置。
 
-Antigravity 模型列表从 Google 动态查询；GeminiCLI 从 Google 配额返回的 `modelId` 动态获取，可能不是完整清单。两种模型变量及手工列表已移除。结果在内存缓存 60 秒，管理员查询会发布到 KV；实时查询失败时仅可展示最近 24 小时内的历史动态记录，并明确标记过期风险，没有记录则返回查询失败。模型被列出不代表账号一定有权限或剩余额度。
 
 ## 手动部署
 
 需要 Node.js 20 或更新版本。先克隆代码并登录：
 
 ```bash
-git clone https://github.com/318182456/gcli2api-workers.git
-cd gcli2api-workers
+git clone https://github.com/318182456/agy2api_workers.git
+cd agy2api_workers
 npm ci
 npx wrangler login
-npx wrangler d1 create gcli2api
+npx wrangler d1 create agy2api_workers
 ```
 
 将新数据库的 ID 填入 `wrangler.jsonc` 的 `d1_databases[0].database_id`，数据库名称填入 `database_name`，**保留 `binding: "DB"`**。手动部署必须替换仓库中的数据库配置，不能直接使用其他账号的数据库 ID。
@@ -202,7 +192,7 @@ npm run deploy
 
 命令会交互式要求输入密码；首次写入 Secret 如提示创建 Worker，按提示确认。网页授权默认使用 vars 中预置的客户端，无需再添加 OAuth Secrets。
 
-`npm run deploy` 先准备名为 `gcli2api` 的 KV（已有 `CACHE.id` 时直接复用，不会改名），再自动执行 `npm run db:remote` 后发布。已有数据库只应用尚未执行的迁移，不需要清库或重新导入账号。
+`npm run deploy` 先准备名为 `agy2api_workers` 的 KV（已有 `CACHE.id` 时直接复用，不会改名），再自动执行 `npm run db:remote` 后发布。已有数据库只应用尚未执行的迁移，不需要清库或重新导入账号。
 
 ### 更新已有部署
 
@@ -214,7 +204,7 @@ npm run deploy
 
 更新前保留自己账号的 Worker 名称与 D1 配置。通过部署按钮生成的仓库是你自己的副本，不会自动接收本仓库的更新；同步代码时不要覆盖数据库 ID 或删除已有 Secrets。
 
-若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.18.0**。
+若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.22.0**。
 
 ## 存储与写入控制
 
@@ -223,10 +213,10 @@ npm run deploy
 | 资源                  | 控制台名称 / 绑定                                     | 保存内容与写入时机                                                |
 | --------------------- | ----------------------------------------------------- | ----------------------------------------------------------------- |
 | D1                    | `gcli2api` / `DB`                                     | 凭证、配置、错误明细、每 5 分钟的用量汇总                         |
-| KV                    | `gcli2api` / `CACHE`                                  | 非敏感配置和模型 ID；设置保存、手动模型刷新、每小时配置预热才写入 |
+| KV                    | `agy2api_workers` / `CACHE`                                  | 非敏感配置和模型 ID；设置保存、手动模型刷新、每小时配置预热才写入 |
 | SQLite Durable Object | Cloudflare 按 Worker 和类名生成命名空间 / `TELEMETRY` | 每次请求先持久累加，Alarm 约每 5 分钟批量写 D1                    |
 
-`npm run deploy` 的准备脚本会查找名为 `gcli2api` 的 KV，没有时创建，并将 ID 写回 `wrangler.jsonc` 的 `CACHE` 绑定。已配置 ID 的资源不会重建或改名。D1 和 KV 属于不同资源类型，可以同名；Durable Object 的命名空间由 Cloudflare 管理，内部对象名使用 `gcli2api`。
+`npm run deploy` 的准备脚本会查找名为 `agy2api_workers` 的 KV，没有时创建，并将 ID 写回 `wrangler.jsonc` 的 `CACHE` 绑定。已配置 ID 的资源不会重建或改名。D1 和 KV 属于不同资源类型，可以同名；Durable Object 的命名空间由 Cloudflare 管理，内部对象名使用 `gcli2api`。
 
 - **正常成功请求**不插入 `request_usage` 或 `call_logs`，按 5 分钟、账号、渠道、模型、状态与最终结果汇总；保存上游报告的 Token、请求数和总耗时。未报告的 Token 保持为空。
 - **失败、取消与重试**仍保留 D1 明细，单次请求的重试诊断合并保存为 JSON，不再每次重试单独写日志。日志清理不影响汇总。
@@ -268,7 +258,6 @@ npm run check
 
 ### 503：未配置密码、缺少 OAuth 配置或没有可用凭证
 
-按错误提示检查 Secrets、凭证渠道和启用状态。GeminiCLI 对应 `/v1`，Antigravity 对应 `/antigravity/v1`。客户端填 `API_PASSWORD`，管理台填 `PANEL_PASSWORD`。
 
 ### 数据库表或字段不存在
 
@@ -282,7 +271,6 @@ npm run check
 
 ### 找不到额度按钮，或额度显示未知
 
-“查看额度”支持 Antigravity 与 GeminiCLI；GeminiCLI 需先完成项目校验。未知表示上游未报告数据，不能当作 0%。查询失败的账号会在额度总览下方优先显示。
 
 ### 域名无法访问
 
@@ -298,7 +286,6 @@ npm run check
 
 ## 来源与许可
 
-本项目参考 [su-kaka/gcli2api](https://github.com/su-kaka/gcli2api) 的 GeminiCLI / Antigravity 协议和凭证字段，使用原生 JavaScript 在 Workers 上重新实现。
 
 沿用 **Cooperative Non-Commercial License（CNC-1.0）**，仅允许非商业使用；具体条件见 [LICENSE](LICENSE)。Copyright (c) 2024 gcli2api contributors。
 
@@ -325,6 +312,12 @@ npm run check
 
 原生 `generateContent` 接口兼容客户端的 `generationConfig.responseFormat.image`（包括对应 snake_case 字段）。其中的 `imageSize` 与 `aspectRatio` 在转发 Google 内部接口前转换为 `generationConfig.imageConfig`，保留 `responseModalities`。同时传入两种布局时，显式 `imageConfig` 优先；其余响应配置保持原样。Denova 的 Gemini Images 接入可继续使用现有请求格式。
 
+### 单 Antigravity 模式
+
+仅保留 Antigravity 凭证、Google 授权、项目校验、额度与模型发现。默认 `/v1`、`/v1beta` 和 `/v1/messages` 均使用 Antigravity，仍兼容 `/antigravity` 前缀。已有其他渠道的历史数据不删除，但不再导入、展示账号或参与调度。
+
+Antigravity 的 Gemini 3 及后续模型与 agent 路由由原始模型 ID 决定思考档位；兼容客户端的 `reasoning_effort` 不会造成白名单拦截，也不会覆盖上游档位。冲突的 `thinkingLevel` / `thinkingBudget` 按参考项目移除。需要调整强度时选用动态目录中的对应型号。`gcli2api` 等内部 DO 实例名及已有迁移保持稳定，避免改名后读到空对象；资源显示名使用新项目名。
+
 ### 模型能力与快捷调用名
 
 “系统设置 → 模型列表”按行显示用途、原始 ID 及可复制的调用名。联网搜索通过给模型名追加 `-search` 请求，例如 `gemini-2.5-pro-search`；搜索由模型按需执行，账号资格、渠道支持和容量仍以上游响应为准。发现的 Gemini 文本模型会自动生成搜索入口，保留 `-high`、`-low`、`-tiered` 等上游原有档位，不会改为不存在的基础 ID。
@@ -335,7 +328,6 @@ npm run check
 
 模型清单来自账号实时接口，不依赖环境变量中的模型名称表。已有版本号的模型 ID 保留完整后缀；不含版本号的 Gemini 内部 ID，在上游 `displayName` 提供明确的英文型号及版本时，自动生成通用名称，并在请求 Google 时还原为渠道真实 ID。同一渠道存在命名冲突时保留原始 ID，不合并不同模型。未知或不明确的名称保持原样。
 
-仅在获取账号模型列表时发现此前未见过的模型 ID，才查询一次 [Google 官方模型目录](https://ai.google.dev/gemini-api/docs/models?hl=en)，提取官方模型代码和已见模型 ID 存入 `CACHE` KV，保留一年；相同 ID 不重复查询，不再每日同步。查询失败也记录已见 ID，并沿用已有参考和上游名称，不影响生成请求。官网目录与[发布记录](https://ai.google.dev/gemini-api/docs/changelog?hl=en)作为参考，不能代替 GeminiCLI/Antigravity 的账号资格及渠道 ID，不能从版本说明推测内部 ID。官网页面格式变化时同步会告警，动态账号模型发现仍继续工作。
 
 模型清单的 KV 缓存为 15 分钟，通用名称到渠道 ID 的映射缓存为 24 小时，冷启动可复用；正常生成请求不抓官网、不写模型缓存。没有配置 KV 时仅使用当前实例内存，跨实例的名称映射需要重新发现模型。
 
@@ -360,7 +352,6 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 | 工具调用兼容      | 请求内为特殊/过长工具名建立可逆且防冲突的名称映射，普通与 SSE 输出恢复原名；修正未签名历史中明确可转换的数字/布尔/字符串参数；保留真实签名和工具 ID，不把无效参数静默替换为空对象                                                                                               |
 | 多轮/并行工具历史 | 合并相邻同角色消息，按 ID 匹配结果，拒绝孤立/重复 ID；Gemini 把同一 user 块的工具结果放在普通文本前并按调用顺序排列，Claude 保持明确 ID 的结果原顺序，不跨用户轮次移动有签名的调用                                                                                              |
 | 失效凭证自动停用  | 设置中的“明确 invalid_grant 时自动停用”，默认开启；只针对 OAuth 400/401 且错误精确为 invalid_grant。CAS 更新保护并发重新导入，固定渠道也可在剩余预算内改选账号；invalid_client、地区/权限及网络错误不自动停用                                                                   |
-| GeminiCLI Preview | 凭证行“更多操作 → 开通 Preview / 检查 Preview”；先查询已有实验设置和绑定，再幂等创建缺失项。仅点击此操作才访问 Cloud 配置 API，不混入普通项目校验；需要 cloud-platform 授权及项目设置管理权限                                                                                   |
 | ZIP 凭证备份      | 批量操作中导出 ZIP；批量导入页可选 JSON 或 ZIP。支持标准 stored/deflate ZIP，UTF-8 名称、CRC/大小校验；最多 100 条、单条 1 MiB、压缩与展开总量最多 4 MiB，不支持加密、分卷、ZIP64 或不安全路径                                                                                  |
 | 稳定会话与标签    | Antigravity 默认按项目、API 密钥和首条用户文本生成稳定会话 ID，保留显式 sessionId；补入原项目请求标签。不把原始对话存进 D1/KV                                                                                                                                                   |
 | 思考内容显示      | 设置“返回思考内容”，默认开启；关闭后请求 Google 不返回思考，并在输出转换时过滤思考文本，思考 Token 仍保留统计                                                                                                                                                                   |
@@ -385,7 +376,7 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 
 统计缓存写入由同一个 `TELEMETRY` DO 限频：所有筛选共用一个每 5 分钟最多一次的查询快照发布名额（持续 24 小时最多 288 次），历史快照每小时最多一次（最多 24 次）。二者合计最多 312 次 KV 写入 / 24 小时，不含配置和模型缓存；手动刷新、多实例并发和重启不会额外绕过发布间隔。KV 故障不会阻止统计查询；历史同步失败不会发布部分数据。DO 用压缩分片保存历史快照，首次 / 重启只读少量分片，后续查询从内存计算；请求持久累加仍消耗 DO 额度。页面显示统计生成时间和 D1 历史同步时间。Google 账号额度使用 10 分钟 DO 缓存，可强制重新查询；修改 / 删除凭证会失效对应缓存。已支持下述跨账号 DO 用量缓冲与缓存轮换。
 
-系统设置 → 存储节点：填写账号邮箱（仅作名称）与 Cloudflare API Token，可自动创建独立 `gcli2api-storage-*` Pages 入口、Worker 与 SQLite DO，验证实际读写。主服务通过 pages.dev 访问绑定的 DO，不依赖 workers.dev。Token 需要目标账号 Workers Scripts 编辑、Cloudflare Pages 编辑和账号读取权限，按用户要求保存在主 D1；列表不返回 Token 或节点密钥。重新部署复用原有 Worker / DO，不清空数据。
+系统设置 → 存储节点：填写账号邮箱（仅作名称）与 Cloudflare API Token，可自动创建独立 `agy2api-storage-*` Pages 入口、Worker 与 SQLite DO，验证实际读写。主服务通过 pages.dev 访问绑定的 DO，不依赖 workers.dev。Token 需要目标账号 Workers Scripts 编辑、Cloudflare Pages 编辑和账号读取权限，按用户要求保存在主 D1；列表不返回 Token 或节点密钥。重新部署复用原有 Worker / DO，不清空数据。
 
 采用单节点值班、每小时整点按当日业务请求数优先选择消耗较少的健康节点，本小时内固定值班；不同时分片，也不双机复制。当前值班子节点接收新的模型用量、问题记录和缓存，旧节点继续补交尾部用量并保留问题记录。新增或恢复节点从下个整点参与；首次无可用节点时立即启用。整点前一分钟确定下一节点，有缓存请求时预热该节点并双写缓存，模型用量不双写。节点目录在实例内缓存 5 分钟，并在预热 / 整点边界强制更新。模型请求仍由主服务执行，凭证、API 密钥、鉴权和系统配置保留主 D1。
 
@@ -424,9 +415,10 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 
 ### 问题记录中的账号与失败阶段（v0.19.1）
 
-自动路由尚未选定渠道时记为 auto，不再默认记为 GeminiCLI。账号选中后立即保留关联，模型准备阶段失败也能显示对应账号。调用前失败记录展示未选择账号及实际阶段（例如 model_catalog、credential_select），并保存经过公开错误映射的错误码与消息；D1 配额错误的统计状态码与客户端响应保持一致。旧记录缺少账号及最终错误详情时明确标注历史记录无法还原，不补造账号关联。升级需应用 migrations/0015_request_failure_details.sql；诊断字段随原有问题记录保存，不增加逐请求 SQL 次数。
 
 
 ### 就近展示管理操作结果（v0.20）
 
 账号健康详情和 API 密钥用量在对应行下方展开，可就地收起；账号名称、调度参数、密钥名称和到期时间使用行内表单。节点 Token 更新也在对应节点下方完成，取消、换页和退出时清空输入。行内操作的进度、结果及错误紧邻操作按钮显示，并在列表刷新后保留反馈。批量操作、授权和模型查询已有各自的结果区域，继续保留原有位置。
+
+现有子节点可在存储节点页点击“改为 agy2api”：保留 Worker 身份与 DO 命名空间，发布新 Pages 入口，读写验证通过后切换节点地址。失败可重试，旧 Pages 入口保留以兼容切换中的请求。DO 内部实例名保持稳定；D1 数据库实体名仍为 `gcli2api`，Cloudflare 不提供原地改名接口。

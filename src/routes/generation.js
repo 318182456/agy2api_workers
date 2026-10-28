@@ -8,7 +8,6 @@ import { convertedStream, geminiToOpenai, openaiToGemini, unwrap } from '../prot
 import { collectGoogleResponse } from '../upstream/stream-collect.js';
 import { callUpstream } from '../upstream/index.js';
 import { discoverModels } from '../models/list.js';
-import { callUnifiedUpstream, discoverUnifiedModels } from '../upstream/unified.js';
 import { recordAttempt } from '../upstream/reliability.js';
 import { recordTelemetry } from '../telemetry/index.js';
 import { effectiveEnv } from '../config/settings.js';
@@ -31,8 +30,8 @@ function validateModel(model) {
 
 export async function generationRoute(request, env, fetcher, context, internal) {
   const url = new URL(request.url);
-  const fixed = url.pathname.match(/^\/(antigravity|geminicli)\//)?.[1];
-  let mode = fixed || 'auto';
+  const fixed = url.pathname.match(/^\/(antigravity)\//)?.[1];
+  let mode = 'antigravity';
   const path = fixed ? url.pathname.slice(('/' + fixed).length) : url.pathname;
   const nativeMatch = path.match(
     /^\/v1(?:beta)?\/models\/([^/:]+):(generateContent|streamGenerateContent|countTokens)$/,
@@ -53,9 +52,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
   env = internal?.env || { ...(await effectiveEnv(env)), SESSION_SCOPE: apiKey.id };
   env = { ...env, TELEMETRY_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher };
   if (isModelList) {
-    const result = fixed
-      ? await discoverModels(env, mode, fetcher)
-      : await discoverUnifiedModels(env, fetcher);
+    const result = await discoverModels(env, mode, fetcher);
     const response =
       path === '/v1beta/models'
         ? json({
@@ -188,34 +185,17 @@ export async function generationRoute(request, env, fetcher, context, internal) 
   };
   const completed = (usage) => finishUsage(200, 'success', usage);
   try {
-    const send = async (payload) => {
-      let response;
-      if (!fixed) {
-        const selected = await callUnifiedUpstream(
-          env,
-          model,
-          payload,
-          stream,
-          abort.signal,
-          fetcher,
-          attemptMeta,
-        );
-        response = selected.response;
-        mode = selected.mode;
-        collect = selected.collect;
-      } else
-        response = await callUpstream(
-          env,
-          mode,
-          model,
-          payload,
-          stream || collect,
-          abort.signal,
-          fetcher,
-          attemptMeta,
-        );
-      return response;
-    };
+    const send = (payload) =>
+      callUpstream(
+        env,
+        mode,
+        model,
+        payload,
+        stream || collect,
+        abort.signal,
+        fetcher,
+        attemptMeta,
+      );
     let response = await send(geminiRequest);
     if (!response.ok) {
       finalFailure = attemptMeta.upstreamFailure;

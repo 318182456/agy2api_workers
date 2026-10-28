@@ -329,7 +329,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
     await set({ CREDENTIAL_SELECTION: 'priority', MAX_CREDENTIAL_ATTEMPTS: 2 });
     for (const [id, mode, priority] of [
       [a, 'antigravity', 10],
-      [b, 'geminicli', 10],
+      [b, 'antigravity', 10],
     ])
       await DB.prepare(
         'INSERT INTO credentials(id,mode,name,data,created_at,priority)VALUES(?,?,?,?,?,?)',
@@ -337,7 +337,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
         .bind(
           id,
           mode,
-          mode,
+          id,
           JSON.stringify({
             token: 'local-token',
             project_id: 'local-project',
@@ -423,7 +423,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
             },
           ],
         },
-        'geminicli',
+        'antigravity',
         '/v1/messages',
       );
       assert.equal(response.status, 200);
@@ -443,7 +443,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
     assert.equal(generation[0].request.sessionId, generation[1].request.sessionId);
     assert.equal(generation[0].request.labels.trajectory_id, generation[0].request.sessionId);
     assert.equal(generation[0].enabledCreditTypes, undefined);
-    await admin('credentials/' + a + '/credits', { enabled: true });
+    await admin('credentials/' + b + '/credits', { enabled: true });
     await (await chat()).text();
     assert.equal(generation.at(-1).enabledCreditTypes, undefined);
     await set({ ENABLE_AI_CREDITS: true });
@@ -488,7 +488,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
     );
     const native = await chat(
       { contents: [{ role: 'user', parts: [{ text: 'native' }] }], fake_stream: true },
-      'geminicli',
+      'antigravity',
       '/v1beta/models/gemini-3.1-flash-lite:streamGenerateContent',
     );
     assert.equal(native.status, 200);
@@ -496,7 +496,7 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
     assert.equal(generation.at(-1).request.fake_stream, undefined);
     const anthropic = await chat(
       { max_tokens: 32, stream: true, fake_stream: true },
-      'geminicli',
+      'antigravity',
       '/v1/messages',
     );
     assert.equal(anthropic.status, 200);
@@ -544,68 +544,6 @@ test('production migration: names, sessions, hidden thoughts, optional credits, 
     assert.match(await bufferedUnconfirmed.text(), /"completion_status":"unconfirmed"/);
     assert.equal(generation.length, 1);
     await set({ CONTINUATION_ATTEMPTS: 0, ANTIGRAVITY_STREAM2NOSTREAM: false });
-    scenario = 'preview';
-    await admin('credentials/' + b + '/preview', {});
-    await admin('credentials/' + b + '/preview', {});
-    assert.equal(previewPosts, 2);
-    scenario = 'preview-denied';
-    const denied = await mf.dispatchFetch('https://test/admin/credentials/' + b + '/preview', {
-      method: 'POST',
-      headers: { authorization: 'Bearer fixture-panel', 'content-type': 'application/json' },
-      body: '{}',
-    });
-    assert.equal(denied.status, 403);
-    const exported = await mf.dispatchFetch('https://test/admin/credentials/export.zip', {
-      method: 'POST',
-      headers: { authorization: 'Bearer fixture-panel', 'content-type': 'application/json' },
-      body: JSON.stringify({ ids: [a, b] }),
-    });
-    assert.equal(exported.status, 200);
-    const archive = new Uint8Array(await exported.arrayBuffer());
-    assert.equal((await readZip(archive)).length, 2);
-    const imported = await mf.dispatchFetch(
-      'https://test/admin/credentials/import.zip?mode=geminicli',
-      {
-        method: 'POST',
-        headers: { authorization: 'Bearer fixture-panel', 'content-type': 'application/zip' },
-        body: archive,
-      },
-    );
-    assert.equal(imported.status, 200);
-    assert.equal((await imported.json()).imported, 2);
-    await DB.prepare(
-      'INSERT INTO credentials(id,mode,name,data,created_at,priority)VALUES(?,?,?,?,?,?)',
-    )
-      .bind(
-        c,
-        'geminicli',
-        'expired',
-        JSON.stringify({
-          refresh_token: 'local-refresh',
-          project_id: 'local-project',
-          expiry: '2000-01-01T00:00:00Z',
-        }),
-        Date.now(),
-        100,
-      )
-      .run();
-    scenario = 'invalid-grant';
-    await set({ AUTO_DISABLE_INVALID_CREDENTIALS: true });
-    const fallback = await chat({}, 'geminicli');
-    assert.equal(fallback.status, 200, await fallback.clone().text());
-    await fallback.text();
-    assert.equal(
-      await DB.prepare('SELECT disabled FROM credentials WHERE id=?').bind(c).first('disabled'),
-      1,
-    );
-    await DB.prepare('UPDATE credentials SET disabled=0 WHERE id=?').bind(c).run();
-    scenario = 'invalid-client';
-    await set({ MAX_CREDENTIAL_ATTEMPTS: 1 });
-    assert.equal((await chat({}, 'geminicli')).status, 502);
-    assert.equal(
-      await DB.prepare('SELECT disabled FROM credentials WHERE id=?').bind(c).first('disabled'),
-      0,
-    );
   } finally {
     await mf.dispose();
   }

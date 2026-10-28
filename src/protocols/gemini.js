@@ -2,7 +2,7 @@ import { normalizeImageSettings } from './image-config.js';
 import { normalizeToolHistory } from './tool-compat.js';
 import { HttpError } from '../core/common.js';
 import { cleanToolSchema } from './schema.js';
-import { antigravityModel, claudeToolIds } from '../models/antigravity.js';
+import { antigravityModel, claudeToolIds, routedThinking } from '../models/antigravity.js';
 
 const budgets = { off: 0, minimal: 0, low: 1024, medium: 8192, high: 16000, max: 24576 };
 const lowLevels = {
@@ -69,9 +69,12 @@ export function parseModel(model) {
     if (value === 'search') search = true;
     else if (value !== 'think' && !effort) effort = value;
   }
+  // Tiered is a native upstream route with configurable reasoning, not a local effort suffix.
+  // Reuse the known family's settings while preserving the actual model ID.
+  const profileId = base.endsWith('-tiered') ? base.slice(0, -7) : base;
   // Unknown upstream IDs may legitimately end in -high etc.; preserve them verbatim.
-  return Object.hasOwn(profiles, base)
-    ? { model: base, profile: profiles[base], effort, search }
+  return Object.hasOwn(profiles, profileId)
+    ? { model: base, profile: profiles[profileId], effort, search }
     : { model, profile: null };
 }
 export function normalizeRequest(request, model, mode) {
@@ -92,6 +95,18 @@ export function normalizeRequest(request, model, mode) {
     throw new HttpError(400, 'generationConfig 必须为对象');
   const explicit = result._reasoningEffort;
   delete result._reasoningEffort;
+  if (routedThinking(mapped.model)) {
+    const native = { ...(config.thinkingConfig || {}) };
+    delete native.thinkingBudget;
+    delete native.thinkingLevel;
+    delete native.thinking_budget;
+    delete native.thinking_level;
+    native.includeThoughts ??= true;
+    config.thinkingConfig = native;
+    if (parsed.search && mapped.model.endsWith('-search')) parsed.model = mapped.model.slice(0, -7);
+    else parsed.model = mapped.model;
+    parsed.profile = null;
+  }
   if (parsed.profile) {
     const p = parsed.profile;
     const thinking = config.thinkingConfig || {};
@@ -131,11 +146,8 @@ export function normalizeRequest(request, model, mode) {
     if (resolved === 0) normalized.includeThoughts = false;
     if (Object.keys(normalized).length) config.thinkingConfig = normalized;
     else delete config.thinkingConfig;
-  } else if (explicit)
-    throw new HttpError(
-      400,
-      '该模型暂不支持 reasoning_effort 自动映射，请使用原生 thinking_config',
-    );
+  }
+  // Optional OpenAI reasoning hints never block a native upstream route or an unknown model.
   if (parsed.search) {
     const tools = result.tools || [];
     if (!Array.isArray(tools)) throw new HttpError(400, 'tools 必须为数组');
@@ -174,8 +186,15 @@ export function normalizeRequest(request, model, mode) {
     if (!result.contents.length)
       throw new HttpError(400, '整理预填充消息后没有可用内容，请以用户或工具回复结束对话');
   }
-  if (mode === 'antigravity' && parsed.model.startsWith('claude-') && result.contents)
+  if (parsed.model.startsWith('claude-') && result.contents) {
+    if (
+      result.contents.some((content) =>
+        content.parts.some((part) => part.functionCall || part.function_call),
+      )
+    )
+      delete config.thinkingConfig;
     result.contents = claudeToolIds(result.contents);
+  }
   const schemaBudget = { nodes: 0 };
   if (result.tools) {
     if (!Array.isArray(result.tools)) throw new HttpError(400, 'tools 必须为数组');
@@ -206,6 +225,9 @@ export function normalizeRequest(request, model, mode) {
       return copy;
     });
   }
+  delete config.presencePenalty;
+  delete config.frequencyPenalty;
+  delete config.stopSequences;
   if (Object.keys(config).length) result.generationConfig = config;
   return { model: parsed.model, request: result };
 }

@@ -306,12 +306,12 @@ test('KV cache: scoped keys, expiry, unchanged writes suppressed and failures ne
   assert.equal(await publishShared(broken, 'settings', {}, 60), false);
 });
 
-test('resource preparation names new KV gcli2api, reuses existing namespaces and leaves configured bindings intact', async () => {
+test('resource preparation names new KV agy2api_workers, reuses existing namespaces and leaves configured bindings intact', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'gcli-resource-test-'));
   try {
     const path = dir + '/wrangler.jsonc';
     const config = {
-      name: 'gcli2api',
+      name: 'agy2api_workers',
       kv_namespaces: [{ binding: 'CACHE' }],
       d1_databases: [{ database_id: 'preserved' }],
     };
@@ -324,18 +324,24 @@ test('resource preparation names new KV gcli2api, reuses existing namespaces and
         created = true;
         return '';
       }
-      return JSON.stringify(created ? [{ title: 'gcli2api', id: 'a'.repeat(32) }] : []);
+      return JSON.stringify(created ? [{ title: 'agy2api_workers', id: 'a'.repeat(32) }] : []);
     };
     await prepareKv(run, path);
     let saved = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(saved.kv_namespaces[0].id, 'a'.repeat(32));
     assert.deepEqual(saved.d1_databases, config.d1_databases);
-    assert.deepEqual(calls[1], ['kv', 'namespace', 'create', 'gcli2api', '--update-config=false']);
+    assert.deepEqual(calls[1], [
+      'kv',
+      'namespace',
+      'create',
+      'agy2api_workers',
+      '--update-config=false',
+    ]);
     await prepareKv(() => {
       throw new Error('must not provision twice');
     }, path);
     await writeFile(path, JSON.stringify(config));
-    await prepareKv(() => JSON.stringify([{ title: 'gcli2api', id: 'b'.repeat(32) }]), path);
+    await prepareKv(() => JSON.stringify([{ title: 'agy2api_workers', id: 'b'.repeat(32) }]), path);
     saved = JSON.parse(await readFile(path, 'utf8'));
     assert.equal(saved.kv_namespaces[0].id, 'b'.repeat(32));
   } finally {
@@ -1339,7 +1345,7 @@ test('failure before account selection records its real phase, safe quota error 
     );
     assert.equal(logs.records.length, 1);
     const final = logs.records[0];
-    assert.equal(final.mode, 'auto');
+    assert.equal(final.mode, 'antigravity');
     assert.equal(final.credential_id, null);
     assert.equal(final.credential_state, 'not_selected');
     assert.equal(final.stage, 'credential_select');
@@ -1353,7 +1359,7 @@ test('failure before account selection records its real phase, safe quota error 
   }
 });
 
-test('unified routing retains selected account when preparation fails before upstream fetch', async () => {
+test('invalid endpoint is recorded before account selection without inventing an account', async () => {
   const mf = await runtime();
   try {
     const env = await setup(mf);
@@ -1376,9 +1382,9 @@ test('unified routing retains selected account when preparation fails before ups
       env.DB,
       new URLSearchParams({ request_id: body.error.request_id }),
     );
-    assert.equal(logs.records[0].credential_id, id);
+    assert.equal(logs.records[0].credential_id, null);
     assert.equal(logs.records[0].mode, 'antigravity');
-    assert.equal(logs.records[0].credential_state, 'selected');
+    assert.equal(logs.records[0].credential_state, 'not_selected');
     assert.equal(logs.records[0].stage, 'request_prepare');
     assert.match(logs.records[0].detail_message, /HTTPS/);
     assert.equal(calls, 0);
@@ -1641,6 +1647,63 @@ test('Denova native image ping shape reaches Google internal imageConfig and ret
         mimeType: 'image/png',
         data: 'AQID',
       });
+    } finally {
+      await mf.dispose();
+    }
+  }
+});
+
+test('Denova tiered reasoning request streams without a local request_prepare failure', async () => {
+  for (const path of ['/v1/chat/completions', '/antigravity/v1/chat/completions']) {
+    const mf = await runtime();
+    try {
+      const env = { ...(await setup(mf)), API_PASSWORD: 'api' };
+      await env.DB.prepare('UPDATE credentials SET data=? WHERE id=?')
+        .bind(
+          JSON.stringify({
+            token: 'fixture-token',
+            project_id: 'project',
+            expiry: '2099-01-01T00:00:00Z',
+          }),
+          id,
+        )
+        .run();
+      let calls = 0;
+      const response = await handleRequest(
+        new Request('https://fixture' + path, {
+          method: 'POST',
+          headers: { authorization: 'Bearer api', 'content-type': 'application/json' },
+          body: JSON.stringify({
+            model: 'gemini-3.8-flash-tiered',
+            reasoning_effort: 'medium',
+            stream: true,
+            messages: [{ role: 'user', content: 'hello' }],
+          }),
+        }),
+        env,
+        async (url, init) => {
+          calls++;
+          const payload = JSON.parse(init.body);
+          assert.equal(payload.model, 'gemini-3.8-flash-tiered');
+          assert.equal(payload.request.generationConfig.thinkingConfig.thinkingLevel, undefined);
+          assert.equal(payload.request._reasoningEffort, undefined);
+          return new Response(
+            'data: ' +
+              JSON.stringify({
+                response: {
+                  candidates: [{ content: { parts: [{ text: 'hello' }] }, finishReason: 'STOP' }],
+                },
+              }) +
+              '\n\n',
+            { headers: { 'content-type': 'text/event-stream' } },
+          );
+        },
+      );
+      assert.equal(response.status, 200);
+      const output = await response.text();
+      assert.match(output, /hello/);
+      assert.match(output, /\[DONE\]/);
+      assert.equal(calls, 1);
     } finally {
       await mf.dispose();
     }

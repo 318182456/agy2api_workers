@@ -3,18 +3,10 @@ const protocols = [
   ['gemini', 'Gemini 原生', 'generateContent / streamGenerateContent'],
   ['messages', 'Messages 兼容', 'Claude 客户端格式，模型仍由请求决定'],
 ];
-const groups = [
-  {
-    mode: 'antigravity',
-    title: 'Antigravity',
-    ids: ['antiUrl', 'antiGeminiUrl', 'antiAnthropicUrl'],
-  },
-  { mode: 'geminicli', title: 'GeminiCLI', ids: ['openaiUrl', 'geminiUrl', 'anthropicUrl'] },
-];
-const unifiedGroup = {
-  mode: 'auto',
-  title: '统一接口 · 自动调度',
-  ids: ['unifiedOpenaiUrl', 'unifiedGeminiUrl', 'unifiedMessagesUrl'],
+const group = {
+  mode: 'antigravity',
+  title: 'Antigravity',
+  ids: ['openaiUrl', 'geminiUrl', 'anthropicUrl'],
 };
 function renderEndpointGroup(group) {
   return (
@@ -50,4 +42,4 @@ function renderEndpointGroup(group) {
     '</section>'
   );
 }
-export const apiPage = String.raw`<section class="card"><div class="card-heading"><div><h2>连接你的客户端</h2><p>默认使用统一地址。程序按模型支持和调度策略选择 GeminiCLI 或 Antigravity 凭证；无需客户端区分渠道。</p></div><button id="endpointsRefresh" class="secondary">刷新可用状态</button></div><p class="data-note">API Key 填写“API 密钥”页创建或导入的密钥，原总密钥也可继续使用。</p>${renderEndpointGroup(unifiedGroup)}<details class="help endpoint-expert"><summary>指定凭证渠道（高级，旧地址仍可使用）</summary><p>仅在希望固定使用某一类凭证时选择下方地址。</p><div class="endpoint-groups">${groups.map(renderEndpointGroup).join('')}</div></details><p class="data-note">两边都支持的模型可参与统一调度，额度分别记录；可重试故障可在全局尝试次数内换账号。模型列表不代表所有账号一定有权限或剩余额度。</p></section>`;
+export const apiPage = String.raw`<section class="card"><div class="card-heading"><div><h2>连接你的客户端</h2><p>所有请求使用 Antigravity 凭证，按模型和账号额度调度。</p></div><button id="endpointsRefresh" class="secondary">刷新可用状态</button></div><p class="data-note">API Key 填写“API 密钥”页创建或导入的密钥，原总密钥也可继续使用。</p>${renderEndpointGroup(group)}<p class="data-note">也兼容 /antigravity 前缀。可重试故障在尝试次数内换账号；模型被列出不代表当前账号一定有权限或剩余额度。</p></section>`;

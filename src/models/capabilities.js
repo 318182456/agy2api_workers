@@ -1,4 +1,4 @@
-import { antigravityAliases } from './antigravity.js';
+import { antigravityAliases, routedThinking } from './antigravity.js';
 import { parseModel } from '../protocols/gemini.js';
 import { modelRequest, searchModel } from './request.js';
 
@@ -41,7 +41,7 @@ export function describeModels(catalog, mode) {
         '联网搜索',
         '添加 Google 搜索工具；模型按需搜索，渠道可用性以实际响应为准',
       );
-    if (parsed.profile && parsed.model === id) {
+    if (parsed.profile && parsed.model === id && !routedThinking(routes[id] || id)) {
       for (const [suffix, label] of [
         ['low', '低思考'],
         ['medium', '中思考'],
@@ -74,8 +74,9 @@ export function describeModels(catalog, mode) {
       description,
       variants,
       search: variants.some((v) => v.label === '联网搜索'),
-      note:
-        variants.length === 1
+      note: routedThinking(routes[id] || id)
+        ? '思考档位由上游模型 ID 决定；reasoning_effort 不改写该档位，请选择目录中的对应型号'
+        : variants.length === 1
           ? '未提供已确认的快捷后缀，请使用原始名称；不代表模型本身没有其他能力'
           : /-(?:high|low|medium|tiered)$/.test(id)
             ? '名称已包含上游档位，搜索调用会保留该档位'

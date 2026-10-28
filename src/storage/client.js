@@ -31,7 +31,7 @@ export async function storageNodes(env) {
       ).results.filter(
         (row) =>
           /^[a-f0-9-]{36}$/.test(row.id) &&
-          /^gcli2api-storage-[a-f0-9]{12}$/.test(row.worker_name) &&
+          /^(?:gcli2api|agy2api)-storage-[a-f0-9]{12}$/.test(row.worker_name) &&
           row.url === 'https://' + row.worker_name + '.pages.dev' &&
           /^[a-f0-9]{64}$/.test(row.node_secret),
       );

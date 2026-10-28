@@ -28,37 +28,6 @@ export function normalizeQuota(value) {
   });
 }
 
-// Gemini CLI reports quota buckets rather than Antigravity's model map.
-// Keep missing fractions/counts unknown; do not derive a total allowance from them.
-export function normalizeGeminiCliQuota(value) {
-  if (!Array.isArray(value?.buckets))
-    throw new HttpError(502, 'Google 未返回有效的 GeminiCLI 配额信息');
-  return value.buckets.map((bucket, index) => {
-    const fraction = bucket?.remainingFraction,
-      reset = bucket?.resetTime;
-    const amount = bucket?.remainingAmount;
-    return {
-      id:
-        typeof bucket?.modelId === 'string' && bucket.modelId.trim()
-          ? bucket.modelId.slice(0, 200)
-          : '共享配额',
-      remaining:
-        typeof fraction === 'number' && Number.isFinite(fraction) && fraction >= 0 && fraction <= 1
-          ? fraction
-          : null,
-      resetTime: typeof reset === 'string' && Number.isFinite(Date.parse(reset)) ? reset : null,
-      remainingAmount:
-        typeof amount === 'string' && /^\d{1,30}$/.test(amount)
-          ? amount
-          : Number.isSafeInteger(amount) && amount >= 0
-            ? String(amount)
-            : null,
-      tokenType: typeof bucket?.tokenType === 'string' ? bucket.tokenType.slice(0, 100) : null,
-      bucketIndex: index,
-    };
-  });
-}
-
 export async function credentialQuota(env, id, fetcher = fetch, options = {}) {
   if (!options.fresh) {
     const cached = await cachedQuota(env, id);
@@ -73,19 +42,16 @@ async function fetchCredentialQuota(env, id, fetcher) {
     env.DB.prepare('SELECT * FROM credentials WHERE id=?').bind(id).first(),
   );
   if (!row) throw new HttpError(404, '凭证不存在');
-  if (!['antigravity', 'geminicli'].includes(row.mode)) throw new HttpError(400, '未知凭证渠道');
+  if (row.mode !== 'antigravity') throw new HttpError(400, '未知凭证渠道');
   row.data = parseCredentialData(row.data);
   env = await effectiveEnv(env);
   const origin = upstreamOrigin(env, row.mode);
-  const cli = row.mode === 'geminicli';
-  if (cli && (typeof row.data.project_id !== 'string' || !row.data.project_id.trim()))
-    throw new HttpError(400, 'GeminiCLI 凭证缺少 project_id，请先校验项目');
   let token = await operation('oauth_refresh', () => accessToken(env.DB, row, fetcher, false, env));
   const signal = AbortSignal.timeout(30000);
   const send = () =>
     googleFetch(
       fetcher,
-      `${origin}/v1internal:${cli ? 'retrieveUserQuota' : 'fetchAvailableModels'}`,
+      `${origin}/v1internal:fetchAvailableModels`,
       {
         method: 'POST',
         redirect: 'manual',
@@ -93,9 +59,9 @@ async function fetchCredentialQuota(env, id, fetcher) {
         headers: {
           authorization: `Bearer ${token}`,
           'content-type': 'application/json',
-          'user-agent': cli ? 'GeminiCLI' : 'antigravity/hub/2.23.1 darwin/arm64',
+          'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
         },
-        body: cli ? JSON.stringify({ project: row.data.project_id }) : '{}',
+        body: '{}',
       },
       'quota_fetch',
     );
@@ -130,6 +96,6 @@ async function fetchCredentialQuota(env, id, fetcher) {
     credentialId: id,
     mode: row.mode,
     queriedAt: new Date().toISOString(),
-    models: cli ? normalizeGeminiCliQuota(value) : normalizeQuota(value),
+    models: normalizeQuota(value),
   };
 }

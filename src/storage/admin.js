@@ -1,3 +1,4 @@
+import { renameStorageNode } from './rename.js';
 import { timed } from '../core/timing.js';
 import { dbCache } from '../cache/db.js';
 import { storageSchedule } from './schedule.js';
@@ -28,6 +29,8 @@ function cloudflareOperation(path, method = 'GET') {
         ? 'Pages 配置更新'
         : 'Pages 配置读取';
   }
+  if (path.includes('/workers/workers/'))
+    return method === 'PATCH' ? 'Worker 资源改名' : 'Worker 身份读取';
   if (path.endsWith('/settings')) return 'Worker 配置读取';
   if (path.includes('/workers/scripts/')) return 'Worker 上传';
   return path.startsWith('/accounts?') ? '账号列表读取' : '账号校验';
@@ -309,6 +312,8 @@ async function create(env, input, fetcher) {
       .run();
     return json({ node: publicNode({ ...row, api_token: token, email }), reused: true });
   }
+  if (row?.status === 'renaming' && row.updated_at > Date.now() - 600000)
+    throw failure('节点正在改名，请稍后重试', 409);
   const now = Date.now();
   if (!row) {
     const id = crypto.randomUUID();
@@ -322,7 +327,7 @@ async function create(env, input, fetcher) {
         id,
         email,
         account.id,
-        'gcli2api-storage-' + id.replaceAll('-', '').slice(0, 12),
+        'agy2api-storage-' + id.replaceAll('-', '').slice(0, 12),
         secret,
         now,
         now,
@@ -593,11 +598,15 @@ export async function storageNodesRoute(request, env, url, fetcher) {
     if (request.method === 'POST') return create(env, await readJson(request), fetcher);
   }
   const match = url.pathname.match(
-    /^\/admin\/storage-nodes\/([a-f0-9-]{36})(\/(?:check|deploy))?$/,
+    /^\/admin\/storage-nodes\/([a-f0-9-]{36})(\/(?:check|deploy|rename))?$/,
   );
   if (!match) throw failure('接口不存在', 404);
   const row = await env.DB.prepare('SELECT * FROM storage_nodes WHERE id=?').bind(match[1]).first();
   if (!row) throw failure('节点不存在', 404);
+  if (match[2] === '/rename' && request.method === 'POST')
+    return renameStorageNode(env, row, fetcher, cloudflare, check);
+  if (row.status === 'renaming' && row.updated_at > Date.now() - 600000)
+    throw failure('节点正在改名，请稍后重试', 409);
   if (match[2] === '/deploy' && request.method === 'POST') {
     const input = request.body ? await readJson(request) : {};
     return create(env, { ...input, node_id: row.id, redeploy: true }, fetcher);

@@ -19,7 +19,7 @@ import { endpointsScript } from './scripts/endpoints.js';
 import { bootstrapScript } from './scripts/bootstrap.js';
 
 export const panel = String.raw`<!doctype html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>GCLI2API Workers</title><link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1"><meta name="theme-color" content="#4263e9"><style>${panelStyle}</style></head><body>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>AGY2API Workers</title><link rel="icon" type="image/svg+xml" sizes="any" href="/favicon.svg?v=1"><meta name="theme-color" content="#4263e9"><style>${panelStyle}</style></head><body>
 ${panelFrame}
 <script>
 ${nearbyScript}

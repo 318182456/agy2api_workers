@@ -8,17 +8,17 @@ export async function prepareKv(run = wrangler, path = configPath) {
   const binding = config.kv_namespaces?.find((item) => item.binding === 'CACHE');
   if (!binding || binding.id) return;
   let namespaces = JSON.parse(run(['kv', 'namespace', 'list']));
-  let namespace = namespaces.find((item) => item.title === 'gcli2api');
+  let namespace = namespaces.find((item) => item.title === 'agy2api_workers');
   if (!namespace) {
-    run(['kv', 'namespace', 'create', 'gcli2api', '--update-config=false']);
+    run(['kv', 'namespace', 'create', 'agy2api_workers', '--update-config=false']);
     namespaces = JSON.parse(run(['kv', 'namespace', 'list']));
-    namespace = namespaces.find((item) => item.title === 'gcli2api');
+    namespace = namespaces.find((item) => item.title === 'agy2api_workers');
   }
   if (!/^[a-f0-9]{32}$/i.test(namespace?.id || ''))
-    throw new Error('KV gcli2api namespace ID missing; deployment stopped');
+    throw new Error('KV agy2api_workers namespace ID missing; deployment stopped');
   binding.id = namespace.id;
   await writeFile(path, JSON.stringify(config, null, 2) + '\n');
-  console.log('KV gcli2api connected as CACHE');
+  console.log('KV agy2api_workers connected as CACHE');
 }
 function wrangler(args) {
   return execFileSync(

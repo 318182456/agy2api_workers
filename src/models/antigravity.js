@@ -2,9 +2,13 @@ import { HttpError } from '../core/common.js';
 const aliases = {
   'claude-opus-4-6': 'claude-opus-4-6-thinking',
   'claude-sonnet-4-6-thinking': 'claude-sonnet-4-6',
-  'gemini-3.1-pro-high': 'gemini-pro-agent',
 };
 export { aliases as antigravityAliases };
+export const routedThinking = (model) =>
+  !/image|audio|tts|live|embedding/i.test(model) &&
+  (Number(model.match(/^gemini-(\d+)(?:[.-]|$)/i)?.[1]) >= 3 ||
+    /^claude-(?:opus|sonnet)-5[.-]/i.test(model) ||
+    model.endsWith('-agent'));
 const ratios = [
   [1, 1],
   [2, 3],

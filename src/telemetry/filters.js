@@ -14,7 +14,7 @@ export function filters(params, alias = 'l', cursor = true) {
   }
   const mode = get('mode');
   if (mode) {
-    if (!['geminicli', 'antigravity'].includes(mode)) throw new HttpError(400, '渠道无效');
+    if (mode !== 'antigravity') throw new HttpError(400, '渠道无效');
     add(`${alias}.mode=?`, mode);
   }
   for (const key of ['model', 'request_id', 'stage']) {

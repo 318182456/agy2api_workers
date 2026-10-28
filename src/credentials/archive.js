@@ -2,7 +2,7 @@ import { HttpError, json } from '../core/common.js';
 import { importCredential, detectedMode } from './index.js';
 import { readBytes, readZip, writeZip } from '../core/zip.js';
 export async function importArchive(request, env, mode) {
-  if (!['geminicli', 'antigravity'].includes(mode)) throw new HttpError(400, '请选择默认渠道');
+  if (mode !== 'antigravity') throw new HttpError(400, '请选择默认渠道');
   const files = await readZip(await readBytes(request.body));
   const entries = files.map((file) => {
     let value;
@@ -14,11 +14,13 @@ export async function importArchive(request, env, mode) {
     if (!value || typeof value !== 'object' || Array.isArray(value))
       throw new HttpError(400, 'ZIP JSON 必须为凭证对象');
     if (
-      value.format === 'gcli2api-workers-credential-v1' &&
+      ['agy2api-workers-credential-v1', 'gcli2api-workers-credential-v1'].includes(value.format) &&
       (!value.entry || typeof value.entry !== 'object' || Array.isArray(value.entry))
     )
       throw new HttpError(400, 'ZIP 备份条目无效');
-    return value?.format === 'gcli2api-workers-credential-v1'
+    return ['agy2api-workers-credential-v1', 'gcli2api-workers-credential-v1'].includes(
+      value?.format,
+    )
       ? value.entry
       : {
           name: file.name.split('/').at(-1),
@@ -58,7 +60,7 @@ export async function exportArchive(env, ids) {
     rows.map((row) => ({
       name: row.mode + '/' + row.id + '.json',
       data: JSON.stringify({
-        format: 'gcli2api-workers-credential-v1',
+        format: 'agy2api-workers-credential-v1',
         entry: {
           name: row.name,
           mode: row.mode,
@@ -73,7 +75,7 @@ export async function exportArchive(env, ids) {
   return new Response(zip, {
     headers: {
       'content-type': 'application/zip',
-      'content-disposition': 'attachment; filename="gcli2api-credentials.zip"',
+      'content-disposition': 'attachment; filename="agy2api-credentials.zip"',
       'cache-control': 'no-store',
     },
   });

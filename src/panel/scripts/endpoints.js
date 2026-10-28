@@ -1,13 +1,7 @@
 export const endpointsScript = String.raw`const endpointTargets = [
-  ['unifiedOpenaiUrl', 'auto', '/v1'],
-  ['unifiedGeminiUrl', 'auto', ''],
-  ['unifiedMessagesUrl', 'auto', ''],
-  ['openaiUrl', 'geminicli', '/geminicli/v1'],
-  ['antiUrl', 'antigravity', '/antigravity/v1'],
-  ['geminiUrl', 'geminicli', '/geminicli'],
-  ['antiGeminiUrl', 'antigravity', '/antigravity'],
-  ['anthropicUrl', 'geminicli', '/geminicli'],
-  ['antiAnthropicUrl', 'antigravity', '/antigravity'],
+  ['openaiUrl', 'antigravity', '/v1'],
+  ['geminiUrl', 'antigravity', ''],
+  ['anthropicUrl', 'antigravity', ''],
 ];
 function renderEndpoints() {
   for (const [id, mode, path] of endpointTargets) {
@@ -19,11 +13,10 @@ function renderEndpoints() {
     el('copy-' + id).disabled = !available;
     el('endpoint-' + id).title = available
       ? '已有启用凭证，请使用账号可用的模型'
-      : '暂无启用的 ' +
-        (mode === 'auto' ? '可用渠道' : mode === 'geminicli' ? 'GeminiCLI' : 'Antigravity') +
-        ' 凭证';
+      : '暂无启用的 ' + 'Antigravity' + ' 凭证';
   }
-  for (const mode of ['auto', 'antigravity', 'geminicli']) {
+  {
+    const mode = 'antigravity';
     const count = credentialsSnapshot.filter(
       (row) => (mode === 'auto' || row.mode === mode) && !row.disabled,
     ).length;

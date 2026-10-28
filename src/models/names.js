@@ -3,7 +3,7 @@ import { readShared } from '../cache/shared.js';
 
 export const validModelId = (id) =>
   typeof id === 'string' && /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id);
-const cacheKey = (mode) => (mode === 'antigravity' ? 'models' : 'cliModels');
+const cacheKey = () => 'models';
 
 // Derive names from metadata, never from a list of model versions or guessed equivalents.
 export function modelCatalog(entries) {

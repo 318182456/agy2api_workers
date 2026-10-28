@@ -4,7 +4,7 @@ import { dbCache } from '../cache/db.js';
 export async function nodeUsage(env, row, fetcher = fetch, fresh = false) {
   if (
     row.url !== 'https://' + row.worker_name + '.pages.dev' ||
-    !/^gcli2api-storage-[a-f0-9]{12}$/.test(row.worker_name) ||
+    !/^(?:gcli2api|agy2api)-storage-[a-f0-9]{12}$/.test(row.worker_name) ||
     !row.node_secret
   )
     return { available: false, reason: '节点入口尚未部署' };

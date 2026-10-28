@@ -182,6 +182,7 @@ async function loadStorageNodes(fresh = false) {
               ? '已接入 · 下个整点参与'
               : '已接入 · 等待轮换',
         provisioning: '创建中',
+        renaming: '正在修改资源名称和地址',
         pending: '等待部署完成 / 检查连接',
         error: '需处理',
       }[row.status] || row.status) + (row.last_error ? '：' + row.last_error : '');
@@ -270,7 +271,7 @@ async function loadStorageNodes(fresh = false) {
     const deploy = document.createElement('button');
     deploy.className = 'secondary';
     deploy.textContent = '重新部署';
-    deploy.disabled = row.status === 'provisioning';
+    deploy.disabled = ['provisioning', 'renaming'].includes(row.status);
     deploy.onclick = () => {
       if (!row.has_token) {
         editStorageToken(row, tr);
@@ -294,9 +295,33 @@ async function loadStorageNodes(fresh = false) {
     const update = document.createElement('button');
     update.className = 'secondary';
     update.textContent = row.has_token ? '更新 Token' : '补填 Token';
-    update.disabled = row.status === 'provisioning';
+    update.disabled = ['provisioning', 'renaming'].includes(row.status);
     update.onclick = () => editStorageToken(row, tr);
     actions.append(deploy, update);
+    if (row.worker_name.startsWith('gcli2api-storage-')) {
+      const rename = document.createElement('button');
+      rename.className = 'secondary';
+      rename.textContent = '改为 agy2api';
+      rename.disabled =
+        !row.has_token || !row.deployed || ['provisioning', 'renaming'].includes(row.status);
+      rename.title = '修改 Cloudflare Worker 名称和 Pages 地址，保留原 DO 数据';
+      rename.onclick = () =>
+        localRun(async () => {
+          status('正在修改 Worker 名称并验证新的 Pages 入口…');
+          let result;
+          try {
+            result = await api('/admin/storage-nodes/' + row.id + '/rename', 'POST');
+          } finally {
+            await loadStorageNodes(true);
+          }
+          status(
+            result.unchanged
+              ? '节点已使用 agy2api 名称。'
+              : '资源名称和地址已更新，原 DO 数据保留；旧 Pages 入口保留供切换中的请求使用。',
+          );
+        });
+      actions.append(rename);
+    }
     const remove = document.createElement('button');
     remove.className = 'danger';
     remove.textContent = '移除记录';

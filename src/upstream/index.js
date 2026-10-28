@@ -13,10 +13,7 @@ import { normalizeRequest } from '../protocols/gemini.js';
 import { modelRequest } from '../models/request.js';
 
 export function upstreamOrigin(env, mode) {
-  const value =
-    mode === 'antigravity'
-      ? env.ANTIGRAVITY_API_URL || 'https://daily-cloudcode-pa.googleapis.com'
-      : env.CODE_ASSIST_ENDPOINT || 'https://cloudcode-pa.googleapis.com';
+  const value = env.ANTIGRAVITY_API_URL || 'https://daily-cloudcode-pa.googleapis.com';
   let url;
   try {
     url = new URL(value);
@@ -154,10 +151,7 @@ export async function callUpstream(
             headers: {
               authorization: `Bearer ${token}`,
               'content-type': 'application/json',
-              'user-agent':
-                mode === 'antigravity'
-                  ? 'antigravity/hub/2.23.1 darwin/arm64'
-                  : `Mozilla/5.0 (compatible; Google-Gemini-CLI/1.0; +https://github.com/google-gemini/gemini-cli) ${model}`,
+              'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
             },
             body: JSON.stringify(payload),
           },

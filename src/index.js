@@ -53,12 +53,10 @@ async function route(request, env, fetcher, context) {
 
 export async function handleRequest(request, env, fetcher = fetch, context) {
   // API clients may be browsers. Admin routes deliberately have no cross-origin access.
-  const anthropicPath = /^\/(?:(?:antigravity|geminicli)\/)?v1\/messages(?:\/count_tokens)?$/.test(
+  const anthropicPath = /^\/(?:antigravity\/)?v1\/messages(?:\/count_tokens)?$/.test(
     new URL(request.url).pathname,
   );
-  const api = /^\/(?:(?:antigravity|geminicli)\/)?v1(?:beta)?\//.test(
-    new URL(request.url).pathname,
-  );
+  const api = /^\/(?:antigravity\/)?v1(?:beta)?\//.test(new URL(request.url).pathname);
   if (api && request.method === 'OPTIONS')
     return new Response(null, {
       status: 204,

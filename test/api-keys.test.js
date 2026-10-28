@@ -406,7 +406,7 @@ test('problem view excludes ordinary successes, retains recovered retries and cl
   try {
     const base = {
       row: null,
-      mode: 'geminicli',
+      mode: 'antigravity',
       model: 'm',
       status: 200,
       outcome: 'success',
@@ -422,7 +422,7 @@ test('problem view excludes ordinary successes, retains recovered retries and cl
         {
           credential_id: null,
           credential_name: 'test',
-          mode: 'geminicli',
+          mode: 'antigravity',
           model: 'm',
           status: 429,
           stage: 'response_headers',
@@ -464,7 +464,7 @@ test('problem events and exports identify managed/master keys, use renamed names
     const key = await admin(mf, '', 'POST', { name: 'Client fixture' }, 201);
     const base = {
       row: null,
-      mode: 'geminicli',
+      mode: 'antigravity',
       model: 'm',
       status: 400,
       outcome: 'failed',
@@ -473,7 +473,7 @@ test('problem events and exports identify managed/master keys, use renamed names
         {
           credential_id: null,
           credential_name: 'fixture',
-          mode: 'geminicli',
+          mode: 'antigravity',
           model: 'm',
           status: 400,
           stage: 'response_headers',
@@ -753,152 +753,6 @@ test('524 responses fail over in unified and fixed channels within the configure
     assert.equal(response.status, 524);
     assert.equal(await response.text(), 'fixture timeout');
     assert.equal(seen.length, 1);
-  } finally {
-    await mf.dispose();
-  }
-});
-
-test('unified gateway: model union, cross-channel HTTP/network failover, one usage record, global budget and fixed-mode compatibility', async () => {
-  const seen = [];
-  let scenario = 'quota';
-  const { mf, env } = await runtime(async (request) => {
-    if (request.url.includes('fetchAvailableModels'))
-      return new OutboundResponse(
-        JSON.stringify({ models: { 'gemini-shared': {}, 'claude-only': {} } }),
-        { headers: { 'content-type': 'application/json' } },
-      );
-    if (request.url.includes('retrieveUserQuota'))
-      return new OutboundResponse(JSON.stringify({ buckets: [{ modelId: 'gemini-shared' }] }), {
-        headers: { 'content-type': 'application/json' },
-      });
-    const payload = await request.json();
-    const mode = request.url.includes('daily-cloudcode') ? 'antigravity' : 'geminicli';
-    seen.push({ mode, body: payload, authorization: request.headers.get('authorization') });
-    if (scenario === 'quota' && mode === 'geminicli')
-      return new OutboundResponse('rate limited', {
-        status: 429,
-        headers: { 'retry-after': '60' },
-      });
-    if (scenario === 'network' && mode === 'geminicli')
-      throw new Error('simulated transport failure');
-    if (scenario === 'all-fail') return new OutboundResponse('unavailable', { status: 503 });
-    if (scenario === 'bad-request') return new OutboundResponse('invalid request', { status: 400 });
-    return new OutboundResponse(
-      JSON.stringify({
-        response: {
-          candidates: [{ content: { parts: [{ text: 'unified works' }] }, finishReason: 'STOP' }],
-          usageMetadata: { totalTokenCount: 7 },
-        },
-      }),
-      { headers: { 'content-type': 'application/json' } },
-    );
-  });
-  try {
-    const a = '11111111-1111-4111-8111-111111111111',
-      b = '22222222-2222-4222-8222-222222222222';
-    for (const [id, mode, token] of [
-      [a, 'geminicli', 'cli-test-token'],
-      [b, 'antigravity', 'anti-test-token'],
-    ])
-      await env.DB.prepare(
-        'INSERT INTO credentials(id,mode,name,data,created_at,priority)VALUES(?,?,?,?,?,?)',
-      )
-        .bind(
-          id,
-          mode,
-          mode,
-          JSON.stringify({ token, project_id: mode + '-project', expiry: '2099-01-01T00:00:00Z' }),
-          Date.now(),
-          mode === 'geminicli' ? 10 : 0,
-        )
-        .run();
-    const setting = async (patch) => {
-      const r = await mf.dispatchFetch('https://test/admin/settings', {
-        method: 'PATCH',
-        headers: { authorization: 'Bearer local-panel-only', 'content-type': 'application/json' },
-        body: JSON.stringify(patch),
-      });
-      assert.equal(r.status, 200, await r.clone().text());
-    };
-    await setting({
-      CREDENTIAL_SELECTION: 'priority',
-      MAX_CREDENTIAL_ATTEMPTS: 3,
-    });
-    const list = await mf.dispatchFetch('https://test/v1/models', {
-      headers: { authorization: 'Bearer local-master-only' },
-    });
-    assert.deepEqual(
-      (await list.json()).data.map((row) => row.id),
-      ['claude-only', 'gemini-shared'],
-    );
-    const chat = async (path = '/v1/chat/completions', model = 'gemini-shared') =>
-      mf.dispatchFetch('https://test' + path, {
-        method: 'POST',
-        headers: { authorization: 'Bearer local-master-only', 'content-type': 'application/json' },
-        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'local only' }] }),
-      });
-    let response = await chat();
-    assert.equal(response.status, 200, await response.clone().text());
-    assert.equal(response.headers.get('x-upstream-channel'), 'antigravity');
-    await response.json();
-    assert.deepEqual(
-      seen.map((row) => row.mode),
-      ['geminicli', 'antigravity'],
-    );
-    assert.equal(seen[0].body.project, 'geminicli-project');
-    assert.equal(seen[1].body.project, 'antigravity-project');
-    assert.equal(seen[1].body.userAgent, 'antigravity');
-    let stats = await usageStats(env.DB, new URLSearchParams('fresh=1'), env);
-    assert.equal(stats.summary.requests, 1);
-    assert.equal(stats.summary.successes, 1);
-    assert.equal(stats.summary.total_tokens, 7);
-    const logs = await queryCallLogs(env.DB, new URLSearchParams('issues=1'));
-    assert.ok(logs.records.some((row) => row.mode === 'geminicli' && row.status === 429));
-    assert.ok(logs.records.some((row) => row.mode === 'antigravity' && row.stage === 'completed'));
-    assert.equal(await env.DB.prepare('SELECT COUNT(*) AS n FROM request_usage').first('n'), 1);
-    await env.DB.exec('DELETE FROM credential_cooldowns');
-    scenario = 'network';
-    seen.length = 0;
-    response = await chat();
-    assert.equal(response.status, 200, await response.clone().text());
-    await response.text();
-    assert.deepEqual(
-      seen.map((row) => row.mode),
-      ['geminicli', 'antigravity'],
-    );
-    scenario = 'bad-request';
-    seen.length = 0;
-    response = await chat();
-    assert.equal(response.status, 400);
-    assert.equal(seen.length, 1);
-    await response.text();
-    scenario = 'all-fail';
-    await setting({ MAX_CREDENTIAL_ATTEMPTS: 1 });
-    await env.DB.exec('DELETE FROM credential_cooldowns');
-    seen.length = 0;
-    response = await chat();
-    assert.equal(response.status, 503);
-    assert.equal(seen.length, 1);
-    await response.text();
-    scenario = 'ok';
-    await env.DB.exec('DELETE FROM credential_cooldowns');
-    seen.length = 0;
-    response = await chat('/geminicli/v1/chat/completions');
-    assert.equal(response.status, 200);
-    assert.equal(response.headers.get('x-upstream-channel'), 'geminicli');
-    await response.text();
-    assert.equal(seen[0].mode, 'geminicli');
-    seen.length = 0;
-    response = await chat('/v1/chat/completions', 'claude-only');
-    assert.equal(response.status, 200, await response.clone().text());
-    await response.text();
-    assert.equal(seen[0].mode, 'antigravity');
-    await env.DB.prepare('UPDATE credentials SET disabled=1 WHERE id=?').bind(a).run();
-    seen.length = 0;
-    response = await chat();
-    assert.equal(response.status, 200, await response.clone().text());
-    await response.text();
-    assert.equal(seen[0].mode, 'antigravity');
   } finally {
     await mf.dispose();
   }

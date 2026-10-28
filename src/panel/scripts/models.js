@@ -88,7 +88,7 @@ el('modelsForm').onsubmit = (event) => {
       const value = await api('/admin/models?mode=' + el('modelsMode').value);
       const labels = {
         google: 'Google 实时返回',
-        quota: 'Google GeminiCLI 配额中的模型 ID',
+        quota: 'Google Antigravity 配额中的模型 ID',
         cache: '上次动态查询结果（实时查询失败）',
       };
       el('modelsSource').textContent =
