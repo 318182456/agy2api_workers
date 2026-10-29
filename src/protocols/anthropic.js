@@ -172,8 +172,13 @@ export function anthropicToGemini(body, countOnly = false) {
   if (body.tool_choice) {
     const choice = body.tool_choice;
     const modes = { auto: 'AUTO', any: 'ANY', none: 'NONE', tool: 'ANY' };
-    if (!modes[choice.type] || (choice.type === 'tool' && !choice.name))
+    if (!Object.hasOwn(modes, choice.type) || (choice.type === 'tool' && !choice.name))
       throw new HttpError(400, 'tool_choice 类型或名称无效');
+    const toolNames = new Set((body.tools || []).map((tool) => tool.name));
+    if (choice.type === 'any' && !toolNames.size)
+      throw new HttpError(400, 'tool_choice=any 至少需要一个工具');
+    if (choice.type === 'tool' && !toolNames.has(choice.name))
+      throw new HttpError(400, 'tool_choice 指向未声明的工具');
     if (choice.disable_parallel_tool_use) throw new HttpError(400, '暂不支持强制关闭并行工具调用');
     result.toolConfig = {
       functionCallingConfig: {

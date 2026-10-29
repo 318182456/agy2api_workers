@@ -126,7 +126,7 @@ export function openaiToGemini(body) {
     generationConfig.responseMimeType = 'application/json';
     generationConfig.responseJsonSchema = body.response_format.json_schema?.schema;
   }
-  if (body.thinking_config) generationConfig.thinkingConfig = body.thinking_config;
+  if (body.thinking_config != null) generationConfig.thinkingConfig = body.thinking_config;
   if (Object.keys(generationConfig).length) request.generationConfig = generationConfig;
   if (body.tools != null && !Array.isArray(body.tools))
     throw new HttpError(400, 'tools 必须为数组');
@@ -144,7 +144,7 @@ export function openaiToGemini(body) {
           return {
             name,
             ...(description ? { description } : {}),
-            ...(parameters ? { parametersJsonSchema: parameters } : {}),
+            ...(parameters != null ? { parametersJsonSchema: parameters } : {}),
           };
         }),
       },
@@ -165,6 +165,11 @@ export function openaiToGemini(body) {
         !choice.function.name.trim())
     )
       throw new HttpError(400, 'tool_choice 缺少函数名');
+    const toolNames = new Set((body.tools || []).map((tool) => tool.function.name));
+    if (choice === 'required' && !toolNames.size)
+      throw new HttpError(400, 'tool_choice=required 至少需要一个工具');
+    if (typeof choice === 'object' && !toolNames.has(choice.function.name))
+      throw new HttpError(400, 'tool_choice 指向未声明的工具');
     request.toolConfig = {
       functionCallingConfig:
         typeof choice === 'string'

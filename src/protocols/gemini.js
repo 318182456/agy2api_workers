@@ -2,7 +2,12 @@ import { normalizeImageSettings } from './image-config.js';
 import { normalizeToolHistory } from './tool-compat.js';
 import { HttpError } from '../core/common.js';
 import { cleanToolSchema } from './schema.js';
-import { antigravityModel, claudeToolIds, routedThinking } from '../models/antigravity.js';
+import {
+  antigravityModel,
+  claudeToolIds,
+  routedThinking,
+  prepareClaudeHistory,
+} from '../models/antigravity.js';
 
 const budgets = { off: 0, minimal: 0, low: 1024, medium: 8192, high: 16000, max: 24576 };
 const lowLevels = {
@@ -84,6 +89,27 @@ export function normalizeRequest(request, model, mode) {
     (typeof request.generationConfig !== 'object' || Array.isArray(request.generationConfig))
   )
     throw new HttpError(400, 'generationConfig 必须为对象');
+  const suppliedConfig = request.generationConfig;
+  if (suppliedConfig) {
+    const suppliedThinking = suppliedConfig.thinkingConfig ?? suppliedConfig.thinking_config;
+    if (suppliedThinking != null) {
+      if (typeof suppliedThinking !== 'object' || Array.isArray(suppliedThinking))
+        throw new HttpError(400, 'thinkingConfig 必须为对象');
+      const thinking = { ...suppliedThinking };
+      for (const [snake, camel] of [
+        ['thinking_budget', 'thinkingBudget'],
+        ['thinking_level', 'thinkingLevel'],
+        ['include_thoughts', 'includeThoughts'],
+      ]) {
+        if (thinking[camel] == null && thinking[snake] != null) thinking[camel] = thinking[snake];
+        delete thinking[snake];
+      }
+      if (thinking.includeThoughts != null && typeof thinking.includeThoughts !== 'boolean')
+        throw new HttpError(400, 'includeThoughts 必须为布尔值');
+      suppliedConfig.thinkingConfig = thinking;
+    }
+    delete suppliedConfig.thinking_config;
+  }
   const mapped =
     mode === 'antigravity'
       ? antigravityModel(request, model)
@@ -187,12 +213,7 @@ export function normalizeRequest(request, model, mode) {
       throw new HttpError(400, '整理预填充消息后没有可用内容，请以用户或工具回复结束对话');
   }
   if (parsed.model.startsWith('claude-') && result.contents) {
-    if (
-      result.contents.some((content) =>
-        content.parts.some((part) => part.functionCall || part.function_call),
-      )
-    )
-      delete config.thinkingConfig;
+    result.contents = prepareClaudeHistory(result.contents, config);
     result.contents = claudeToolIds(result.contents);
   }
   const schemaBudget = { nodes: 0 };

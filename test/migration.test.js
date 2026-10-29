@@ -343,3 +343,134 @@ test('invalid tool schemas identify the function and nested JSON pointer without
     (error) => error.status === 400 && error.message.includes('$/properties/impossible'),
   );
 });
+
+test('OpenAI false schemas are not silently replaced with empty callable tools', () => {
+  const request = openaiToGemini({
+    model: 'gemini-3.8-flash-tiered',
+    messages: [{ role: 'user', content: 'hi' }],
+    tools: [{ type: 'function', function: { name: 'impossible', parameters: false } }],
+  });
+  assert.throws(
+    () => normalizeRequest(request, 'gemini-3.8-flash-tiered', 'antigravity'),
+    (error) =>
+      error.status === 400 &&
+      error.message.includes('impossible') &&
+      error.message.includes('false'),
+  );
+});
+
+test('tool choices must reference declared tools across OpenAI and Anthropic', () => {
+  const base = { model: 'gemini-3.8-flash-tiered', messages: [{ role: 'user', content: 'hi' }] };
+  for (const body of [
+    { ...base, tool_choice: 'required' },
+    {
+      ...base,
+      tools: [{ type: 'function', function: { name: 'f' } }],
+      tool_choice: { type: 'function', function: { name: 'missing' } },
+    },
+  ])
+    assert.throws(() => openaiToGemini(body), { status: 400 });
+  for (const choice of [
+    { type: 'any' },
+    { type: 'tool', name: 'missing' },
+    { type: 'constructor' },
+  ])
+    assert.throws(() => anthropicToGemini({ ...base, max_tokens: 64, tool_choice: choice }), {
+      status: 400,
+    });
+  assert.equal(
+    openaiToGemini({
+      ...base,
+      tools: [{ type: 'function', function: { name: 'f' } }],
+      tool_choice: { type: 'function', function: { name: 'f' } },
+    }).toolConfig.functionCallingConfig.allowedFunctionNames[0],
+    'f',
+  );
+});
+
+test('thinking config validates before routed aliases and normalizes native snake-case without mutating input', () => {
+  for (const model of [
+    'gemini-3.8-flash-tiered',
+    'gemini-pro-agent',
+    'gemini-2.5-flash',
+    'claude-sonnet-4-6-thinking',
+  ])
+    for (const config of ['high', false, [], 42])
+      assert.throws(
+        () =>
+          normalizeRequest(
+            { ...message, generationConfig: { thinkingConfig: config } },
+            model,
+            'antigravity',
+          ),
+        { status: 400 },
+      );
+  const input = {
+    ...message,
+    generation_config: { thinking_config: { thinking_budget: 128, include_thoughts: false } },
+  };
+  const before = structuredClone(input);
+  const result = normalizeRequest(input, 'gemini-2.5-flash', 'antigravity').request;
+  assert.equal(result.generationConfig.thinking_config, undefined);
+  assert.equal(result.generationConfig.thinkingConfig.thinking_budget, undefined);
+  assert.equal(result.generationConfig.thinkingConfig.includeThoughts, false);
+  assert.deepEqual(input, before);
+});
+
+test('Claude unsigned text history matches Python while signed history and Gemini stay unchanged', () => {
+  const history = {
+    contents: [
+      { role: 'user', parts: [{ text: 'Question' }] },
+      { role: 'model', parts: [{ text: 'Previous answer' }] },
+      { role: 'user', parts: [{ text: 'Continue' }] },
+    ],
+  };
+  const original = structuredClone(history);
+  const claude = normalizeRequest(history, 'claude-opus-4-6', 'antigravity').request;
+  assert.deepEqual(claude.contents[1].parts, [
+    { text: '...', thoughtSignature: 'skip_thought_signature_validator' },
+    { text: 'Previous answer' },
+  ]);
+  const twice = normalizeRequest(claude, 'claude-opus-4-6', 'antigravity').request;
+  assert.deepEqual(twice.contents[1].parts, claude.contents[1].parts);
+  assert.deepEqual(
+    normalizeRequest(history, 'gemini-3.8-flash-tiered', 'antigravity').request.contents,
+    history.contents,
+  );
+  const signed = structuredClone(history);
+  signed.contents[1].parts = [
+    { text: 'original thinking', thought: true, thoughtSignature: 'actual-signature' },
+    { text: 'Previous answer' },
+  ];
+  assert.deepEqual(
+    normalizeRequest(signed, 'claude-opus-4-6', 'antigravity').request.contents[1].parts,
+    signed.contents[1].parts,
+  );
+  assert.deepEqual(history, original);
+});
+
+test('Claude tool history removes thinking config without inserting compatibility text', () => {
+  const history = {
+    generationConfig: { thinkingConfig: { thinkingBudget: 1024, includeThoughts: true } },
+    contents: [
+      { role: 'user', parts: [{ text: 'Use tool' }] },
+      {
+        role: 'model',
+        parts: [
+          {
+            functionCall: { id: 'call1', name: 'f', args: { value: 7 } },
+            thoughtSignature: 'real-tool-signature',
+          },
+        ],
+      },
+      {
+        role: 'user',
+        parts: [{ functionResponse: { id: 'call1', name: 'f', response: { value: 7 } } }],
+      },
+    ],
+  };
+  const result = normalizeRequest(history, 'claude-opus-4-6', 'antigravity').request;
+  assert.equal(result.generationConfig?.thinkingConfig, undefined);
+  assert.equal(result.contents[1].parts.length, 1);
+  assert.equal(result.contents[1].parts[0].thoughtSignature, 'real-tool-signature');
+});

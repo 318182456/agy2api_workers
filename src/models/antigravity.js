@@ -97,6 +97,33 @@ export function antigravityModel(request, model) {
   if (Object.keys(config).length) result.generationConfig = config;
   return { model: mapped, request: result, routed: mapped.endsWith('-agent') };
 }
+// Match _prepare_claude_history in the Python reference. Never replace a real
+// thought/signature and never insert a synthetic text part into tool history.
+export function prepareClaudeHistory(contents, config) {
+  if (
+    contents.some((content) =>
+      content.parts.some((part) => part.functionCall || part.function_call),
+    )
+  ) {
+    delete config.thinkingConfig;
+    return contents;
+  }
+  const index = contents.findLastIndex((content) => content.role === 'model');
+  if (index < 0) return contents;
+  const first = contents[index].parts[0];
+  if (first && (Object.hasOwn(first, 'thought') || Object.hasOwn(first, 'thoughtSignature')))
+    return contents;
+  const result = [...contents];
+  result[index] = {
+    ...contents[index],
+    parts: [
+      { text: '...', thoughtSignature: 'skip_thought_signature_validator' },
+      ...contents[index].parts,
+    ],
+  };
+  return result;
+}
+
 export function claudeToolIds(contents) {
   const queues = new Map();
   const seen = new Set();
