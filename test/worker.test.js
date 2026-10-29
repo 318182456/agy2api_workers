@@ -1378,7 +1378,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.22\.0/);
+    assert.match(html, /v0\.22\.1/);
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);
@@ -2573,4 +2573,74 @@ test('tiered Gemini routes accept OpenAI reasoning effort while preserving nativ
     normalizeRequest({}, model, 'antigravity').request.generationConfig.thinkingConfig,
     { includeThoughts: true },
   );
+});
+
+test('Denova streaming tool calls accept Go any schemas and preserve numeric, object and array arguments', async () => {
+  const args = {
+    state_changes: [{ value: 7 }, { value: { health: 10 } }],
+    values: [1, 'text', false, null],
+  };
+  const response = await handleRequest(
+    request('/v1/chat/completions', {
+      model: 'gemini-3.8-flash-tiered',
+      stream: true,
+      messages: [{ role: 'user', content: 'Submit state.' }],
+      tools: [
+        {
+          type: 'function',
+          function: {
+            name: 'submit_interactive_turn',
+            parameters: {
+              type: 'object',
+              properties: {
+                state_changes: {
+                  type: 'array',
+                  items: { type: 'object', properties: { value: true } },
+                },
+                values: { type: 'array', items: true },
+              },
+              required: ['state_changes'],
+            },
+          },
+        },
+      ],
+    }),
+    { ...env, DB: fakeDB() },
+    async (url, options) => {
+      const body = JSON.parse(options.body);
+      const schema = body.request.tools[0].functionDeclarations[0].parameters;
+      assert.deepEqual(schema.properties.state_changes.items.properties.value, {});
+      assert.deepEqual(schema.properties.values.items, {});
+      return new Response(
+        'data: ' +
+          JSON.stringify({
+            response: {
+              candidates: [
+                {
+                  content: {
+                    parts: [
+                      {
+                        functionCall: { name: 'submit_interactive_turn', args },
+                        thoughtSignature: 'fixture-signature',
+                      },
+                    ],
+                  },
+                  finishReason: 'STOP',
+                },
+              ],
+            },
+          }) +
+          '\n\n',
+        { headers: { 'content-type': 'text/event-stream' } },
+      );
+    },
+  );
+  assert.equal(response.status, 200);
+  const events = [];
+  for await (const event of sseEvents(response.body))
+    if (event !== '[DONE]') events.push(JSON.parse(event));
+  const calls = events.flatMap((event) => event.choices?.[0]?.delta?.tool_calls || []);
+  assert.equal(calls[0].function.name, 'submit_interactive_turn');
+  assert.deepEqual(JSON.parse(calls.map((call) => call.function?.arguments || '').join('')), args);
+  assert.ok(events.some((event) => event.choices?.[0]?.finish_reason === 'tool_calls'));
 });

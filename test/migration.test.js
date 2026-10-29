@@ -239,3 +239,107 @@ test('stream collection setting accepts only booleans or reset', () => {
   assert.equal(validateSetting('ANTIGRAVITY_STREAM2NOSTREAM', null), null);
   assert.throws(() => validateSetting('ANTIGRAVITY_STREAM2NOSTREAM', 'true'), { status: 400 });
 });
+
+test('Denova Go any schemas preserve unconstrained values, arrays and local boolean references', () => {
+  const input = {
+    type: 'object',
+    $defs: { value: true },
+    properties: {
+      value: true,
+      values: { type: 'array', items: true },
+      ref: { $ref: '#/$defs/value' },
+      constrained: { $ref: '#/$defs/value', type: 'number' },
+      nested: { type: 'object', properties: { value: true } },
+      choice: { anyOf: [false, { type: 'number' }] },
+      anything: { anyOf: [true, { type: 'string' }] },
+    },
+    required: ['value', 'values'],
+    additionalProperties: false,
+  };
+  const before = structuredClone(input);
+  const result = cleanToolSchema(input);
+  for (const value of [
+    result.properties.value,
+    result.properties.ref,
+    result.properties.values.items,
+    result.properties.nested.properties.value,
+  ])
+    assert.deepEqual(value, {});
+  assert.equal(result.properties.constrained.type, 'number');
+  assert.equal(result.properties.choice.type, 'number');
+  assert.equal(result.properties.anything.type, undefined);
+  assert.deepEqual(result.required, ['value', 'values']);
+  assert.deepEqual(input, before);
+});
+
+test('Denova boolean schemas normalize across OpenAI, Anthropic and native tool formats', () => {
+  const schema = {
+    type: 'object',
+    properties: {
+      state_changes: { type: 'array', items: { type: 'object', properties: { value: true } } },
+      values: { type: 'array', items: true },
+    },
+    required: ['state_changes'],
+  };
+  const requests = [
+    openaiToGemini({
+      model: 'gemini-3.8-flash-tiered',
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [
+        { type: 'function', function: { name: 'submit_interactive_turn', parameters: schema } },
+      ],
+    }),
+    anthropicToGemini({
+      model: 'gemini-3.8-flash-tiered',
+      max_tokens: 64,
+      messages: [{ role: 'user', content: 'hi' }],
+      tools: [{ name: 'submit_interactive_turn', input_schema: schema }],
+    }),
+    {
+      ...message,
+      tools: [{ functionDeclarations: [{ name: 'submit_interactive_turn', parameters: schema }] }],
+    },
+  ];
+  for (const request of requests) {
+    const normalized = normalizeRequest(request, 'gemini-3.8-flash-tiered', 'antigravity').request;
+    const params = normalized.tools[0].functionDeclarations[0].parameters;
+    assert.deepEqual(params.properties.state_changes.items.properties.value, {});
+    assert.deepEqual(params.properties.values.items, {});
+    assert.deepEqual(params.required, ['state_changes']);
+  }
+});
+
+test('invalid tool schemas identify the function and nested JSON pointer without exposing data', () => {
+  const input = {
+    ...message,
+    tools: [
+      {
+        functionDeclarations: [
+          {
+            name: 'submit_interactive_turn',
+            parameters: {
+              type: 'object',
+              properties: {
+                state_changes: {
+                  type: 'array',
+                  items: { type: 'object', properties: { value: null } },
+                },
+              },
+            },
+          },
+        ],
+      },
+    ],
+  };
+  assert.throws(
+    () => normalizeRequest(input, 'gemini-3.8-flash-tiered', 'antigravity'),
+    (error) =>
+      error.status === 400 &&
+      error.message.includes('submit_interactive_turn') &&
+      error.message.includes('$/properties/state_changes/items/properties/value'),
+  );
+  assert.throws(
+    () => cleanToolSchema({ type: 'object', properties: { impossible: false } }),
+    (error) => error.status === 400 && error.message.includes('$/properties/impossible'),
+  );
+});

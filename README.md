@@ -204,7 +204,7 @@ npm run deploy
 
 更新前保留自己账号的 Worker 名称与 D1 配置。通过部署按钮生成的仓库是你自己的副本，不会自动接收本仓库的更新；同步代码时不要覆盖数据库 ID 或删除已有 Secrets。
 
-若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.22.0**。
+若使用 Workers Builds 持续部署，部署命令保持 `npm run deploy`。更新后刷新管理台，当前界面版本为 **v0.22.1**。
 
 ## 存储与写入控制
 

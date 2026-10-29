@@ -213,7 +213,16 @@ export function normalizeRequest(request, model, mode) {
           const schema = value.parameters ??
             value.parametersJsonSchema ??
             value.parameters_json_schema ?? { type: 'object', properties: {} };
-          const cleaned = cleanToolSchema(schema, schemaBudget);
+          let cleaned;
+          try {
+            cleaned = cleanToolSchema(schema, schemaBudget);
+          } catch (error) {
+            if (error instanceof HttpError)
+              error.message = '工具 ' + String(value.name).slice(0, 200) + '：' + error.message;
+            throw error;
+          }
+          // Function arguments must be objects even when the caller supplies true.
+          if (schema === true) Object.assign(cleaned, { type: 'object', properties: {} });
           delete value.parameters;
           delete value.parametersJsonSchema;
           delete value.parameters_json_schema;

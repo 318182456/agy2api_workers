@@ -37,17 +37,31 @@ function resolve(root, ref) {
   return current;
 }
 export function cleanToolSchema(schema, budget = { nodes: 0 }) {
-  function clean(input, depth, references) {
+  function clean(input, depth, references, path = '$') {
+    const at = (message) => new HttpError(400, message + '（路径：' + path.slice(0, 1000) + '）');
     if (++budget.nodes > 4000 || depth > 24)
       throw new HttpError(400, '工具 Schema 展开过大或嵌套过深，请简化工具定义');
+    // JSON Schema true is the unconstrained schema, equivalent to {}. Reflectors
+    // emit it for Go any/interface{} fields and array items. Do not coerce their values.
+    if (input === true) return {};
+    if (input === false) throw at('工具 Schema false 不允许任何值');
     if (!input || typeof input !== 'object' || Array.isArray(input))
-      throw new HttpError(400, '工具 Schema 必须为对象');
+      throw at('工具 Schema 必须为对象或布尔值');
     let node = input;
     const reference = node.$ref ?? node.ref;
     if (reference !== undefined) {
-      const target = resolve(schema, reference);
+      let target;
+      try {
+        target = resolve(schema, reference);
+      } catch (error) {
+        if (error instanceof HttpError) throw at(error.message);
+        throw error;
+      }
+      const { $ref, ref, ...siblings } = node;
+      if (typeof target === 'boolean')
+        return clean(target ? siblings : false, depth + 1, references, path + '/$ref');
       if (!target || typeof target !== 'object' || Array.isArray(target))
-        throw new HttpError(400, '工具 Schema 引用必须指向对象');
+        throw at('工具 Schema 引用必须指向对象');
       if (references.has(target))
         return {
           type: 'object',
@@ -55,14 +69,13 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
         };
       references = new Set(references);
       references.add(target);
-      const { $ref, ref, ...siblings } = node;
-      return clean({ ...target, ...siblings }, depth + 1, references);
+      return clean({ ...target, ...siblings }, depth + 1, references, path + '/$ref');
     }
     let result = {};
     if (node.allOf !== undefined) {
-      if (!Array.isArray(node.allOf)) throw new HttpError(400, 'allOf 必须为数组');
-      for (const branch of node.allOf) {
-        const part = clean(branch, depth + 1, references);
+      if (!Array.isArray(node.allOf)) throw at('allOf 必须为数组');
+      for (const [index, branch] of node.allOf.entries()) {
+        const part = clean(branch, depth + 1, references, path + '/allOf/' + index);
         const properties = { ...result.properties, ...part.properties };
         const required = [...(result.required || []), ...(part.required || [])];
         result = { ...result, ...part };
@@ -70,12 +83,18 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
         if (required.length) result.required = required;
       }
     }
+    const unionKey = node.anyOf != null ? 'anyOf' : 'oneOf';
     const union = node.anyOf ?? node.oneOf;
     if (union !== undefined) {
-      if (!Array.isArray(union) || !union.length)
-        throw new HttpError(400, 'anyOf/oneOf 必须为非空数组');
-      const alternatives = union.filter((part) => !(part && part.type === 'null'));
-      if (
+      if (!Array.isArray(union) || !union.length) throw at('anyOf/oneOf 必须为非空数组');
+      const alternatives = union.filter(
+        (part) => part !== false && !(part && part.type === 'null'),
+      );
+      if (!alternatives.length && union.every((part) => part === false))
+        throw at('工具 Schema 联合分支不允许任何值');
+      if (alternatives.includes(true)) {
+        // An unconstrained branch makes the whole union unconstrained.
+      } else if (
         alternatives.length &&
         alternatives.every(
           (part) =>
@@ -90,7 +109,9 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
           enum: alternatives.map((part) => String(part.const)),
         };
       } else {
-        const parts = alternatives.map((part) => clean(part, depth + 1, references));
+        const parts = alternatives.map((part, index) =>
+          clean(part, depth + 1, references, path + '/' + unionKey + '/' + index),
+        );
         const preferred = parts.find((part) => ['object', 'array'].includes(part.type)) ||
           parts[0] || { type: 'string' };
         result = { ...result, ...preferred };
@@ -125,7 +146,7 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
     }
     if (node.properties !== undefined) {
       if (!node.properties || typeof node.properties !== 'object' || Array.isArray(node.properties))
-        throw new HttpError(400, 'properties 必须为对象');
+        throw at('properties 必须为对象');
       const properties = {};
       for (const [name, part] of Object.entries(result.properties || {}))
         Object.defineProperty(properties, name, {
@@ -136,7 +157,12 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
         });
       for (const [name, part] of Object.entries(node.properties))
         Object.defineProperty(properties, name, {
-          value: clean(part, depth + 1, references),
+          value: clean(
+            part,
+            depth + 1,
+            references,
+            path + '/properties/' + name.replaceAll('~', '~0').replaceAll('/', '~1'),
+          ),
           enumerable: true,
           configurable: true,
           writable: true,
@@ -147,9 +173,9 @@ export function cleanToolSchema(schema, budget = { nodes: 0 }) {
     if (node.items !== undefined) {
       const items = node.items;
       if (Array.isArray(items)) {
-        if (items.length) result.items = clean(items[0], depth + 1, references);
+        if (items.length) result.items = clean(items[0], depth + 1, references, path + '/items/0');
         hint(result, 'Tuple items simplified: ' + summary(items));
-      } else result.items = clean(items, depth + 1, references);
+      } else result.items = clean(items, depth + 1, references, path + '/items');
       result.type ||= 'array';
     }
     const required = [
