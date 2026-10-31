@@ -6,6 +6,8 @@ import { panel, isPanelPath } from './panel/index.js';
 import { anthropicErrorType } from './protocols/anthropic.js';
 import { adminRoute } from './routes/admin.js';
 import { sessionRoute } from './routes/session.js';
+import { oidcEnabled, oidcRoute } from './auth/oidc.js';
+import { hasSession } from './auth/session.js';
 import { generationRoute } from './routes/generation.js';
 import { pruneTelemetry } from './telemetry/maintenance.js';
 import { warmSharedSettings } from './config/settings.js';
@@ -24,6 +26,18 @@ async function route(request, env, fetcher, context) {
       });
   }
   if (isPanelPath(url.pathname) && request.method === 'GET') {
+    if (
+      oidcEnabled(env) &&
+      url.searchParams.get('login') !== 'local' &&
+      !(await hasSession(request, env.PANEL_PASSWORD))
+    )
+      return new Response(null, {
+        status: 303,
+        headers: {
+          location: '/auth/oidc/start?returnTo=' + encodeURIComponent(url.pathname),
+          'cache-control': 'no-store',
+        },
+      });
     return new Response(panel, {
       headers: {
         'content-type': 'text/html; charset=utf-8',
@@ -46,6 +60,7 @@ async function route(request, env, fetcher, context) {
   if (url.pathname === '/keepalive' && request.method === 'HEAD')
     return new Response(null, { status: 200 });
 
+  if (url.pathname.startsWith('/auth/oidc/')) return oidcRoute(request, env, fetcher);
   if (url.pathname.startsWith('/auth/')) return sessionRoute(request, env);
   if (url.pathname.startsWith('/admin/')) return adminRoute(request, env, fetcher);
   return generationRoute(request, env, fetcher, context);

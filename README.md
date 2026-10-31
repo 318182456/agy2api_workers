@@ -56,6 +56,24 @@ Cloudflare 会读取仓库的 Wrangler 配置，为新项目创建 D1 并回写�
 
 使用自己的 OAuth 客户端时，按渠道成对替换 ID 和 Secret，必须与刷新令牌匹配。导入 JSON 自带的 `client_id` / `client_secret` 优先于部署变量。账号访问令牌、刷新令牌仍通过凭证导入或网页授权获得，不属于这些固定的客户端配置。
 
+## 管理页面 OIDC 统一登录
+
+可选接入 Authelia 等 OpenID Connect 提供方。未配置时保留原管理密码登录；启用后，管理页面自动跳转统一登录，已有提供方会话时自动返回控制台。API 客户端仍使用 API Key，不走浏览器登录。
+
+通过 Cloudflare 变量或 Secret 配置（客户端密钥必须使用 Secret）：
+
+| 变量 | 用途 |
+| --- | --- |
+| `OIDC_ISSUER` | 提供方 issuer，例如 `https://auth.example.com`，也支持 HTTPS 非标准端口 |
+| `OIDC_CLIENT_ID` | 注册的 confidential client ID |
+| `OIDC_CLIENT_SECRET` | 客户端密钥 |
+| `OIDC_REDIRECT_URI` | 精确回调地址：`https://api.example.com/auth/oidc/callback` |
+| `OIDC_ALLOWED_USERS` | 允许管理的 `preferred_username`，多个以逗号分隔；必须显式填写 |
+
+客户端使用 Authorization Code、PKCE S256、`client_secret_post`、RS256 ID Token，scope 为 `openid profile`，需提供标准 discovery、JWKS 和 UserInfo 接口。提供方各端点必须与 issuer 同源。应用会核验 state、nonce、签名、issuer、audience、有效期及 UserInfo 身份，凭据与提供方令牌不会写入浏览器存储。
+
+`PANEL_PASSWORD` 继续用于签名本地会话，不能删除。需要恢复原密码登录时访问 `/panel/overview?login=local`；退出控制台只注销本应用，不影响其他应用的统一登录。回调交易 Cookie 十分钟有效，OIDC 应用会话为七天，修改 `PANEL_PASSWORD` 可使旧会话失效。
+
 ## 添加 Google 账号
 
 ### 方式一：导入 JSON 凭证

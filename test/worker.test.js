@@ -1,4 +1,5 @@
 import test from 'node:test';
+import { VERSION } from '../src/core/version.js';
 import { dbCache as probeCache } from '../src/cache/db.js';
 import assert from 'node:assert/strict';
 import { webcrypto } from 'node:crypto';
@@ -1378,7 +1379,7 @@ test('management page deep links survive refresh and unknown paths remain 404', 
     assert.ok(
       html.includes('id="page-' + page + '"') || html.includes('id="section-' + page + '"'),
     );
-    assert.match(html, /v0\.22\.3/);
+    assert.ok(html.includes('v' + VERSION));
     assert.match(response.headers.get('content-security-policy'), /frame-ancestors 'none'/);
   }
   assert.equal((await handleRequest(request('/panel/settings/'), {})).status, 200);

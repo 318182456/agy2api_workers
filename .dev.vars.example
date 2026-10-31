@@ -6,3 +6,10 @@ PANEL_PASSWORD=
 # Uncomment only to use a custom matching client ID / secret pair.
 # ANTIGRAVITY_CLIENT_ID=
 # ANTIGRAVITY_CLIENT_SECRET=
+
+# Optional management OIDC. These are independent of Google account OAuth.
+# OIDC_ISSUER=https://auth.example.com
+# OIDC_CLIENT_ID=panel-client
+# OIDC_CLIENT_SECRET=
+# OIDC_REDIRECT_URI=https://api.example.com/auth/oidc/callback
+# OIDC_ALLOWED_USERS=admin

@@ -1,4 +1,5 @@
 import { equalSecret, HttpError, json, readJson } from '../core/common.js';
+import { oidcEnabled } from '../auth/oidc.js';
 import { checkOrigin, createSession, clearSession, hasSession } from '../auth/session.js';
 
 export async function sessionRoute(request, env) {
@@ -14,7 +15,10 @@ export async function sessionRoute(request, env) {
     return response;
   }
   if (url.pathname === '/auth/session' && request.method === 'GET') {
-    return json({ authenticated: await hasSession(request, env.PANEL_PASSWORD) });
+    return json({
+      authenticated: await hasSession(request, env.PANEL_PASSWORD),
+      oidc_login: oidcEnabled(env) ? '/auth/oidc/start' : null,
+    });
   }
   if (url.pathname === '/auth/logout' && request.method === 'POST') {
     checkOrigin(request);
