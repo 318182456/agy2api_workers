@@ -42,4 +42,4 @@ function renderEndpointGroup(group) {
     '</section>'
   );
 }
-export const apiPage = String.raw`<section class="card"><div class="card-heading"><div><h2>连接你的客户端</h2><p>所有请求使用 Antigravity 凭证，按模型和账号额度调度。</p></div><button id="endpointsRefresh" class="secondary">刷新可用状态</button></div><p class="data-note">API Key 填写“API 密钥”页创建或导入的密钥，原总密钥也可继续使用。</p>${renderEndpointGroup(group)}<p class="data-note">也兼容 /antigravity 前缀。可重试故障在尝试次数内换账号；模型被列出不代表当前账号一定有权限或剩余额度。</p></section>`;
+export const apiPage = String.raw`<section class="card integration-workspace"><div class="card-heading"><div><h2>连接你的客户端</h2><p>所有请求使用 Antigravity 凭证，按模型和账号额度调度。</p></div><button id="endpointsRefresh" class="secondary">刷新可用状态</button></div><div class="integration-guide"><span class="guide-number">01</span><div><strong>选择客户端协议</strong><p>复制下方地址，在客户端选择相应的兼容格式。</p></div></div><div class="integration-guide"><span class="guide-number">02</span><div><strong>配置 API 密钥</strong><p>填写“API 密钥”页创建或导入的密钥，原总密钥也可继续使用。</p></div></div>${renderEndpointGroup(group)}<p class="data-note">也兼容 /antigravity 前缀。可重试故障在尝试次数内换账号；模型被列出不代表当前账号一定有权限或剩余额度。</p></section>`;

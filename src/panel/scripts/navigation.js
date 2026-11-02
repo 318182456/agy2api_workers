@@ -230,6 +230,18 @@ function followPage(id, event) {
 }
 for (const page of pageDefinitions)
   el('nav-' + page.id).onclick = (event) => followPage(page.id, event);
+// ASVS V1.2.1: layout actions resolve only existing local elements; no HTML interpolation.
+for (const trigger of document.querySelectorAll('[data-reveal]')) {
+  trigger.addEventListener('click', () => {
+    const panel = el(trigger.dataset.reveal);
+    if (!panel) return;
+    panel.open = true;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    panel
+      .querySelector?.('input:not([type=hidden]), textarea, select')
+      ?.focus({ preventScroll: true });
+  });
+}
 for (const link of document.querySelectorAll('[data-page-link]'))
   link.onclick = (event) => followPage(link.dataset.pageLink, event);
 if (typeof addEventListener !== 'undefined')
