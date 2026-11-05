@@ -1,3 +1,4 @@
+import { aistudioAdminRoute } from '../aistudio/admin.js';
 import { describeModels } from '../models/capabilities.js';
 import { attachTimings } from '../core/timing.js';
 import { pendingTelemetry } from '../telemetry/client.js';
@@ -64,6 +65,10 @@ export async function adminRoute(request, env, fetcher) {
 }
 async function dispatchAdmin(request, env, fetcher) {
   const url = new URL(request.url);
+  if (['/admin/aistudio', '/admin/aistudio/test'].includes(url.pathname)) {
+    if (!env.DB) throw new HttpError(503, '未绑定 D1 数据库');
+    return aistudioAdminRoute(request, env, fetcher);
+  }
   await authenticatePanel(request, env.PANEL_PASSWORD);
   env = { ...env, STATS_CACHE_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher };
   if (url.pathname === '/admin/runtime-location') {

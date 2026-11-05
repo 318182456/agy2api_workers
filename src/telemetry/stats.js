@@ -61,6 +61,7 @@ export async function usageStats(db, params, env = {}) {
     safe.set('api_key_ids', apiKeyIds.join(','));
   }
   const key =
+    'accounts-v3:' +
     (env.TELEMETRY ? (env.USAGE_STORAGE_MODE || 'aggregate') + ':' : 'detailed:') +
     [...safe.entries()]
       .sort()

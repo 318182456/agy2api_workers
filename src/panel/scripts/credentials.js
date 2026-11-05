@@ -2,8 +2,12 @@ export const credentialsScript = String.raw`let credentialRefreshVersion = 0;
 let credentialLiveFlight = Promise.resolve();
 async function refresh(options = {}) {
   const version = ++credentialRefreshVersion;
-  const value = await api('/admin/credentials?view=basic');
+  const [value, external] = await Promise.all([
+    api('/admin/credentials?view=basic'),
+    api('/admin/aistudio').catch(() => null),
+  ]);
   if (version !== credentialRefreshVersion) return;
+  if (external) aistudioSnapshot = external;
   applyCredentialSnapshot(value);
   status('已加载 ' + value.credentials.length + ' 个凭证。');
   if (options.live === false || (currentPage !== 'overview' && currentSection !== 'credentials')) {
@@ -70,18 +74,18 @@ function applyCredentialSnapshot(value, preserveRows = false) {
     ? selectedFilter
     : '';
   if (!preserveRows) renderCredentials();
+  renderCredentialSummary();
+}
+function renderCredentialSummary() {
+  const accounts = credentialAccounts();
   for (const target of ['overviewAccounts', 'credentialSummary']) {
     el(target).replaceChildren();
     for (const [label, count, state] of [
-      ['全部账号', value.credentials.length, ''],
-      ['已启用', value.credentials.filter((c) => !c.disabled).length, 'enabled'],
-      ['已停用', value.credentials.filter((c) => c.disabled).length, 'disabled'],
-      ['模型冷却中', value.credentials.filter((c) => c.cooling_models).length, 'cooling'],
-      [
-        '最近异常',
-        value.credentials.filter((c) => c.last_failure > (c.last_success || 0)).length,
-        'error',
-      ],
+      ['全部账号 / 上游', accounts.length, ''],
+      ['已启用', accounts.filter((c) => !c.disabled).length, 'enabled'],
+      ['已停用', accounts.filter((c) => c.disabled).length, 'disabled'],
+      ['模型冷却中', accounts.filter((c) => c.cooling_models).length, 'cooling'],
+      ['最近异常', accounts.filter((c) => c.last_failure > (c.last_success || 0)).length, 'error'],
     ]) {
       const box = document.createElement('a');
       box.className = 'metric';
@@ -95,12 +99,71 @@ function applyCredentialSnapshot(value, preserveRows = false) {
     }
   }
 }
+function credentialAccounts() {
+  const upstream = typeof aistudioSnapshot !== 'undefined' ? aistudioSnapshot : null;
+  if (!upstream?.url) return credentialsSnapshot;
+  const probe = upstream.probe;
+  return [
+    ...credentialsSnapshot,
+    {
+      id: 'aistudio',
+      name: 'AIStudio2API',
+      mode: 'aistudio',
+      external: true,
+      project_id: upstream.url,
+      disabled: !upstream.enabled,
+      last_success: probe?.ok ? probe.checked_at : null,
+      last_failure: probe && !probe.ok ? probe.checked_at : null,
+      last_failure_status: probe?.http_status,
+    },
+  ];
+}
+function renderAistudioCredential(credential) {
+  const tr = document.createElement('tr');
+  tr.dataset.upstream = 'aistudio';
+  // ASVS V1.2.1: the configured URL is rendered only as text, never HTML.
+  for (const text of [
+    '—',
+    'AIStudio2API\n' + credential.project_id,
+    'AIStudio2API',
+    (credential.disabled ? '停用' : '启用') +
+      ' · 外部上游\n' +
+      (credential.last_failure
+        ? '最近探测失败'
+        : credential.last_success
+          ? '最近探测正常'
+          : '尚无探测记录'),
+    credential.last_success ? formatReset(credential.last_success) + '（探测）' : '—',
+  ]) {
+    const cell = document.createElement('td');
+    cell.textContent = text;
+    tr.append(cell);
+  }
+  const actions = document.createElement('td');
+  for (const [label, page, params, detail] of [
+    ['用量明细', 'overview', { mode: 'aistudio', email: '', model: '' }, 'statsDetails'],
+    ['问题记录', 'logs', { mode: 'aistudio', credential_id: '', email: '' }],
+    ['管理接入', 'aistudio', {}],
+  ]) {
+    const link = document.createElement('a');
+    link.className = 'button secondary';
+    link.textContent = label;
+    bindMetricLink(link, page, params, detail);
+    actions.append(link);
+  }
+  const note = document.createElement('small');
+  note.className = 'credential-subtitle';
+  note.textContent = 'Google 账号及剩余额度由 AIStudio2API 管理';
+  actions.append(note);
+  tr.append(actions);
+  el('credentials').append(tr);
+}
 let credentialPage = 0;
 function filteredCredentials() {
   const search = el('credentialSearch').value.trim().toLowerCase(),
     mode = el('credentialMode').value,
     state = el('credentialState').value;
-  return credentialsSnapshot.filter(
+  return credentialAccounts().filter(
     (c) =>
       (!search ||
         [c.name, c.user_email, c.project_id]
@@ -116,8 +179,11 @@ function filteredCredentials() {
         (state === 'error' && c.last_failure > (c.last_success || 0))),
   );
 }
-function visibleCredentials() {
+function pagedCredentials() {
   return filteredCredentials().slice(credentialPage * 25, (credentialPage + 1) * 25);
+}
+function visibleCredentials() {
+  return pagedCredentials().filter((row) => !row.external);
 }
 function credentialTierLabel(value) {
   if (typeof value !== 'string' || !value.trim()) return '未知';
@@ -138,13 +204,17 @@ function renderCredentials() {
   el('credentials').replaceChildren();
   el('credentialsEmpty').hidden = filtered.length > 0;
   el('credentialCount').textContent =
-    '共 ' + credentialsSnapshot.length + ' 个账号 · 匹配 ' + filtered.length + ' 个';
+    '共 ' + credentialAccounts().length + ' 个账号 / 上游 · 匹配 ' + filtered.length + ' 个';
   el('credentialPageInfo').textContent = filtered.length
     ? '第 ' + (credentialPage + 1) + ' / ' + Math.ceil(filtered.length / 25) + ' 页 · 每页 25 个'
     : '暂无账号';
   el('credentialsPrev').hidden = credentialPage === 0;
   el('credentialsNext').hidden = (credentialPage + 1) * 25 >= filtered.length;
-  for (const credential of visibleCredentials()) {
+  for (const credential of pagedCredentials()) {
+    if (credential.external) {
+      renderAistudioCredential(credential);
+      continue;
+    }
     const tr = document.createElement('tr');
     const localRun = (action) => runNear('credential:' + credential.id, action);
     const selection = document.createElement('td');

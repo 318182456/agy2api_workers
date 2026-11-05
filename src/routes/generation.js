@@ -1,3 +1,5 @@
+import { aistudioConfig } from '../aistudio/config.js';
+import { proxyAistudio } from '../aistudio/proxy.js';
 import { prepareClientTools, restoreToolNames } from '../protocols/tool-compat.js';
 import { fakeStream } from '../upstream/fake-stream.js';
 import { collectContinuations } from '../upstream/continuation.js';
@@ -30,9 +32,26 @@ function validateModel(model) {
 
 export async function generationRoute(request, env, fetcher, context, internal) {
   const url = new URL(request.url);
-  const fixed = url.pathname.match(/^\/(antigravity)\//)?.[1];
+  const fixed = url.pathname.match(/^\/(antigravity|aistudio)\//)?.[1];
   let mode = 'antigravity';
   const path = fixed ? url.pathname.slice(('/' + fixed).length) : url.pathname;
+  // API-key protected external routes retain the client's native protocol and model names.
+  const externalEnv = internal?.env || (await effectiveEnv(env));
+  if (
+    fixed === 'aistudio' ||
+    (!fixed && externalEnv.AISTUDIO_ENABLED && externalEnv.AISTUDIO_ROUTING === 'default')
+  ) {
+    const key = await authenticateApi(request, env, /^\/v1(?:beta)?\/models(?:\/|$)/.test(path));
+    return proxyAistudio(
+      request,
+      { ...externalEnv, TELEMETRY_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher },
+      fetcher,
+      context,
+      await aistudioConfig(env),
+      key,
+      path,
+    );
+  }
   const nativeMatch = path.match(
     /^\/v1(?:beta)?\/models\/([^/:]+):(generateContent|streamGenerateContent|countTokens)$/,
   );
@@ -49,7 +68,7 @@ export async function generationRoute(request, env, fetcher, context, internal) 
   const apiKey =
     internal?.apiKey ||
     (await authenticateApi(request, env, !!nativeMatch || path === '/v1beta/models'));
-  env = internal?.env || { ...(await effectiveEnv(env)), SESSION_SCOPE: apiKey.id };
+  env = internal?.env || { ...externalEnv, SESSION_SCOPE: apiKey.id };
   env = { ...env, TELEMETRY_ORIGIN: url.origin, STORAGE_NODE_FETCH: fetcher };
   if (isModelList) {
     const result = await discoverModels(env, mode, fetcher);

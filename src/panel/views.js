@@ -1,3 +1,4 @@
+import { aistudioPage } from './pages/aistudio.js';
 import { storagePage } from './pages/storage.js';
 import { projectIcon } from './icon.js';
 import { VERSION } from '../core/version.js';
@@ -56,6 +57,7 @@ export const panelTabs = {
     { id: 'models', title: '模型列表' },
     { id: 'api', title: '接口接入' },
     { id: 'storage', title: '存储节点' },
+    { id: 'aistudio', title: 'AI Studio' },
   ],
 };
 const pageContent = {
@@ -68,6 +70,7 @@ const pageContent = {
   models: modelsPage,
   settings: settingsPage,
   storage: storagePage,
+  aistudio: aistudioPage,
   api: apiPage,
   keys: keysPage,
 };

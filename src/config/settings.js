@@ -8,10 +8,13 @@ const booleanKeys = [
   'RETURN_THOUGHTS',
   'ENABLE_AI_CREDITS',
   'FAKE_STREAMING',
+  'AISTUDIO_ENABLED',
+  'AISTUDIO_ENABLED',
 ];
 const keys = [
   ...booleanKeys,
   'CONTINUATION_ATTEMPTS',
+  'AISTUDIO_ROUTING',
   'MAX_CREDENTIAL_ATTEMPTS',
   'UPSTREAM_TIMEOUT_SECONDS',
   'REQUEST_TIMEOUT_SECONDS',
@@ -30,6 +33,7 @@ function defaults(env) {
           : env[key] === true || env[key] === 'true',
       ]),
     ),
+    AISTUDIO_ROUTING: env.AISTUDIO_ROUTING === 'default' ? 'default' : 'explicit',
     CONTINUATION_ATTEMPTS: boundedSeconds(env.CONTINUATION_ATTEMPTS, 0, 0, 2),
     UPSTREAM_TIMEOUT_SECONDS: boundedSeconds(env.UPSTREAM_TIMEOUT_SECONDS, 45, 5, 90),
     REQUEST_TIMEOUT_SECONDS: boundedSeconds(env.REQUEST_TIMEOUT_SECONDS, 100, 10, 110),
@@ -52,6 +56,11 @@ export function validateSetting(key, value) {
   if (value === null) return null;
   if (booleanKeys.includes(key)) {
     if (typeof value !== 'boolean') throw new HttpError(400, '开关必须为布尔值');
+    return value;
+  }
+  if (key === 'AISTUDIO_ROUTING') {
+    if (!['explicit', 'default'].includes(value))
+      throw new HttpError(400, 'AI Studio 路由方式无效');
     return value;
   }
   if (key === 'CONTINUATION_ATTEMPTS') {

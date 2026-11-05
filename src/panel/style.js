@@ -544,6 +544,7 @@ table {
 .key-table {
   min-width: 900px;
 }
+.aistudio-endpoint { display:block; padding:10px; border:1px solid var(--border); background:var(--surface-muted); border-radius:6px; overflow-wrap:anywhere; font-size:12px; }
 .credential-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .credential-identity > span:first-child { overflow-wrap: anywhere; }
 .credential-tier { color: var(--accent-hover); background: var(--accent-soft); padding: 1px 6px; font-size: 10px; line-height: 1.7; }

@@ -96,6 +96,7 @@ function showPage(id, historyMode = 'push', params) {
     el('keyImportFile').value = '';
   }
   if (currentSection === 'storage' && id !== 'storage') resetStorageForm();
+  if (currentSection === 'aistudio' && id !== 'aistudio') el('aistudioKey').value = '';
   currentPage = page.id;
   currentSection = tabDefinitions[page.id]?.some((tab) => tab.id === id) ? id : page.id;
   for (const item of pageDefinitions) {
@@ -158,7 +159,11 @@ async function loadPage(id) {
     fillSettings(await api('/admin/settings'));
     status('设置已加载。');
   } else if (id === 'storage') await loadStorageNodes();
-  else if (id === 'api') {
+  else if (id === 'aistudio') {
+    await loadAistudio();
+    status('AI Studio 配置已加载。');
+  } else if (id === 'api') {
+    await loadAistudio();
     if (!credentialsLoaded) await refresh();
     renderEndpoints();
     status('接口可用状态已加载。');
@@ -408,9 +413,9 @@ function recordPanelTiming(path, start, response) {
     target.append(line);
   }
 }
-async function api(path, method = 'GET', body, responseType) {
+async function api(path, method = 'GET', body, responseType, extraHeaders = {}) {
   const raw = typeof Blob !== 'undefined' && body instanceof Blob;
-  const headers = {};
+  const headers = { ...extraHeaders };
   if (body !== undefined)
     headers['content-type'] = raw ? body.type || 'application/zip' : 'application/json';
   const timingStart = Date.now();
@@ -425,6 +430,9 @@ async function api(path, method = 'GET', body, responseType) {
   const value = await response.json();
   if (method === 'GET') recordPanelTiming(path, timingStart, response);
   if (response.status === 401) {
+    el('aistudioKey').value = '';
+    aistudioCsrf = '';
+    aistudioRevision = '';
     credentialRefreshVersion++;
     resetKeys();
     resetStorageForm();
