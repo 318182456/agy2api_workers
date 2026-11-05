@@ -119,6 +119,18 @@ function filteredCredentials() {
 function visibleCredentials() {
   return filteredCredentials().slice(credentialPage * 25, (credentialPage + 1) * 25);
 }
+function credentialTierLabel(value) {
+  if (typeof value !== 'string' || !value.trim()) return '未知';
+  const parts = value
+    .trim()
+    .toLowerCase()
+    .split(/[^a-z0-9]+/);
+  if (parts.includes('ultra')) return 'Ultra';
+  if (parts.includes('pro')) return 'Pro';
+  if (parts.includes('plus')) return 'Plus';
+  if (parts.includes('free')) return 'Free';
+  return '未知';
+}
 function renderCredentials() {
   const filtered = filteredCredentials();
   credentialPage = Math.min(credentialPage, Math.max(0, Math.ceil(filtered.length / 25) - 1));
@@ -176,7 +188,27 @@ function renderCredentials() {
     for (const [index, text] of values.entries()) {
       const td = document.createElement('td');
       td.textContent = text;
-      if (index === 0)
+      if (index === 0) {
+        // ASVS V1.2.1: render account labels and upstream tier values as text only.
+        const identity = document.createElement('div');
+        identity.className = 'credential-identity';
+        const name = document.createElement('span');
+        name.textContent = credential.user_email || credential.name;
+        const tier = document.createElement('span');
+        const label = credentialTierLabel(credential.subscription_tier);
+        tier.className = 'pill credential-tier' + (label === '未知' ? ' tier-unknown' : '');
+        tier.textContent = label;
+        tier.title = credential.subscription_tier
+          ? '上游等级：' + credential.subscription_tier
+          : '尚未获取账号等级，可在更多操作中校验项目';
+        identity.append(name, tier);
+        td.replaceChildren(identity);
+        if (credential.user_email) {
+          const subtitle = document.createElement('small');
+          subtitle.className = 'credential-subtitle';
+          subtitle.textContent = credential.name;
+          td.append(subtitle);
+        }
         td.title =
           '项目：' +
           (credential.project_id || '待校验') +
@@ -186,6 +218,7 @@ function renderCredentials() {
           (credential.weight ?? 1) +
           (credential.subscription_tier ? ' · 等级 ' + credential.subscription_tier : '') +
           (credential.credit_amount != null ? ' · 积分 ' + credential.credit_amount : '');
+      }
       tr.append(td);
     }
     const actions = document.createElement('td');

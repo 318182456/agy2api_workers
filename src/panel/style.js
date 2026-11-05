@@ -544,6 +544,11 @@ table {
 .key-table {
   min-width: 900px;
 }
+.credential-identity { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.credential-identity > span:first-child { overflow-wrap: anywhere; }
+.credential-tier { color: var(--accent-hover); background: var(--accent-soft); padding: 1px 6px; font-size: 10px; line-height: 1.7; }
+.credential-tier.tier-unknown { color: var(--muted); background: var(--surface-muted); }
+.credential-subtitle { display: block; color: var(--muted); font-size: 11px; margin-top: 3px; }
 .credential-table {
   min-width: 920px;
 }
