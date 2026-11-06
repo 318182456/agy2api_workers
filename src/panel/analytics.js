@@ -3,7 +3,7 @@ import { groupQuotaModels } from '../quota/groups.js';
 export const analyticsScript = String.raw`
 ${groupQuotaModels.toString()}
 function accountQuota(entry) { return groupQuotaModels(entry.value.models,entry.credential.mode); }
-function quotaWindows(model) { return model.family ? '5 小时额度：上游未单独提供 · 周额度：上游未单独提供'+(model.inconsistent ? ' · 同组报告不同，暂显示最低剩余、最晚重置；不代表全部模型共享同一额度' : '') : ''; }
+function quotaWindows(model) { return model.quotaGroup ? '官方额度组 · 各窗口独立报告，不合并比例' : '旧接口模型额度 · 未提供周 / 5 小时窗口'; }
 function ui(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -91,7 +91,7 @@ function quotaGroups() {
   for (const entry of quotaOverviewResults) {
     if (entry.error) continue;
     for (const model of accountQuota(entry)) {
-      const key = JSON.stringify([entry.credential.mode,model.id,null,model.tokenType ?? null,model.bucketIndex ?? null]);
+      const key = JSON.stringify([entry.credential.mode,model.id,null,model.tokenType ?? null,model.bucketIndex ?? null,model.window ?? null,model.quotaGroup ?? null,model.quotaGroup ? model.bucketName : null]);
       if (!groups.has(key)) groups.set(key,{ id:model.id,mode:entry.credential.mode,tokenType:model.tokenType || null,accounts:[],values:[],unknown:0 });
       const group = groups.get(key); group.accounts.push({ credential:entry.credential,...model });
       if (model.remaining == null) group.unknown++; else group.values.push(model.remaining);
@@ -119,7 +119,7 @@ function quotaAccountLine(account) {
 function renderSingleQuota(container, models, mode) {
   models = groupQuotaModels(models,mode);
   let page = 0;
-  const search = ui('input'); search.type='search'; search.placeholder='筛选 Gemini / Claude'; search.setAttribute('aria-label','筛选该账号的模型');
+  const search = ui('input'); search.type='search'; search.placeholder='筛选官方额度组或窗口'; search.setAttribute('aria-label','筛选该账号的模型');
   const grid = ui('div','quota-model-grid');
   const navigation = ui('div','pagination'); const info = ui('span'); const buttons = ui('div');
   const previous = ui('button','secondary','上一页'); const next = ui('button','secondary','下一页'); buttons.append(previous,next); navigation.append(info,buttons);
@@ -132,7 +132,7 @@ function renderSingleQuota(container, models, mode) {
       card.append(heading,meter(model.remaining,model.id+' 剩余额度'),ui('small','',[quotaAmount(model),'当前报告重置 '+formatReset(model.resetTime)+'（北京时间）',quotaWindows(model)].filter(Boolean).join(' · '))); grid.append(card);
     }
     if (!filtered.length) grid.append(ui('div','empty-state','没有匹配的模型'));
-    info.textContent = filtered.length ? '第 '+(page+1)+' / '+Math.ceil(filtered.length/8)+' 页 · '+filtered.length+' 个模型' : '0 个模型';
+    info.textContent = filtered.length ? '第 '+(page+1)+' / '+Math.ceil(filtered.length/8)+' 页 · '+filtered.length+' 个额度项' : '0 个额度项';
     previous.disabled = page===0; next.disabled = (page+1)*8>=filtered.length;
   };
   previous.onclick = () => { if (page>0) page--; render(); };

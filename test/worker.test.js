@@ -438,17 +438,25 @@ test('quota uses requested disabled Antigravity credential without rotation or g
       calls++;
       assert.equal(
         url,
-        'https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels',
+        'https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary',
       );
-      assert.equal(options.body, '{}');
+      assert.deepEqual(JSON.parse(options.body), { project: 'project' });
       assert.equal(options.method, 'POST');
       assert.equal(options.headers.authorization, 'Bearer token');
       return Response.json({
-        models: {
-          'test-model': {
-            quotaInfo: { remainingFraction: 0.75, resetTime: '2026-10-16T00:00:00Z' },
+        groups: [
+          {
+            displayName: 'Gemini Models',
+            buckets: [
+              {
+                bucketId: 'gemini-week',
+                window: 'weekly',
+                remainingFraction: 0.75,
+                resetTime: '2026-10-16T00:00:00Z',
+              },
+            ],
           },
-        },
+        ],
       });
     },
   );
@@ -518,7 +526,7 @@ test('quota refreshes after 401 and returns refreshed token only to Google', asy
       calls++;
       if (calls === 1) return new Response('', { status: 401 });
       assert.equal(options.headers.authorization, 'Bearer updated-token');
-      return Response.json({ models: {} });
+      return Response.json({ groups: [] });
     },
   );
   assert.equal(response.status, 200);
@@ -1921,32 +1929,58 @@ test('cancelling a request aborts OAuth refresh without persisting tokens', asyn
   assert.equal(db.calls.length, 0);
 });
 
-test('shared quota families count once per account and keep unknown windows unknown', async () => {
+test('quota groups preserve independent models and explicit official windows', async () => {
   const { groupQuotaModels } = await import('../src/quota/groups.js');
-  const groups = groupQuotaModels([
-    { id: 'gemini-2.5-flash', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
-    { id: 'gemini-2.5-pro', remaining: 0.6, resetTime: '2026-10-20T08:00:00Z' },
-    { id: 'claude-sonnet-4-6', remaining: 0.2, resetTime: '2026-10-22T08:00:00Z' },
-    { id: 'claude-opus-4-6', remaining: 0, resetTime: '2026-10-23T08:00:00Z' },
-  ]);
-  assert.equal(groups.length, 2);
-  assert.equal(groups[0].remaining, 0.6);
-  assert.equal(groups[0].members.length, 2);
-  assert.equal(groups[0].inconsistent, false);
-  assert.equal(groups[1].remaining, 0);
-  assert.equal(groups[1].inconsistent, true);
-  assert.equal(groups[1].resetTime, '2026-10-23T08:00:00Z');
-  assert.equal(groups[1].weekly, undefined);
+  const { normalizeQuotaSummary } = await import('../src/quota/index.js');
+  const rows = normalizeQuotaSummary({
+    groups: [
+      {
+        displayName: 'Gemini Models',
+        buckets: [
+          { bucketId: 'g-week', window: 'weekly', remainingFraction: 1 },
+          { bucketId: 'g-five', window: '5h', remainingFraction: 0.8 },
+        ],
+      },
+      {
+        displayName: 'Claude and GPT models',
+        buckets: [
+          { bucketId: 'c-week', window: 'weekly', remainingFraction: 0.48 },
+          { bucketId: 'c-five', window: '5h', remainingFraction: 0 },
+        ],
+      },
+      {
+        displayName: 'Gemini 4 Argon',
+        buckets: [{ bucketId: 'argon-week', window: 'weekly', remainingFraction: 0.6 }],
+      },
+    ],
+  });
+  const groups = groupQuotaModels(rows);
+  assert.equal(groups.length, 5);
+  assert.equal(groups[1].id, 'Gemini Models · 5 小时额度');
+  assert.equal(groups[3].remaining, 0);
+  assert.equal(groups[4].id, 'Gemini 4 Argon · 周额度');
+  assert.equal(groups[4].remaining, 0.6);
   assert.equal(
-    groupQuotaModels(
-      [
-        { id: 'gemini-x', tokenType: 'INPUT' },
-        { id: 'gemini-x', tokenType: 'OUTPUT' },
-      ],
-      'antigravity',
-    ).length,
-    1,
+    groupQuotaModels([
+      { id: 'gemini-3.8-flash', remaining: 0.8 },
+      { id: 'gemini-4-argon', remaining: 0.6 },
+    ]).length,
+    2,
   );
+  assert.equal(
+    normalizeQuotaSummary({
+      groups: [
+        { buckets: [{ remainingFraction: null, window: 'new-window', resetTime: 'invalid' }] },
+      ],
+    })[0].remaining,
+    null,
+  );
+  assert.equal(
+    normalizeQuotaSummary({ groups: [{ buckets: [{ remainingFraction: 2 }] }] })[0].remaining,
+    null,
+  );
+  assert.throws(() => normalizeQuotaSummary({}), /未返回有效/);
+  assert.deepEqual(normalizeQuotaSummary({ groups: [] }), []);
 });
 
 test('incomplete streams report safe shape diagnostics and retain reported token counts', async () => {

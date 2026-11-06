@@ -154,8 +154,19 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
           { status: failEnrichment ? 403 : 200, headers: { 'content-type': 'application/json' } },
         );
       if (request.url.includes('fetchAvailableModels'))
+        return new OutboundResponse(JSON.stringify({ models: { m: {} } }), {
+          headers: { 'content-type': 'application/json' },
+        });
+      if (request.url.includes('retrieveUserQuotaSummary'))
         return new OutboundResponse(
-          JSON.stringify({ models: { m: { quotaInfo: { remainingFraction: 0.6 } } } }),
+          JSON.stringify({
+            groups: [
+              {
+                displayName: 'Gemini Models',
+                buckets: [{ bucketId: 'gemini-week', window: 'weekly', remainingFraction: 0.6 }],
+              },
+            ],
+          }),
           { headers: { 'content-type': 'application/json' } },
         );
       return new OutboundResponse(
@@ -221,7 +232,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
     assert.equal((await response.json()).choices[0].message.content, 'production entry works');
     assert.equal(seen.length, 3);
     assert.equal(seen[0], 'https://oauth2.googleapis.com/token');
-    assert.match(seen[1], /fetchAvailableModels/);
+    assert.match(seen[1], /retrieveUserQuotaSummary/);
     assert.match(seen[2], /generateContent/);
     response = await mf.dispatchFetch('https://test/antigravity/v1/models', {
       headers: { authorization: 'Bearer local-api' },

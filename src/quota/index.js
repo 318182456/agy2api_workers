@@ -29,10 +29,46 @@ export function normalizeQuota(value) {
   });
 }
 
+// ASVS V1.2.1: upstream names remain data; the panel renders them with textContent.
+export function normalizeQuotaSummary(value) {
+  if (!Array.isArray(value?.groups)) throw new HttpError(502, 'Google 未返回有效的额度分组');
+  const text = (v, fallback = '') =>
+    typeof v === 'string' && v.trim() ? v.trim().slice(0, 200) : fallback;
+  const models = [];
+  for (const [groupIndex, group] of value.groups.entries()) {
+    if (!group || !Array.isArray(group.buckets))
+      throw new HttpError(502, 'Google 额度分组格式不正确');
+    const quotaGroup = text(group.displayName, '未命名额度组 ' + (groupIndex + 1));
+    for (const [bucketIndex, bucket] of group.buckets.entries()) {
+      if (!bucket || typeof bucket !== 'object')
+        throw new HttpError(502, 'Google 额度窗口格式不正确');
+      const fraction = bucket.remainingFraction;
+      models.push({
+        id: text(bucket.bucketId, 'group-' + groupIndex + '-bucket-' + bucketIndex),
+        quotaGroup,
+        window: text(bucket.window),
+        bucketName: text(bucket.displayName),
+        remaining:
+          typeof fraction === 'number' &&
+          Number.isFinite(fraction) &&
+          fraction >= 0 &&
+          fraction <= 1
+            ? fraction
+            : null,
+        resetTime:
+          typeof bucket.resetTime === 'string' && Number.isFinite(Date.parse(bucket.resetTime))
+            ? bucket.resetTime
+            : null,
+      });
+    }
+  }
+  return models;
+}
+
 export async function credentialQuota(env, id, fetcher = fetch, options = {}) {
   if (!options.fresh) {
     const cached = await cachedQuota(env, id);
-    if (cached) return cached;
+    if (cached?.source === 'retrieveUserQuotaSummary') return cached;
   }
   const value = await fetchCredentialQuota(env, id, fetcher);
   await saveQuotaCache(env, id, value);
@@ -52,13 +88,13 @@ async function fetchCredentialQuota(env, id, fetcher) {
   const send = async () =>
     googleFetch(
       fetcher,
-      `${origin}/v1internal:fetchAvailableModels`,
+      `${origin}/v1internal:retrieveUserQuotaSummary`,
       {
         method: 'POST',
         redirect: 'manual',
         signal,
-        headers: await antigravityHeaders(env, token, ''),
-        body: '{}',
+        headers: await antigravityHeaders(env, token, 'agent'),
+        body: JSON.stringify(row.data.project_id ? { project: row.data.project_id } : {}),
       },
       'quota_fetch',
     );
@@ -93,6 +129,7 @@ async function fetchCredentialQuota(env, id, fetcher) {
     credentialId: id,
     mode: row.mode,
     queriedAt: new Date().toISOString(),
-    models: normalizeQuota(value),
+    source: 'retrieveUserQuotaSummary',
+    models: normalizeQuotaSummary(value),
   };
 }

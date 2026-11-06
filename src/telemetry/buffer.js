@@ -112,9 +112,20 @@ export class TelemetryBuffer {
           credentialId: quotaId,
           mode: value.mode,
           queriedAt: value.queriedAt,
+          ...(value.source === 'retrieveUserQuotaSummary' ? { source: value.source } : {}),
           models: value.models.map((model) =>
             Object.fromEntries(
-              ['id', 'remaining', 'resetTime', 'remainingAmount', 'tokenType', 'bucketIndex']
+              [
+                'id',
+                'remaining',
+                'resetTime',
+                'remainingAmount',
+                'tokenType',
+                'bucketIndex',
+                'quotaGroup',
+                'window',
+                'bucketName',
+              ]
                 .filter((key) => model[key] !== undefined)
                 .map((key) => [key, model[key]]),
             ),

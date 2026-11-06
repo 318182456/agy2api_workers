@@ -708,13 +708,26 @@ test('node quota cache bypasses primary DO, scopes keys, invalidates and falls b
         credentialId: id,
         mode: 'antigravity',
         queriedAt: new Date().toISOString(),
-        models: [{ id: 'gemini-test', remaining: 0.5, access_token: 'must-not-store' }],
+        source: 'retrieveUserQuotaSummary',
+        models: [
+          {
+            id: 'gemini-test',
+            quotaGroup: 'Gemini 4 Argon',
+            window: 'weekly',
+            bucketName: 'Weekly',
+            remaining: 0.5,
+            access_token: 'must-not-store',
+          },
+        ],
         access_token: 'must-not-store',
       };
       await saveQuotaCache(env, id, quota);
       let cached = await cachedQuota(env, id);
       assert.equal(cached.cache_source, 'storage-node');
       assert.equal(cached.models[0].remaining, 0.5);
+      assert.equal(cached.source, 'retrieveUserQuotaSummary');
+      assert.equal(cached.models[0].quotaGroup, 'Gemini 4 Argon');
+      assert.equal(cached.models[0].window, 'weekly');
       assert.ok(!JSON.stringify(cached).includes('must-not-store'));
       assert.equal(primaryReads, 0);
       assert.equal(primaryWrites, 0);

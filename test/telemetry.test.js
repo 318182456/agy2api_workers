@@ -504,7 +504,10 @@ test('DO quota cache validates records, expires, and invalidates with credential
       credentialId: id,
       mode: 'antigravity',
       queriedAt: new Date().toISOString(),
-      models: [{ id: 'gemini-test', remaining: 0.7 }],
+      source: 'retrieveUserQuotaSummary',
+      models: [
+        { id: 'gemini-test', quotaGroup: 'Gemini 4 Argon', window: 'weekly', remaining: 0.7 },
+      ],
       secret: 'must-not-persist',
     };
     assert.equal((await stub.fetch(url)).status, 404);
@@ -514,6 +517,9 @@ test('DO quota cache validates records, expires, and invalidates with credential
     assert.equal(result.cached, true);
     assert.equal(result.cacheSeconds, 600);
     assert.equal(result.models[0].remaining, 0.7);
+    assert.equal(result.source, 'retrieveUserQuotaSummary');
+    assert.equal(result.models[0].quotaGroup, 'Gemini 4 Argon');
+    assert.equal(result.models[0].window, 'weekly');
     assert.equal(result.secret, undefined);
     await stub.fetch('https://test/test/expire-quota');
     assert.equal((await stub.fetch(url)).status, 404);

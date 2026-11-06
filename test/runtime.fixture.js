@@ -10,6 +10,15 @@ export default {
         throw new TypeError('fetch failed: secret-do-not-log');
       if (url.endsWith('/token'))
         return Response.json({ access_token: 'refreshed-test-token', expires_in: 3600 });
+      if (url.includes('retrieveUserQuotaSummary'))
+        return Response.json({
+          groups: [
+            {
+              displayName: 'Gemini Models',
+              buckets: [{ bucketId: 'g-week', window: 'weekly', remainingFraction: 0.8 }],
+            },
+          ],
+        });
       if (url.includes('fetchAvailableModels'))
         return Response.json({
           models: { 'test-model': { quotaInfo: { remainingFraction: 0.8 } } },
