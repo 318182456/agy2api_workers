@@ -200,8 +200,8 @@ export async function listCredentials(db, env = {}, { basic = false } = {}) {
     db
       .prepare(
         basic
-          ? `SELECT c.id,c.mode,c.name,c.disabled,c.last_used,c.created_at,c.priority,c.weight,c.data,h.last_success,h.last_failure,h.last_status AS last_failure_status,(SELECT COUNT(*) FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials c LEFT JOIN credential_health h ON h.credential_id=c.id WHERE c.mode='antigravity' ORDER BY c.created_at DESC`
-          : `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT json_extract(payload,'$.last_success') FROM usage_aggregates WHERE credential_id=credentials.id AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1) AS aggregate_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials WHERE mode='antigravity' ORDER BY created_at DESC`,
+          ? `SELECT c.id,c.mode,c.name,c.disabled,c.last_used,c.created_at,c.priority,c.weight,c.data,h.last_success,h.last_failure,h.last_status AS last_failure_status,h.last_code AS last_failure_code,(SELECT COUNT(*) FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials c LEFT JOIN credential_health h ON h.credential_id=c.id WHERE c.mode='antigravity' ORDER BY c.created_at DESC`
+          : `SELECT id, mode, name, disabled, last_used, created_at, priority, weight, data, (SELECT last_success FROM credential_health WHERE credential_id=credentials.id) AS last_success, (SELECT created_at+duration_ms FROM request_usage WHERE credential_id=credentials.id AND outcome='success' ORDER BY created_at DESC LIMIT 1) AS observed_success, (SELECT json_extract(payload,'$.last_success') FROM usage_aggregates WHERE credential_id=credentials.id AND json_extract(payload,'$.last_success') IS NOT NULL ORDER BY json_extract(payload,'$.last_success') DESC LIMIT 1) AS aggregate_success, (SELECT last_failure FROM credential_health WHERE credential_id=credentials.id) AS last_failure, (SELECT last_status FROM credential_health WHERE credential_id=credentials.id) AS last_failure_status, (SELECT last_code FROM credential_health WHERE credential_id=credentials.id) AS last_failure_code, (SELECT COUNT(*) FROM credential_cooldowns WHERE credential_id=credentials.id AND until_ms>strftime('%s','now')*1000) AS cooling_models FROM credentials WHERE mode='antigravity' ORDER BY created_at DESC`,
       )
       .all(),
   );
@@ -224,6 +224,10 @@ export async function listCredentials(db, env = {}, { basic = false } = {}) {
         (liveHealth.get(row.id)?.last_failure || 0) > (row.last_failure || 0)
           ? liveHealth.get(row.id).last_status
           : row.last_failure_status,
+      last_failure_code:
+        (liveHealth.get(row.id)?.last_failure || 0) > (row.last_failure || 0)
+          ? liveHealth.get(row.id).last_code
+          : row.last_failure_code,
       last_success:
         Math.max(
           row.last_success || 0,
@@ -259,7 +263,7 @@ export async function selectCredential(
   const quotaModel = '?';
   const selectionValues = [mode, model];
   const eligible = `FROM credentials c WHERE ${channelPredicate} AND c.disabled=0
-    AND NOT EXISTS (SELECT 1 FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.model=${quotaModel} AND q.until_ms>?)${exclusions}`;
+    AND NOT EXISTS (SELECT 1 FROM credential_cooldowns q WHERE q.credential_id=c.id AND q.model IN (${quotaModel},'*') AND q.until_ms>?)${exclusions}`;
   const values = [...selectionValues, Date.now(), ...excluded];
   const scope = dbCache(db);
   scope.rotation ||= new Map();
@@ -294,11 +298,20 @@ export async function selectCredential(
   if (!row) {
     const cooling = await db
       .prepare(
-        `SELECT MIN(q.until_ms) AS earliest FROM credential_cooldowns q JOIN credentials c ON c.id=q.credential_id
-      WHERE ${channelPredicate} AND c.disabled=0 AND q.model=${quotaModel} AND q.until_ms>?`,
+        `SELECT MIN(q.until_ms) AS earliest,COUNT(DISTINCT q.credential_id) AS accounts,COUNT(DISTINCT CASE WHEN q.model='*' AND q.status=403 THEN q.credential_id END) AS service_blocks FROM credential_cooldowns q JOIN credentials c ON c.id=q.credential_id
+      WHERE ${channelPredicate} AND c.disabled=0 AND q.model IN (${quotaModel},'*') AND q.until_ms>?`,
       )
       .bind(...selectionValues, Date.now())
       .first();
+    if (!excluded.length && cooling?.accounts && cooling.service_blocks === cooling.accounts) {
+      const error = new HttpError(
+        403,
+        '可用账号均已触发 Google 服务停用保护，已暂停全部模型调用；请先完成申诉，恢复后在凭证管理中清除冷却再验证',
+      );
+      error.errorCode = 'ANTIGRAVITY_SERVICE_DISABLED';
+      error.retryAfter = Math.max(1, Math.ceil((cooling.earliest - Date.now()) / 1000));
+      throw error;
+    }
     if (cooling?.earliest) {
       const error = new HttpError(429, `${mode} 当前模型的可用凭证正在冷却，请稍后重试或切换模型`);
       error.retryAfter = Math.max(1, Math.ceil((cooling.earliest - Date.now()) / 1000));

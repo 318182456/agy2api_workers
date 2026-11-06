@@ -34,6 +34,10 @@ function mergeCredentialHealth(value, live) {
       last_used: Math.max(row.last_used || 0, current.last_used || 0),
       last_success: Math.max(row.last_success || 0, current.last_success || 0) || null,
       last_failure: Math.max(row.last_failure || 0, current.last_failure || 0) || null,
+      last_failure_code:
+        (current.last_failure || 0) > (row.last_failure || 0)
+          ? current.last_code
+          : row.last_failure_code,
       last_failure_status:
         (current.last_failure || 0) > (row.last_failure || 0)
           ? current.last_status
@@ -168,6 +172,10 @@ function renderCredentials() {
           ? '；测试通过'
           : '；测试失败'
       : '';
+    const suspended =
+      credential.cooling_models &&
+      credential.last_failure_code === 'ANTIGRAVITY_SERVICE_DISABLED' &&
+      credential.last_failure > (credential.last_success || 0);
     const observed =
       credential.last_failure && credential.last_failure > (credential.last_success || 0)
         ? '最近异常（HTTP ' + credential.last_failure_status + '）'
@@ -180,8 +188,10 @@ function renderCredentials() {
       credential.mode,
       (credential.disabled ? '停用' : '启用') +
         ' · ' +
-        observed +
-        (credential.cooling_models ? '\n' + credential.cooling_models + ' 个模型冷却中' : '') +
+        (suspended
+          ? 'Google 已停用服务 · 全部模型暂停调用'
+          : observed +
+            (credential.cooling_models ? '\n' + credential.cooling_models + ' 个模型冷却中' : '')) +
         testStatus,
       credential.last_success ? formatReset(credential.last_success) : '—',
     ];
@@ -200,7 +210,7 @@ function renderCredentials() {
         tier.textContent = label;
         tier.title = credential.subscription_tier
           ? '上游等级：' + credential.subscription_tier
-          : '尚未获取账号等级，可在更多操作中校验项目';
+          : '尚未获取账号等级，可在更多操作中校验并测试';
         identity.append(name, tier);
         td.replaceChildren(identity);
         if (credential.user_email) {
@@ -241,8 +251,27 @@ function renderCredentials() {
       });
     const verify = document.createElement('button');
     verify.className = 'secondary';
-    verify.textContent = '校验项目';
-    verify.onclick = () => localRun(() => verifyCredentialProject(credential));
+    verify.textContent = '校验并测试';
+    verify.title = '更新项目资料后实际调用一次选定模型，会消耗少量额度';
+    verify.onclick = () =>
+      nearbyEditor(
+        tr,
+        'credential:' + credential.id,
+        6,
+        '校验并测试（消耗少量额度）',
+        [
+          {
+            name: 'model',
+            label: '验证模型（留空自动选择可用文本模型）',
+            value: credential.last_test?.model || '',
+            required: false,
+          },
+        ],
+        async (inputs) =>
+          verifyCredentialProject(credential, { model: inputs.model.value.trim() || undefined }),
+        undefined,
+        '开始校验并测试',
+      );
     if (credential.mode === 'antigravity') {
       const credits = document.createElement('button');
       credits.className = 'secondary';
@@ -264,22 +293,6 @@ function renderCredentials() {
         });
       extraActions.append(credits);
     }
-    const test = document.createElement('button');
-    test.className = 'secondary';
-    test.textContent = '测试调用';
-    test.title = '向指定凭证发起一次 hi 请求，最多生成 1 token，会消耗少量额度';
-    test.onclick = () => {
-      if (confirm('将使用此凭证发起一次最小聊天请求，消耗少量额度，是否继续？'))
-        localRun(async () => {
-          const result = await api('/admin/credentials/' + credential.id + '/test', 'POST', {});
-          await refresh();
-          status(
-            result.limited
-              ? 'Google 返回 429：当前限流，不能证明本次生成可用。'
-              : '指定凭证测试通过，模型：' + result.model,
-          );
-        });
-    };
     const download = document.createElement('button');
     download.className = 'secondary';
     download.textContent = '下载凭证';
@@ -353,7 +366,12 @@ function renderCredentials() {
           '失败摘要计数（同类错误按分钟合并）：' + (h?.failure_streak || 0),
           '当前模型冷却：',
           ...value.cooldowns.map(
-            (q) => q.model + ' · HTTP ' + q.status + ' · 截止 ' + formatReset(q.until_ms),
+            (q) =>
+              (q.model === '*' ? '全部模型（服务停用保护）' : q.model) +
+              ' · HTTP ' +
+              q.status +
+              ' · 截止 ' +
+              formatReset(q.until_ms),
           ),
           ...(!value.cooldowns.length ? ['无'] : []),
         ].join('\n');
@@ -405,7 +423,7 @@ function renderCredentials() {
         },
       );
     actions.append(health);
-    extraActions.append(rename, scheduling, email, verify, test, download);
+    extraActions.append(rename, scheduling, email, verify, download);
     const history = document.createElement('button');
     history.className = 'secondary';
     history.textContent = '问题记录';
@@ -421,12 +439,16 @@ function renderCredentials() {
     if (credential.cooling_models) {
       const clear = document.createElement('button');
       clear.className = 'secondary';
-      clear.textContent = '清除冷却';
+      clear.textContent = suspended ? '恢复后解除暂停' : '清除冷却';
       clear.onclick = () =>
         localRun(async () => {
           await api('/admin/credentials/' + credential.id + '/cooldowns', 'DELETE');
           await refresh();
-          status('已清除该凭证的模型冷却；若 Google 仍限流，再次调用仍可能失败。');
+          status(
+            suspended
+              ? '已解除本地暂停保护；这不会解除 Google 的停用，请仅在申诉恢复后重新验证。'
+              : '已清除该凭证的模型冷却；若 Google 仍限流，再次调用仍可能失败。',
+          );
         });
       extraActions.append(clear);
     }
@@ -533,20 +555,20 @@ function formatReset(value) {
   }).format(date);
 }
 async function verifyCredentialProject(credential, body = {}) {
-  const details = el('quota-' + credential.id);
-  const hadQuota = details && !details.hidden;
   try {
     const result = await api('/admin/credentials/' + credential.id + '/verify', 'POST', body);
+    if (result.generation_verified !== true)
+      throw new Error('实际生成验证未完成，不能确认模型可用');
     await refresh();
-    status('项目校验成功，已保存：' + result.project_id);
-    nearbyMessage('credential:' + credential.id, '项目校验成功，已保存：' + result.project_id);
-    if (hadQuota) await showQuota(credential);
+    const message = '项目与模型实际调用验证通过：' + result.model + '；项目：' + result.project_id;
+    status(message);
+    nearbyMessage('credential:' + credential.id, message);
   } catch (error) {
+    await refresh({ live: false }).catch(() => {});
     const current = el('quota-' + credential.id);
     if (current) {
       current.hidden = false;
-      const cell = current.firstChild;
-      cell.textContent = '项目校验未完成：' + error.message;
+      current.firstChild.textContent = '校验并测试失败：' + error.message;
     }
     throw error;
   }

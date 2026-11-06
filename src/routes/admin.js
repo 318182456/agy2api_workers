@@ -16,13 +16,7 @@ import {
   updateCredential,
 } from '../credentials/index.js';
 import { startOAuth, completeOAuth } from '../credentials/oauth.js';
-import {
-  credentialById,
-  fetchEmail,
-  verifyProject,
-  testCredential,
-  saveData,
-} from '../credentials/account.js';
+import { credentialById, fetchEmail, verifyProject, saveData } from '../credentials/account.js';
 import { credentialQuota } from '../quota/index.js';
 import { discoverModels } from '../models/list.js';
 import { queryCallLogs, clearCallLogs } from '../upstream/reliability.js';
@@ -131,7 +125,7 @@ async function dispatchAdmin(request, env, fetcher) {
     );
   }
   const accountMatch = url.pathname.match(
-    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|test|download|credits)$/,
+    /^\/admin\/credentials\/([a-f0-9-]{36})\/(email|verify|download|credits)$/,
   );
   if (accountMatch) {
     const action = accountMatch[2];
@@ -148,16 +142,10 @@ async function dispatchAdmin(request, env, fetcher) {
     }
     if (action === 'verify')
       return json(
-        await verifyProject(accountEnv, row, fetcher, request.body ? await readJson(request) : {}),
-      );
-    if (action === 'test')
-      return json(
-        await testCredential(
-          await effectiveEnv(env),
-          row,
-          (await readJson(request)).model,
-          fetcher,
-        ),
+        await verifyProject(accountEnv, row, fetcher, {
+          ...(request.body ? await readJson(request) : {}),
+          testGeneration: true,
+        }),
       );
     const response = json(row.data);
     response.headers.set(

@@ -1,3 +1,4 @@
+import { antigravityHeaders } from './headers.js';
 import { retryableStatus, clientAborted, fetchGeneration, boundedSeconds } from './timeouts.js';
 import { HttpError, operation } from '../core/common.js';
 import { accessToken, selectCredential } from '../credentials/index.js';
@@ -6,6 +7,7 @@ import {
   upstreamErrorBody,
   upstreamErrorMessage,
   putCooldown,
+  serviceDisabled,
   recordAttempt,
 } from './reliability.js';
 import { loadModelNames, knownModelId, publicModelId } from '../models/names.js';
@@ -140,7 +142,7 @@ export async function callUpstream(
       let token = await operation('oauth_refresh', () =>
         accessToken(env.DB, row, fetcher, false, env, signal),
       );
-      const send = () =>
+      const send = async () =>
         fetchGeneration(
           fetcher,
           `${origin}/v1internal:${action}`,
@@ -148,11 +150,7 @@ export async function callUpstream(
             method: 'POST',
             redirect: 'manual',
             signal,
-            headers: {
-              authorization: `Bearer ${token}`,
-              'content-type': 'application/json',
-              'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
-            },
+            headers: await antigravityHeaders(env, token, model),
             body: JSON.stringify(payload),
           },
           boundedSeconds(env.UPSTREAM_TIMEOUT_SECONDS, 45, 5, 90),
@@ -173,11 +171,13 @@ export async function callUpstream(
         env.API_PASSWORD,
         env.PANEL_PASSWORD,
       ]);
+      const suspended = serviceDisabled(response, errorBody);
+      const failureCode = suspended ? 'ANTIGRAVITY_SERVICE_DISABLED' : 'HTTP_' + response.status;
       meta.upstreamFailure = response.ok
         ? null
         : {
             stage: 'request_failed',
-            code: 'HTTP_' + response.status,
+            code: failureCode,
             message: detailMessage || 'Google 返回 HTTP ' + response.status,
           };
       await recordAttempt(
@@ -189,13 +189,25 @@ export async function callUpstream(
           model,
           status: response.status,
           stage: 'response_headers',
-          code: response.ok ? null : 'HTTP_' + response.status,
+          code: response.ok ? null : failureCode,
           detailMessage,
           started,
         },
         meta,
       );
       logged = true;
+      if (suspended) {
+        // ASVS V16.5.2: stop sending further generation requests after an explicit account suspension.
+        // This is a reversible account-wide circuit breaker, not a change to the credential's enabled flag.
+        try {
+          await operation('credential_cooldown', () => putCooldown(env.DB, row, '*', 403, 86400));
+          response = new Response(response.body, response);
+          response.headers.set('retry-after', '86400');
+        } catch {
+          console.warn(JSON.stringify({ event: 'service_suspension_protection_save_failed' }));
+        }
+        return response;
+      }
       if (!retryableStatus(response.status)) return response;
       const seconds = cooldownSeconds(response, Date.now(), errorBody);
       await operation('credential_cooldown', () =>

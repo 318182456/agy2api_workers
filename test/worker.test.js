@@ -2681,3 +2681,121 @@ test('Google 403 JSON and SSE denials under event-stream preserve account reason
     null,
   );
 });
+
+test('service suspension classification is limited to explicit Google TOS denials', async () => {
+  const { serviceDisabled } = await import('../src/upstream/reliability.js');
+  const denied = new Response(null, { status: 403 });
+  assert.equal(
+    serviceDisabled(denied, {
+      error: { details: [{ reason: 'TOS_VIOLATION', domain: 'cloudcode-pa.googleapis.com' }] },
+    }),
+    true,
+  );
+  assert.equal(
+    serviceDisabled(denied, {
+      error: {
+        message:
+          'This service has been disabled in this account for violation of Terms of Service.',
+      },
+    }),
+    true,
+  );
+  for (const value of [
+    null,
+    { error: { message: 'Permission denied' } },
+    { error: { message: 'User location is not supported for the API use.' } },
+    { error: { details: [{ reason: 'TOS_VIOLATION', domain: 'other.example' }] } },
+  ])
+    assert.equal(serviceDisabled(denied, value), false);
+  assert.equal(
+    serviceDisabled(new Response(null, { status: 401 }), {
+      error: { details: [{ reason: 'TOS_VIOLATION', domain: 'cloudcode-pa.googleapis.com' }] },
+    }),
+    false,
+  );
+});
+
+test('aligned Antigravity headers share only public version metadata and isolate authorization', async () => {
+  const { antigravityHeaders } = await import('../src/upstream/headers.js');
+  let reads = 0;
+  const cache = {
+    async get() {
+      reads++;
+      return { cliVersion: '1.5.1', checkedAt: Date.now() };
+    },
+  };
+  const a = await antigravityHeaders({ CACHE: cache }, 'token-a', 'gemini-future');
+  const b = await antigravityHeaders({ CACHE: cache }, 'token-b', 'gemini-future-image');
+  const metadata = await antigravityHeaders({ CACHE: cache }, 'token-c');
+  assert.equal(reads, 1);
+  assert.equal(a['user-agent'], 'antigravity/cli/1.5.1 windows/amd64');
+  assert.equal(a.authorization, 'Bearer token-a');
+  assert.equal(b.authorization, 'Bearer token-b');
+  assert.equal(a.accept, '*/*');
+  assert.equal(a['accept-encoding'], 'gzip');
+  assert.equal(a.requestType, 'agent');
+  assert.equal(b.requestType, 'image_gen');
+  assert.equal(metadata.requestType, undefined);
+  assert.match(a.requestId, /^req-[a-f0-9-]{36}$/);
+  assert.notEqual(a.requestId, b.requestId);
+  assert.equal(a.connection, undefined);
+  assert.equal(a.cookie, undefined);
+});
+test('CLI release refresh is fixed-origin, daily cached and excludes all authentication material', async () => {
+  const {
+    refreshAntigravityClient,
+    antigravityHeaders,
+    ANTIGRAVITY_RELEASE_URL,
+    ANTIGRAVITY_CLIENT_CACHE_KEY,
+  } = await import('../src/upstream/headers.js');
+  let value = null,
+    fetches = 0;
+  const cache = {
+    async get(key) {
+      assert.equal(key, ANTIGRAVITY_CLIENT_CACHE_KEY);
+      return value;
+    },
+    async put(key, raw) {
+      assert.equal(key, ANTIGRAVITY_CLIENT_CACHE_KEY);
+      value = JSON.parse(raw);
+    },
+  };
+  const fetcher = async (url, options) => {
+    fetches++;
+    assert.equal(url, ANTIGRAVITY_RELEASE_URL);
+    assert.equal(options.headers.authorization, undefined);
+    assert.equal(options.redirect, 'manual');
+    return Response.json({ tag_name: 'v99.1.2', body: 'ignored release body' });
+  };
+  assert.equal(
+    (await refreshAntigravityClient({ CACHE: cache, API_PASSWORD: 'private' }, fetcher)).version,
+    '99.1.2',
+  );
+  assert.deepEqual(Object.keys(value).sort(), ['checkedAt', 'cliVersion']);
+  assert.equal((await refreshAntigravityClient({ CACHE: cache }, fetcher)).cached, true);
+  assert.equal(fetches, 1);
+  assert.match(
+    (await antigravityHeaders({ CACHE: cache }, 'provider-token'))['user-agent'],
+    /99\.1\.2/,
+  );
+  const badCache = {
+    async get() {
+      return null;
+    },
+    async put() {
+      throw new Error('invalid metadata must never be saved');
+    },
+  };
+  assert.equal(
+    (
+      await refreshAntigravityClient({ CACHE: badCache }, async () =>
+        Response.json({ tag_name: 'bad\r\nCookie: injected' }),
+      )
+    ).skipped,
+    true,
+  );
+  assert.equal(
+    (await antigravityHeaders({ CACHE: badCache }, 'token'))['user-agent'],
+    'antigravity/cli/1.4.7 windows/amd64',
+  );
+});

@@ -80,7 +80,7 @@ function mountNearby(row, id, columns, title) {
   el(id).hidden = false;
   return view;
 }
-function nearbyEditor(row, key, columns, title, fields, save, onClose) {
+function nearbyEditor(row, key, columns, title, fields, save, onClose, submitLabel = '保存') {
   const view = nearbyCell(row, 'edit-' + key, columns, title, onClose),
     form = document.createElement('form');
   form.className = 'nearby-form';
@@ -104,7 +104,7 @@ function nearbyEditor(row, key, columns, title, fields, save, onClose) {
   }
   const submit = document.createElement('button');
   submit.type = 'submit';
-  submit.textContent = '保存';
+  submit.textContent = submitLabel;
   form.append(submit);
   view.cell.append(form);
   form.onsubmit = (event) => {

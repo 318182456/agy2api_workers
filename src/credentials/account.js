@@ -1,3 +1,11 @@
+import {
+  upstreamErrorBody,
+  upstreamErrorMessage,
+  serviceDisabled,
+  putCooldown,
+  recordAttempt,
+} from '../upstream/reliability.js';
+import { antigravityHeaders } from '../upstream/headers.js';
 import { HttpError, googleFetch, operation } from '../core/common.js';
 import { accessToken, parseCredentialData } from './index.js';
 import { upstreamOrigin, upstreamPayload } from '../upstream/index.js';
@@ -23,17 +31,13 @@ export async function saveData(db, row, changes) {
 }
 export async function accountRequest(env, row, path, body, stage, fetcher = fetch) {
   let token = await operation('oauth_refresh', () => accessToken(env.DB, row, fetcher, false, env));
-  const send = () =>
+  const send = async () =>
     googleFetch(
       fetcher,
       path,
       {
         method: body === undefined ? 'GET' : 'POST',
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-          'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
-        },
+        headers: await antigravityHeaders(env, token, body?.model || ''),
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         signal: AbortSignal.timeout(30000),
       },
@@ -47,22 +51,41 @@ export async function accountRequest(env, row, path, body, stage, fetcher = fetc
   }
   return response;
 }
-export async function googleJson(response, label) {
+function googleFailure(status, body, label, secrets) {
+  const message = upstreamErrorMessage(body, secrets);
+  const error = new HttpError(
+    status,
+    message
+      ? label + '失败 (HTTP ' + status + ')：' + message
+      : label + '失败 (HTTP ' + status + ')，请检查账号权限、地区和凭证',
+  );
+  if (serviceDisabled({ status }, body)) error.errorCode = 'ANTIGRAVITY_SERVICE_DISABLED';
+  return error;
+}
+export async function googleJson(response, label, secrets = []) {
   if (!response.ok) {
+    const body = await upstreamErrorBody(response);
     await response.body?.cancel();
-    throw new HttpError(
-      response.status >= 400 ? response.status : 502,
-      `${label}失败 (HTTP ${response.status})，请检查账号权限、地区和凭证`,
-    );
+    throw googleFailure(response.status >= 400 ? response.status : 502, body, label, secrets);
   }
   let value;
   try {
     value = await response.json();
   } catch {
-    throw new HttpError(502, `${label}返回了无效 JSON`);
+    throw new HttpError(502, label + '返回了无效 JSON');
   }
   if (!value || typeof value !== 'object' || Array.isArray(value))
-    throw new HttpError(502, `${label}返回格式不正确`);
+    throw new HttpError(502, label + '返回格式不正确');
+  const error = value.error || value.response?.error;
+  if (error) {
+    const code = Number(error.code);
+    throw googleFailure(
+      Number.isInteger(code) && code >= 400 && code <= 599 ? code : 502,
+      { error },
+      label,
+      secrets,
+    );
+  }
   return value;
 }
 export async function fetchEmail(env, row, fetcher) {
@@ -84,6 +107,12 @@ export async function fetchEmail(env, row, fetcher) {
 }
 export async function verifyProject(env, row, fetcher, options = {}) {
   if (row.mode !== 'antigravity') throw new HttpError(400, '仅支持 Antigravity 凭证');
+  if (
+    options.model != null &&
+    options.model !== '' &&
+    (typeof options.model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(options.model))
+  )
+    throw new HttpError(400, '验证模型名称无效');
   let projectId;
   let tier = null;
   let credits = null;
@@ -117,13 +146,57 @@ export async function verifyProject(env, row, fetcher, options = {}) {
     subscription_tier: tier,
     credit_amount: credits,
   });
-  return { success: true, project_id: projectId, subscription_tier: tier, credit_amount: credits };
+  const result = {
+    success: true,
+    project_id: projectId,
+    subscription_tier: tier,
+    credit_amount: credits,
+  };
+  if (options.testGeneration === true) {
+    const tested = await testCredential(env, row, options.model, fetcher);
+    if (!tested.success) {
+      const error = new HttpError(
+        tested.upstream_status || 502,
+        '项目资料已更新，但实际生成测试未通过；Google 当前限流或未返回有效生成结果',
+      );
+      error.operation = 'credential_test';
+      throw error;
+    }
+    return { ...result, project_verified: true, generation_verified: true, model: tested.model };
+  }
+  return result;
 }
 export async function testCredential(env, row, model, fetcher) {
-  model ||= 'gemini-2.5-flash';
-  if (typeof model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,199}$/.test(model))
+  if (!model) model = row.data.last_test?.model;
+  if (!model) {
+    const catalog = await googleJson(
+      await accountRequest(
+        env,
+        row,
+        upstreamOrigin(env, row.mode) + '/v1internal:fetchAvailableModels',
+        {},
+        'model_discovery',
+        fetcher,
+      ),
+      '测试模型目录',
+    );
+    const ids =
+      catalog.models && typeof catalog.models === 'object' && !Array.isArray(catalog.models)
+        ? Object.keys(catalog.models).filter((id) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(id))
+        : [];
+    const textModels = ids.filter(
+      (id) => !/image|tts|audio|embedding|robotic|live|video|veo/i.test(id),
+    );
+    model =
+      textModels.find((id) => /^gemini-/i.test(id) && /flash/i.test(id)) ||
+      textModels.find((id) => /^claude-/i.test(id)) ||
+      textModels.find((id) => /^gemini-/i.test(id)) ||
+      textModels[0];
+    if (!model) throw new HttpError(503, '目录中没有可自动选择的文本模型，请填写验证模型 ID');
+  }
+  if (typeof model !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(model))
     throw new HttpError(400, '测试模型名称无效');
-  if (!row.data.project_id) throw new HttpError(400, '请先校验项目或补充 project_id');
+  if (!row.data.project_id) throw new HttpError(400, '请先执行校验并测试或补充 project_id');
   const payload = upstreamPayload(
     {
       contents: [{ role: 'user', parts: [{ text: 'hi' }] }],
@@ -133,25 +206,90 @@ export async function testCredential(env, row, model, fetcher) {
     row.data.project_id,
     row.mode,
   );
-  const response = await accountRequest(
-    env,
-    row,
-    upstreamOrigin(env, row.mode) + '/v1internal:generateContent',
-    payload,
-    'credential_test',
-    fetcher,
-  );
-  const status = response.status;
-  if (status === 200) await googleJson(response, '凭证测试');
-  else if (status === 429) await response.body?.cancel();
-  else await googleJson(response, '凭证测试');
-  const result = {
-    success: status === 200,
-    limited: status === 429,
-    upstream_status: status,
-    model,
-    tested_at: new Date().toISOString(),
-  };
-  await saveData(env.DB, row, { last_test: result });
-  return result;
+  const started = Date.now();
+  try {
+    const response = await accountRequest(
+      env,
+      row,
+      upstreamOrigin(env, row.mode) + '/v1internal:generateContent',
+      payload,
+      'credential_test',
+      fetcher,
+    );
+    const status = response.status;
+    if (status === 429) await response.body?.cancel();
+    else {
+      const value = await googleJson(response, '模型实际调用测试', [
+        row.data.token,
+        row.data.access_token,
+        row.data.refresh_token,
+        env.API_PASSWORD,
+        env.PANEL_PASSWORD,
+      ]);
+      const candidates = (value.response || value).candidates;
+      if (
+        !Array.isArray(candidates) ||
+        !candidates.some(
+          (candidate) =>
+            candidate &&
+            typeof candidate === 'object' &&
+            (/^(?:STOP|MAX_TOKENS)$/.test(candidate.finishReason || '') ||
+              (!candidate.finishReason &&
+                Array.isArray(candidate.content?.parts) &&
+                candidate.content.parts.length)),
+        )
+      )
+        throw new HttpError(502, '模型没有返回有效生成结果，不能确认生成权限可用');
+    }
+    const result = {
+      success: status === 200,
+      limited: status === 429,
+      upstream_status: status,
+      model,
+      tested_at: new Date().toISOString(),
+    };
+    await saveData(env.DB, row, { last_test: result });
+    if (result.success) {
+      const now = Date.now();
+      await env.DB.batch([
+        env.DB.prepare(
+          "DELETE FROM credential_cooldowns WHERE credential_id=? AND model='*' AND status=403",
+        ).bind(row.id),
+        env.DB.prepare(
+          'INSERT INTO credential_health(credential_id,last_success,failure_streak) SELECT id,?,0 FROM credentials WHERE id=? ON CONFLICT(credential_id) DO UPDATE SET last_success=MAX(COALESCE(last_success,0),excluded.last_success),failure_streak=CASE WHEN COALESCE(last_failure,0)<=excluded.last_success THEN 0 ELSE failure_streak END',
+        ).bind(now, row.id),
+      ]);
+    }
+    return result;
+  } catch (error) {
+    error.operation ||= 'credential_test';
+    error.message = '模型 ' + model + '：' + error.message;
+    if (error.errorCode === 'ANTIGRAVITY_SERVICE_DISABLED') {
+      await putCooldown(env.DB, row, '*', 403, 86400);
+      await recordAttempt(env.DB, {
+        requestId: crypto.randomUUID(),
+        row,
+        mode: row.mode,
+        model,
+        status: 403,
+        stage: 'credential_test',
+        code: error.errorCode,
+        started,
+      });
+    }
+    try {
+      await saveData(env.DB, row, {
+        last_test: {
+          success: false,
+          limited: false,
+          upstream_status: error.status || 502,
+          model,
+          tested_at: new Date().toISOString(),
+        },
+      });
+    } catch {
+      /* Preserve the actual test failure if the credential changed concurrently. */
+    }
+    throw error;
+  }
 }

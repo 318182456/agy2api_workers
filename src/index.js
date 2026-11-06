@@ -1,3 +1,4 @@
+import { refreshAntigravityClient } from './upstream/headers.js';
 import { receiveNodeTelemetry } from './storage/telemetry.js';
 import { iconResponse } from './panel/icon.js';
 import { VERSION } from './core/version.js';
@@ -146,7 +147,12 @@ export default {
   scheduled(controller, env, context) {
     if (env.DB)
       context.waitUntil(
-        Promise.all([pruneTelemetry(env.DB), warmSharedSettings(env), flushTelemetry(env)]),
+        Promise.all([
+          pruneTelemetry(env.DB),
+          warmSharedSettings(env),
+          flushTelemetry(env),
+          refreshAntigravityClient(env),
+        ]),
       );
   },
   fetch(request, env, context) {

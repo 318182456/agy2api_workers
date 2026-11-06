@@ -76,7 +76,6 @@ el('batchRun').onclick = () => {
     return;
   }
   if (action === 'delete' && !confirm('确认删除选中的 ' + rows.length + ' 个凭证？')) return;
-  if (action === 'test' && !confirm('将逐个发起最小聊天请求，会消耗额度，继续？')) return;
   return run(async () => {
     startBatch();
     const exported = [];
@@ -103,13 +102,15 @@ el('batchRun').onclick = () => {
           else if (action === 'cooldowns') await api(root + '/cooldowns', 'DELETE');
           else {
             const value = await api(root + '/' + action, 'POST', {});
+            if (action === 'verify' && value.generation_verified !== true)
+              throw new Error('实际生成验证未通过');
             if (value.limited) {
               batchLine(label + '：当前限流');
               continue;
             }
           }
           success++;
-          batchLine(label + '：完成');
+          batchLine(label + (action === 'verify' ? '：项目与实际生成验证通过' : '：完成'));
         } catch (error) {
           batchLine(label + '：失败 — ' + error.message);
         }

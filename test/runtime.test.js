@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir } from 'node:fs/promises';
 import { pruneTelemetry } from '../src/telemetry/maintenance.js';
 import { build } from 'esbuild';
 import { Miniflare, Log, LogLevel } from 'miniflare';
@@ -267,7 +267,7 @@ test('production Worker entrypoint sends real fetch calls instead of treating Ex
     assert.equal(metadata.subscription_tier, 'pro');
     assert.equal(metadata.credit_amount, '25');
     assert.equal(JSON.stringify(metadata).includes('oauth-refresh-test'), false);
-    response = await adminPost('/admin/credentials/' + account.id + '/test');
+    response = await adminPost('/admin/credentials/' + account.id + '/verify');
     assert.equal(response.status, 200, await response.clone().text());
     assert.equal((await response.json()).success, true);
     response = await adminPost('/admin/credentials/' + account.id + '/email');
@@ -991,6 +991,289 @@ test('active location probe constructs supported Requests inside workerd and ref
     assert.equal(error.reason, 'REGION_PROBE_HTTP_302');
     assert.equal(error.stage, 'runtime_location');
     assert.equal(calls, 2); // Do not follow a redirect to another host.
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('explicit service suspension protects all models without disabling accounts and can be cleared', async () => {
+  const { Response: OutboundResponse } = await import('miniflare');
+  const built = await build({
+    entryPoints: ['src/index.js'],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+  });
+  const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
+  const sent = [];
+  let state = 'first-suspended';
+  const mf = new Miniflare({
+    modules: true,
+    script: built.outputFiles[0].text,
+    compatibilityDate: config.compatibility_date,
+    compatibilityFlags: config.compatibility_flags,
+    bindings: {
+      API_PASSWORD: 'a',
+      PANEL_PASSWORD: 'p',
+      ANTIGRAVITY_STREAM2NOSTREAM: false,
+      USAGE_STORAGE_MODE: 'detailed',
+    },
+    d1Databases: { DB: 'suspension-test' },
+    log: new Log(LogLevel.NONE),
+    outboundService: async (request) => {
+      const token = request.headers.get('authorization');
+      sent.push(token);
+      if (state === 'all-suspended' || (state === 'first-suspended' && token === 'Bearer token-a'))
+        return new OutboundResponse(
+          JSON.stringify({
+            error: {
+              code: 403,
+              status: 'PERMISSION_DENIED',
+              message:
+                'This service has been disabled in this account for violation of Terms of Service.',
+              details: [{ reason: 'TOS_VIOLATION', domain: 'cloudcode-pa.googleapis.com' }],
+            },
+          }),
+          { status: 403, headers: { 'content-type': 'text/event-stream' } },
+        );
+      return new OutboundResponse(
+        JSON.stringify({
+          response: {
+            candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+          },
+        }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+  try {
+    const db = await mf.getD1Database('DB');
+    for (const file of (await readdir('migrations')).filter((x) => x.endsWith('.sql')).sort())
+      await db.exec((await readFile('migrations/' + file, 'utf8')).replaceAll('\n', ' '));
+    const a = '11111111-1111-4111-8111-111111111111',
+      b = '22222222-2222-4222-8222-222222222222';
+    for (const [id, token] of [
+      [a, 'token-a'],
+      [b, 'token-b'],
+    ])
+      await db
+        .prepare('INSERT INTO credentials(id,mode,name,data,created_at) VALUES(?,?,?,?,?)')
+        .bind(
+          id,
+          'antigravity',
+          id,
+          JSON.stringify({ project_id: 'p', token, expiry: '2099-01-01T00:00:00Z' }),
+          1,
+        )
+        .run();
+    const chat = (model) =>
+      mf.dispatchFetch('https://test/v1/chat/completions', {
+        method: 'POST',
+        headers: { authorization: 'Bearer a', 'content-type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'test' }] }),
+      });
+    let response = await chat('m');
+    assert.equal(response.status, 403);
+    assert.equal(response.headers.get('retry-after'), '86400');
+    await response.text();
+    const cooldown = await db
+      .prepare('SELECT * FROM credential_cooldowns WHERE credential_id=?')
+      .bind(a)
+      .first();
+    assert.equal(cooldown.model, '*');
+    assert.equal(cooldown.status, 403);
+    assert.ok(cooldown.until_ms > Date.now() + 23 * 3600000);
+    response = await chat('another-model');
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.deepEqual(sent, ['Bearer token-a', 'Bearer token-b']);
+    state = 'all-suspended';
+    response = await chat('third-model');
+    assert.equal(response.status, 403);
+    await response.text();
+    const before = sent.length;
+    response = await chat('fourth-model');
+    assert.equal(response.status, 403);
+    assert.equal((await response.json()).error.reason, 'ANTIGRAVITY_SERVICE_DISABLED');
+    assert.equal(sent.length, before);
+    const list = await mf.dispatchFetch('https://test/admin/credentials?view=basic', {
+      headers: { authorization: 'Bearer p' },
+    });
+    assert.ok(
+      (await list.json()).credentials.every(
+        (row) =>
+          !row.disabled &&
+          row.cooling_models === 1 &&
+          row.last_failure_code === 'ANTIGRAVITY_SERVICE_DISABLED',
+      ),
+    );
+    const cleared = await mf.dispatchFetch('https://test/admin/credentials/' + a + '/cooldowns', {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer p' },
+    });
+    assert.equal(cleared.status, 200);
+    state = 'all-ok';
+    response = await chat('fifth-model');
+    assert.equal(response.status, 200);
+    await response.text();
+    assert.equal(sent.at(-1), 'Bearer token-a');
+    assert.equal(
+      (await db.prepare('SELECT COUNT(*) AS n FROM credentials WHERE disabled<>0').first()).n,
+      0,
+    );
+  } finally {
+    await mf.dispose();
+  }
+});
+
+test('combined project verification requires real generation and reports suspension, rate limits and empty results', async () => {
+  const { Response: OutboundResponse } = await import('miniflare');
+  const built = await build({
+    entryPoints: ['src/index.js'],
+    bundle: true,
+    write: false,
+    format: 'esm',
+    platform: 'browser',
+    target: 'es2022',
+  });
+  const config = JSON.parse(await readFile('wrangler.jsonc', 'utf8'));
+  const calls = [];
+  let scenario = 'ok';
+  const mf = new Miniflare({
+    modules: true,
+    script: built.outputFiles[0].text,
+    compatibilityDate: config.compatibility_date,
+    compatibilityFlags: config.compatibility_flags,
+    bindings: { API_PASSWORD: 'a', PANEL_PASSWORD: 'p' },
+    d1Databases: { DB: 'combined-verify' },
+    log: new Log(LogLevel.NONE),
+    outboundService: async (request) => {
+      const url = new URL(request.url);
+      calls.push(url.pathname);
+      assert.match(request.headers.get('user-agent'), /^antigravity\/cli\/[0-9.]+ windows\/amd64$/);
+      assert.equal(request.headers.get('accept'), '*/*');
+      assert.equal(request.headers.get('accept-encoding'), 'gzip');
+      assert.match(request.headers.get('requestId'), /^req-/);
+      if (url.pathname.endsWith(':loadCodeAssist'))
+        return new OutboundResponse(
+          JSON.stringify({ cloudaicompanionProject: 'project-found', paidTier: { id: 'pro' } }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      if (url.pathname.endsWith(':fetchAvailableModels'))
+        return new OutboundResponse(
+          JSON.stringify({ models: { 'gemini-9-future-flash': {}, 'gemini-9-image': {} } }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      assert.ok(url.pathname.endsWith(':generateContent'));
+      const body = await request.json();
+      assert.equal(body.model, 'gemini-9-future-flash');
+      assert.equal(body.request.generationConfig.maxOutputTokens, 1);
+      assert.equal(request.headers.get('requestType'), 'agent');
+      if (scenario === 'suspended')
+        return new OutboundResponse(
+          JSON.stringify({
+            error: {
+              code: 403,
+              message:
+                'This service has been disabled in this account for violation of Terms of Service.',
+            },
+          }),
+          { status: 403, headers: { 'content-type': 'text/event-stream' } },
+        );
+      if (scenario === 'limited')
+        return new OutboundResponse('{}', {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      return new OutboundResponse(
+        JSON.stringify(
+          scenario === 'empty'
+            ? {}
+            : {
+                response: {
+                  candidates: [{ content: { parts: [{ text: 'ok' }] }, finishReason: 'STOP' }],
+                },
+              },
+        ),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    },
+  });
+  try {
+    const db = await mf.getD1Database('DB');
+    for (const file of (await readdir('migrations')).filter((x) => x.endsWith('.sql')).sort())
+      await db.exec((await readFile('migrations/' + file, 'utf8')).replaceAll('\n', ' '));
+    const id = '11111111-1111-4111-8111-111111111111';
+    await db
+      .prepare('INSERT INTO credentials(id,mode,name,data,created_at) VALUES(?,?,?,?,?)')
+      .bind(
+        id,
+        'antigravity',
+        'test',
+        JSON.stringify({ project_id: 'old', token: 't', expiry: '2099-01-01T00:00:00Z' }),
+        1,
+      )
+      .run();
+    const verify = () =>
+      mf.dispatchFetch('https://test/admin/credentials/' + id + '/verify', {
+        method: 'POST',
+        headers: { authorization: 'Bearer p', 'content-type': 'application/json' },
+        body: '{}',
+      });
+    let response = await verify();
+    assert.equal(response.status, 200, await response.clone().text());
+    const result = await response.json();
+    assert.equal(result.generation_verified, true);
+    assert.equal(result.model, 'gemini-9-future-flash');
+    assert.equal(calls.filter((x) => x.endsWith(':generateContent')).length, 1);
+    scenario = 'suspended';
+    response = await verify();
+    assert.equal(response.status, 403);
+    assert.match((await response.json()).error.message, /service has been disabled/);
+    assert.equal(
+      (
+        await db
+          .prepare('SELECT model FROM credential_cooldowns WHERE credential_id=?')
+          .bind(id)
+          .first()
+      ).model,
+      '*',
+    );
+    scenario = 'limited';
+    response = await verify();
+    assert.equal(response.status, 429);
+    assert.equal(
+      JSON.parse(
+        (await db.prepare('SELECT data FROM credentials WHERE id=?').bind(id).first()).data,
+      ).last_test.success,
+      false,
+    );
+    scenario = 'empty';
+    response = await verify();
+    assert.equal(response.status, 502);
+    assert.match((await response.json()).error.message, /有效生成结果/);
+    scenario = 'ok';
+    response = await verify();
+    assert.equal(response.status, 200);
+    assert.equal(
+      (
+        await db
+          .prepare('SELECT COUNT(*) AS n FROM credential_cooldowns WHERE credential_id=?')
+          .bind(id)
+          .first()
+      ).n,
+      0,
+    );
+    const before = calls.length;
+    response = await mf.dispatchFetch('https://test/admin/credentials/' + id + '/test', {
+      method: 'POST',
+      headers: { authorization: 'Bearer p', 'content-type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(response.status, 404);
+    assert.equal(calls.length, before);
   } finally {
     await mf.dispose();
   }

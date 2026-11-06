@@ -142,7 +142,7 @@ export async function completeOAuth(request, env, body, fetcher) {
   try {
     await verifyProject(env, row, fetcher);
   } catch {
-    warnings.push('项目未自动校验，可稍后点击“校验项目”或补充 project_id');
+    warnings.push('项目资料未自动补全，可稍后执行“校验并测试”或补充 project_id');
   }
   return {
     success: true,

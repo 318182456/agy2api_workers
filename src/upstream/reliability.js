@@ -132,6 +132,21 @@ export function upstreamErrorMessage(body, secrets = []) {
     .replace(/[\u0000-\u001f\u007f]/g, ' ')
     .slice(0, 500);
 }
+export function serviceDisabled(response, body) {
+  if (response.status !== 403) return false;
+  const error = body?.error;
+  return (
+    (Array.isArray(error?.details) &&
+      error.details.some(
+        (detail) =>
+          detail?.reason === 'TOS_VIOLATION' && detail?.domain === 'cloudcode-pa.googleapis.com',
+      )) ||
+    (typeof error?.message === 'string' &&
+      /this service has been disabled in this account for violation of terms of service/i.test(
+        error.message,
+      ))
+  );
+}
 export async function putCooldown(db, row, model, status, seconds) {
   await db
     .prepare(

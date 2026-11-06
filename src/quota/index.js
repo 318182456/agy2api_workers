@@ -1,3 +1,4 @@
+import { antigravityHeaders } from '../upstream/headers.js';
 import { cachedQuota, saveQuotaCache } from '../telemetry/client.js';
 import { effectiveEnv } from '../config/settings.js';
 import { HttpError, googleFetch, operation } from '../core/common.js';
@@ -48,7 +49,7 @@ async function fetchCredentialQuota(env, id, fetcher) {
   const origin = upstreamOrigin(env, row.mode);
   let token = await operation('oauth_refresh', () => accessToken(env.DB, row, fetcher, false, env));
   const signal = AbortSignal.timeout(30000);
-  const send = () =>
+  const send = async () =>
     googleFetch(
       fetcher,
       `${origin}/v1internal:fetchAvailableModels`,
@@ -56,11 +57,7 @@ async function fetchCredentialQuota(env, id, fetcher) {
         method: 'POST',
         redirect: 'manual',
         signal,
-        headers: {
-          authorization: `Bearer ${token}`,
-          'content-type': 'application/json',
-          'user-agent': 'antigravity/hub/2.23.1 darwin/arm64',
-        },
+        headers: await antigravityHeaders(env, token, ''),
         body: '{}',
       },
       'quota_fetch',
