@@ -28,7 +28,7 @@
     "head_sampling_rate": 1
   },
   "triggers": {
-    "crons": ["0 * * * *", "*/10 * * * *"]
+    "crons": ["0 * * * *"]
   },
   "kv_namespaces": [
     {

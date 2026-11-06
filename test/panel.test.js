@@ -489,41 +489,6 @@ test('management script: quota failures continue, stop works, stats/health and s
   await vm.runInContext('run(async () => {})', context);
   assert.equal(el('statsCredentialsNext').disabled, true);
   assert.equal(el('statsAccountRank').children[0].children[0].children[1].textContent, 'user30');
-  // External upstreams remain visible without becoming selectable OAuth credentials.
-  context.externalConfig = {
-    url: 'https://sample.onrender.com',
-    enabled: true,
-    probe: { ok: true, checked_at: Date.now() },
-  };
-  vm.runInContext(
-    "aistudioSnapshot=externalConfig; el('credentialMode').value='aistudio'; renderCredentials(); renderCredentialSummary();",
-    context,
-  );
-  assert.equal(el('credentials').children.length, 1);
-  assert.equal(
-    el('credentials').children[0].children[1].textContent,
-    'AIStudio2API\nhttps://sample.onrender.com',
-  );
-  assert.equal(vm.runInContext('visibleCredentials().length', context), 0);
-  el('selectAll').checked = true;
-  el('selectAll').onchange();
-  assert.equal(vm.runInContext("selectedCredentials.has('aistudio')", context), false);
-  vm.runInContext(
-    "renderStatsCharts({...largeStats,credentials:[{...largeStats.credentials[0],credential_id:null,mode:'aistudio',requests:1,total_tokens:2000},{...largeStats.credentials[0],credential_id:null,mode:'antigravity',requests:1,failures:1}]})",
-    context,
-  );
-  assert.equal(el('statsCredentials').children.length, 1);
-  assert.equal(
-    el('statsAccountRank').children[0].children[0].children[1].textContent,
-    'AIStudio2API',
-  );
-  assert.match(el('statsAccountRank').children[0].className, /metric-link/);
-  assert.match(el('statsCoverage').textContent, /其中 1 次请求在选中凭证前结束/);
-  vm.runInContext(
-    "aistudioSnapshot=null; el('credentialMode').value=''; renderCredentials(); renderStatsCharts(largeStats);",
-    context,
-  );
-
   el('statsModelsNext').onclick();
   el('statsModelsNext').onclick();
   assert.equal(el('statsModels').children.length, 7);

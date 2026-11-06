@@ -1,4 +1,3 @@
-import { aistudioScript } from './scripts/aistudio.js';
 import { nearbyScript } from './scripts/nearby.js';
 import { storageScript } from './scripts/storage.js';
 import { panelStyle } from './style.js';
@@ -38,6 +37,5 @@ ${importScript}
 ${keysScript}
 ${endpointsScript}
 ${storageScript}
-${aistudioScript}
 ${bootstrapScript}
 </script></body></html>`;

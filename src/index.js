@@ -1,4 +1,3 @@
-import { probeAistudio } from './aistudio/config.js';
 import { receiveNodeTelemetry } from './storage/telemetry.js';
 import { iconResponse } from './panel/icon.js';
 import { VERSION } from './core/version.js';
@@ -69,10 +68,10 @@ async function route(request, env, fetcher, context) {
 
 export async function handleRequest(request, env, fetcher = fetch, context) {
   // API clients may be browsers. Admin routes deliberately have no cross-origin access.
-  const anthropicPath = /^\/(?:(?:antigravity|aistudio)\/)?v1\/messages(?:\/count_tokens)?$/.test(
+  const anthropicPath = /^\/(?:antigravity\/)?v1\/messages(?:\/count_tokens)?$/.test(
     new URL(request.url).pathname,
   );
-  const api = /^\/(?:(?:antigravity|aistudio)\/)?v1(?:beta)?\//.test(new URL(request.url).pathname);
+  const api = /^\/(?:antigravity\/)?v1(?:beta)?\//.test(new URL(request.url).pathname);
   if (api && request.method === 'OPTIONS')
     return new Response(null, {
       status: 204,
@@ -145,10 +144,6 @@ export async function handleRequest(request, env, fetcher = fetch, context) {
 // Cloudflare passes ExecutionContext as argument 3. Never pass it as the test fetcher.
 export default {
   scheduled(controller, env, context) {
-    if (controller?.cron === '*/10 * * * *') {
-      if (env.DB) context.waitUntil(probeAistudio(env));
-      return;
-    }
     if (env.DB)
       context.waitUntil(
         Promise.all([pruneTelemetry(env.DB), warmSharedSettings(env), flushTelemetry(env)]),

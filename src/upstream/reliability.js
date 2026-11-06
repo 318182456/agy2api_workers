@@ -52,7 +52,9 @@ export async function upstreamErrorBody(response, signal) {
   if (
     response.ok ||
     signal?.aborted ||
-    !/application\/(?:json|[a-z0-9.+-]+\+json)/i.test(response.headers.get('content-type') || '')
+    !/application\/(?:json|[a-z0-9.+-]+\+json)|text\/event-stream/i.test(
+      response.headers.get('content-type') || '',
+    )
   )
     return null;
   let reader, timer, onAbort;
@@ -78,8 +80,24 @@ export async function upstreamErrorBody(response, signal) {
       }
       text += decoder.decode();
       try {
+        // Google can send a JSON denial under text/event-stream, including account suspension.
         return JSON.parse(text);
       } catch {
+        // ASVS V16.5.1: extract structured SSE errors only; never retain raw event bodies.
+        for (const frame of text.split(/\r?\n\r?\n/)) {
+          const raw = frame
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith('data:'))
+            .map((line) => line.slice(5).trimStart())
+            .join('\n');
+          if (!raw || raw === '[DONE]') continue;
+          try {
+            const value = JSON.parse(raw);
+            if (typeof value?.error?.message === 'string') return { error: value.error };
+          } catch {
+            /* Ignore non-JSON diagnostics. */
+          }
+        }
         return null;
       }
     };

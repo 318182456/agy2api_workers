@@ -4,14 +4,10 @@ export const endpointsScript = String.raw`const endpointTargets = [
   ['anthropicUrl', 'antigravity', ''],
 ];
 function renderEndpoints() {
-  const externalDefault =
-    typeof aistudioSnapshot !== 'undefined' &&
-    aistudioSnapshot?.enabled &&
-    aistudioSnapshot.routing === 'default';
   for (const [id, mode, path] of endpointTargets) {
-    const available =
-      externalDefault ||
-      credentialsSnapshot.some((row) => (mode === 'auto' || row.mode === mode) && !row.disabled);
+    const available = credentialsSnapshot.some(
+      (row) => (mode === 'auto' || row.mode === mode) && !row.disabled,
+    );
     el(id).textContent = location.origin + path;
     el('endpoint-' + id).className = 'endpoint' + (available ? '' : ' endpoint-disabled');
     el('copy-' + id).disabled = !available;
@@ -25,16 +21,13 @@ function renderEndpoints() {
       (row) => (mode === 'auto' || row.mode === mode) && !row.disabled,
     ).length;
     const state = el('endpoint-group-state-' + mode);
-    state.textContent = externalDefault
-      ? 'AI Studio 默认上游'
-      : !credentialsLoaded
-        ? '正在检查凭证…'
-        : count
-          ? count + ' 个启用凭证'
-          : '暂无启用凭证';
-    state.className = 'pill ' + (count || externalDefault ? 'healthy' : 'unknown');
-    el('endpoint-group-' + mode).className =
-      'endpoint-group' + (count || externalDefault ? '' : ' is-unavailable');
+    state.textContent = !credentialsLoaded
+      ? '正在检查凭证…'
+      : count
+        ? count + ' 个启用凭证'
+        : '暂无启用凭证';
+    state.className = 'pill ' + (count ? 'healthy' : 'unknown');
+    el('endpoint-group-' + mode).className = 'endpoint-group' + (count ? '' : ' is-unavailable');
   }
 }
 el('endpointsRefresh').onclick = () =>

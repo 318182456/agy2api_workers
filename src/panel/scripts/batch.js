@@ -2,7 +2,6 @@ export const batchScript = String.raw`function updateSelection() {
   el('selectionCount').textContent = '已选 ' + selectedCredentials.size + ' 个（可跨页）';
   const visible = visibleCredentials();
   const count = visible.filter((c) => selectedCredentials.has(c.id)).length;
-  el('selectAll').disabled = !visible.length;
   el('selectAll').checked = !!visible.length && count === visible.length;
   el('selectAll').indeterminate = count > 0 && count < visible.length;
   document.querySelectorAll('.credential-select').forEach((input) => {

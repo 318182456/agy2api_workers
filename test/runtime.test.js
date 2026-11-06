@@ -502,12 +502,18 @@ test('production Worker: credential failover, model cooldown, trace records and 
     calls.length = 0;
     await db.prepare('DELETE FROM credential_cooldowns').run();
     response = await chat('m', true);
+    const interruptedRequestId = response.headers.get('x-request-id');
     const streamed = await response.text();
     assert.match(streamed, /upstream_error/);
     assert.doesNotMatch(streamed, /\[DONE\]/);
     assert.equal(calls.length, 1);
     response = await admin('/admin/calls');
-    assert.equal((await response.json()).records[0].stage, 'stream_error');
+    // Final usage and the stream diagnostic may share a timestamp; verify this request's event.
+    assert.ok(
+      (await response.json()).records.some(
+        (row) => row.request_id === interruptedRequestId && row.stage === 'stream_error',
+      ),
+    );
     response = await admin('/admin/calls?credential_id=' + a);
     assert.ok((await response.json()).records.every((row) => row.credential_id === a));
     // Exercise cursor pagination and bounded retention with a real SQLite/D1 index.

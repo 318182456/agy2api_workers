@@ -440,11 +440,3 @@ OpenAI 客户端若丢弃工具调用的 `extra_content.google.thought_signature
 账号健康详情和 API 密钥用量在对应行下方展开，可就地收起；账号名称、调度参数、密钥名称和到期时间使用行内表单。节点 Token 更新也在对应节点下方完成，取消、换页和退出时清空输入。行内操作的进度、结果及错误紧邻操作按钮显示，并在列表刷新后保留反馈。批量操作、授权和模型查询已有各自的结果区域，继续保留原有位置。
 
 现有子节点可在存储节点页点击“改为 agy2api”：保留 Worker 身份与 DO 命名空间，发布新 Pages 入口，读写验证通过后切换节点地址。失败可重试，旧 Pages 入口保留以兼容切换中的请求。DO 内部实例名保持稳定；D1 数据库实体名仍为 `gcli2api`，Cloudflare 不提供原地改名接口。
-
-## Render AIStudio2API 接入
-
-系统设置 → AI Studio，填写 Render HTTPS 地址与其 `PROXY_API_KEY`，保存后测试模型目录。客户端继续使用本项目 API 密钥，独立 Base URL 为 `https://你的域名/aistudio/v1`。可选择让常规 `/v1` 等入口默认使用 AI Studio；`/antigravity/v1` 仍指定原渠道。仅支持 Render 服务 origin，不接受任意代理目标；不转发客户端 Cookie 或上游重定向。
-
-支持 Chat Completions、Messages、Gemini generateContent/countTokens、Responses 与 Images generations 的 JSON 接口，原样保留模型名称和协议数据。文件上传、Live、Interactions 等路径未代理。生成用量按本项目 API 密钥统计，来源标记 aistudio；外部服务管理自己的 Google 账号，不计入本地凭证排行。
-
-启用定期探测后，Cloudflare Cron 每10分钟 GET 服务首页，最长等待20秒，不消耗模型生成次数，页面可查看最后结果；手动测试 GET /v1/models 校验密钥。需部署包含新 cron 的 wrangler 配置才会执行，与打开浏览器无关。保活仅降低15分钟空闲休眠概率，不能保证平台调度、重启或网络故障不发生。Render免费磁盘不持久，账号认证材料必须在外部服务侧另做私有备份和启动恢复。

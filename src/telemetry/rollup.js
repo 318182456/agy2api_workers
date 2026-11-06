@@ -60,17 +60,12 @@ export function summarizeRows(rows, keyLookup, env = {}, pendingRequests = 0) {
     const modelKey = JSON.stringify([row.mode, row.model]);
     if (!models.has(modelKey)) models.set(modelKey, { model: row.model, mode: row.mode });
     combine(models.get(modelKey), row);
-    // External upstreams have no local OAuth credential; never merge their usage
-    // with requests that failed before credential selection.
-    const accountKey = JSON.stringify([row.mode || null, row.credential_id || null]);
-    if (!credentials.has(accountKey))
-      credentials.set(accountKey, {
-        credential_id: row.credential_id || null,
-        mode: row.mode || null,
-        external: row.mode === 'aistudio',
-        display_name: row.mode === 'aistudio' ? 'AIStudio2API' : row.display_name,
+    if (!credentials.has(row.credential_id))
+      credentials.set(row.credential_id, {
+        credential_id: row.credential_id,
+        display_name: row.display_name,
       });
-    combine(credentials.get(accountKey), row);
+    combine(credentials.get(row.credential_id), row);
     if (!days.has(row.day)) days.set(row.day, { day: row.day });
     combine(days.get(row.day), row);
   }

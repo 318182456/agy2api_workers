@@ -2645,3 +2645,39 @@ test('Denova streaming tool calls accept Go any schemas and preserve numeric, ob
   assert.deepEqual(JSON.parse(calls.map((call) => call.function?.arguments || '').join('')), args);
   assert.ok(events.some((event) => event.choices?.[0]?.finish_reason === 'tool_calls'));
 });
+
+test('Google 403 JSON and SSE denials under event-stream preserve account reason and client response', async () => {
+  const { upstreamErrorBody, upstreamErrorMessage } =
+    await import('../src/upstream/reliability.js');
+  const error = {
+    error: {
+      code: 403,
+      message:
+        'This service has been disabled in this account for violation of Terms of Service. Bearer known-secret',
+      status: 'PERMISSION_DENIED',
+    },
+  };
+  for (const body of [
+    JSON.stringify(error),
+    'event: error\n' + 'data: ' + JSON.stringify(error) + '\n\n',
+  ]) {
+    const response = new Response(body, {
+      status: 403,
+      headers: { 'content-type': 'text/event-stream; charset=utf-8' },
+    });
+    const value = await upstreamErrorBody(response);
+    const message = upstreamErrorMessage(value, ['known-secret']);
+    assert.match(message, /service has been disabled/);
+    assert.ok(!message.includes('known-secret'));
+    assert.equal(await response.text(), body);
+  }
+  assert.equal(
+    await upstreamErrorBody(
+      new Response('data: not-json\n\n', {
+        status: 403,
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+    ),
+    null,
+  );
+});

@@ -46,7 +46,7 @@ export async function recordUsage(db, record) {
         record.failure?.message || null,
       );
     const statements = [insert];
-    if (record.row?.id && record.outcome === 'success')
+    if (record.row && record.outcome === 'success')
       statements.push(
         db
           .prepare(

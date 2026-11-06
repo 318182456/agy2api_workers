@@ -22,10 +22,6 @@ el('logout').onclick = () =>
     panelTimings.clear();
     el('performanceBody').replaceChildren();
     resetStorageForm();
-    el('aistudioKey').value = '';
-    aistudioSnapshot = null;
-    aistudioCsrf = '';
-    aistudioRevision = '';
     el('storageNodes').replaceChildren();
     runtimeProbe = null;
     updateRuntimeRegion({});
